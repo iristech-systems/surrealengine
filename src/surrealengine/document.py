@@ -1,4 +1,5 @@
 import json
+from typing import Any, Dict, List, Optional, Type, Union, ClassVar
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
 from .fields import Field
 from .connection import ConnectionRegistry
@@ -6,9 +7,32 @@ from surrealdb import RecordID
 
 
 class DocumentMetaclass(type):
-    """Metaclass for Document classes."""
+    """Metaclass for Document classes.
 
-    def __new__(mcs, name, bases, attrs):
+    This metaclass processes field attributes in Document classes to create
+    a structured schema. It handles field inheritance, field naming, and
+    metadata configuration.
+
+    Attributes:
+        _meta: Dictionary of metadata for the document class
+        _fields: Dictionary of fields for the document class
+        _fields_ordered: List of field names in order of definition
+    """
+
+    def __new__(mcs, name: str, bases: tuple, attrs: Dict[str, Any]) -> Type:
+        """Create a new Document class.
+
+        This method processes the class attributes to create a structured schema.
+        It handles field inheritance, field naming, and metadata configuration.
+
+        Args:
+            name: Name of the class being created
+            bases: Tuple of base classes
+            attrs: Dictionary of class attributes
+
+        Returns:
+            The new Document class
+        """
         # Skip processing for the base Document class
         if name == 'Document' and attrs.get('__module__') == __name__:
             return super().__new__(mcs, name, bases, attrs)
@@ -23,8 +47,8 @@ class DocumentMetaclass(type):
         }
 
         # Process fields
-        fields = {}
-        fields_ordered = []
+        fields: Dict[str, Field] = {}
+        fields_ordered: List[str] = []
 
         # Inherit fields from parent classes
         for base in bases:
@@ -62,12 +86,32 @@ class DocumentMetaclass(type):
 
 
 class Document(metaclass=DocumentMetaclass):
-    """Base class for all documents."""
+    """Base class for all documents.
+
+    This class provides the foundation for all document models in the ORM.
+    It includes methods for CRUD operations, validation, and serialization.
+
+    Attributes:
+        objects: QuerySetDescriptor for querying documents of this class
+        _data: Dictionary of field values
+        _changed_fields: List of field names that have been changed
+        _fields: Dictionary of fields for this document class (class attribute)
+        _fields_ordered: List of field names in order of definition (class attribute)
+        _meta: Dictionary of metadata for this document class (class attribute)
+    """
     objects = QuerySetDescriptor()
 
-    def __init__(self, **values):
-        self._data = {}
-        self._changed_fields = []
+    def __init__(self, **values: Any) -> None:
+        """Initialize a new Document.
+
+        Args:
+            **values: Field values to set on the document
+
+        Raises:
+            AttributeError: If strict mode is enabled and an unknown field is provided
+        """
+        self._data: Dict[str, Any] = {}
+        self._changed_fields: List[str] = []
 
         # Set default values
         for field_name, field in self._fields.items():
@@ -83,13 +127,36 @@ class Document(metaclass=DocumentMetaclass):
             elif self._meta.get('strict', True):
                 raise AttributeError(f"Unknown field: {key}")
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
+        """Get a field value.
+
+        This method is called when an attribute is not found through normal lookup.
+        It checks if the attribute is a field and returns its value if it is.
+
+        Args:
+            name: Name of the attribute to get
+
+        Returns:
+            The field value
+
+        Raises:
+            AttributeError: If the attribute is not a field
+        """
         if name in self._fields:
             # Return the value directly from _data instead of the field instance
             return self._data.get(name)
         raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
-    def __setattr__(self, name, value):
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Set a field value.
+
+        This method is called when an attribute is set. It checks if the attribute
+        is a field and validates the value if it is.
+
+        Args:
+            name: Name of the attribute to set
+            value: Value to set
+        """
         if name.startswith('_'):
             super().__setattr__(name, value)
         elif name in self._fields:
@@ -101,32 +168,73 @@ class Document(metaclass=DocumentMetaclass):
             super().__setattr__(name, value)
 
     @property
-    def id(self):
-        """Get the document ID."""
+    def id(self) -> Any:
+        """Get the document ID.
+
+        Returns:
+            The document ID
+        """
         return self._data.get('id')
 
     @id.setter
-    def id(self, value):
-        """Set the document ID."""
+    def id(self, value: Any) -> None:
+        """Set the document ID.
+
+        Args:
+            value: The document ID to set
+        """
         self._data['id'] = value
 
     @classmethod
-    def _get_collection_name(cls):
-        """Return the collection name for this document."""
+    def _get_collection_name(cls) -> str:
+        """Return the collection name for this document.
+
+        Returns:
+            The collection name
+        """
         return cls._meta.get('collection')
 
-    def validate(self):
-        """Validate all fields."""
+    def validate(self) -> None:
+        """Validate all fields.
+
+        This method validates all fields in the document against their
+        validation rules.
+
+        Raises:
+            ValidationError: If a field fails validation
+        """
         for field_name, field in self._fields.items():
             value = self._data.get(field_name)
             field.validate(value)
 
-    def to_dict(self):
-        """Convert the document to a dictionary."""
-        return {k: v for k, v in self._data.items() if k in self._fields}
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the document to a dictionary.
 
-    def to_db(self):
-        """Convert the document to a database-friendly dictionary."""
+        This method converts the document to a dictionary containing all
+        field values including the document ID.
+
+        Returns:
+            Dictionary of field values including ID
+        """
+        # Start with the ID if it exists
+        result = {}
+        if self.id is not None:
+            result['id'] = self.id
+
+        # Add all other fields
+        result.update({k: v for k, v in self._data.items() if k in self._fields})
+        return result
+
+    def to_db(self) -> Dict[str, Any]:
+        """Convert the document to a database-friendly dictionary.
+
+        This method converts the document to a dictionary suitable for
+        storage in the database. It applies field-specific conversions
+        and includes only non-None values unless the field is required.
+
+        Returns:
+            Dictionary of field values for the database
+        """
         result = {}
         for field_name, field in self._fields.items():
             value = self._data.get(field_name)
@@ -136,8 +244,19 @@ class Document(metaclass=DocumentMetaclass):
         return result
 
     @classmethod
-    def from_db(cls, data):
-        """Create instance from database data."""
+    def from_db(cls, data: Any) -> 'Document':
+        """Create instance from database data.
+
+        This method creates a new document instance from data retrieved
+        from the database. It handles conversion of RecordID objects to
+        strings.
+
+        Args:
+            data: Data from the database
+
+        Returns:
+            A new document instance
+        """
         instance = cls()
 
         # Convert RecordID to string if needed
@@ -155,8 +274,22 @@ class Document(metaclass=DocumentMetaclass):
 
         return instance
 
-    async def save(self, connection=None):
-        """Save the document to the database."""
+    async def save(self, connection: Optional[Any] = None) -> 'Document':
+        """Save the document to the database.
+
+        This method saves the document to the database, either creating
+        a new document or updating an existing one based on whether the
+        document has an ID.
+
+        Args:
+            connection: The database connection to use (optional)
+
+        Returns:
+            The saved document instance
+
+        Raises:
+            ValidationError: If the document fails validation
+        """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection()
 
@@ -192,8 +325,20 @@ class Document(metaclass=DocumentMetaclass):
 
         return self
 
-    async def delete(self, connection=None):
-        """Delete the document from the database."""
+    async def delete(self, connection: Optional[Any] = None) -> bool:
+        """Delete the document from the database.
+
+        This method deletes the document from the database.
+
+        Args:
+            connection: The database connection to use (optional)
+
+        Returns:
+            True if the document was deleted
+
+        Raises:
+            ValueError: If the document doesn't have an ID
+        """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection()
         if not self.id:
@@ -202,8 +347,20 @@ class Document(metaclass=DocumentMetaclass):
         await connection.client.delete(f"{self._get_collection_name()}:{self.id}")
         return True
 
-    async def refresh(self, connection=None):
-        """Refresh the document from the database."""
+    async def refresh(self, connection: Optional[Any] = None) -> 'Document':
+        """Refresh the document from the database.
+
+        This method refreshes the document's data from the database.
+
+        Args:
+            connection: The database connection to use (optional)
+
+        Returns:
+            The refreshed document instance
+
+        Raises:
+            ValueError: If the document doesn't have an ID
+        """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection()
         if not self.id:
@@ -225,26 +382,62 @@ class Document(metaclass=DocumentMetaclass):
         return self
 
     @classmethod
-    def relates(cls, relation_name):
-        """Get a RelationQuerySet for a specific relation."""
+    def relates(cls, relation_name: str) -> callable:
+        """Get a RelationQuerySet for a specific relation.
 
-        def relation_query_builder(connection=None):
+        This method returns a function that creates a RelationQuerySet for
+        the specified relation name. The function can be called with an
+        optional connection parameter.
+
+        Args:
+            relation_name: Name of the relation
+
+        Returns:
+            Function that creates a RelationQuerySet
+        """
+
+        def relation_query_builder(connection: Optional[Any] = None) -> RelationQuerySet:
+            """Create a RelationQuerySet for the specified relation.
+
+            Args:
+                connection: The database connection to use (optional)
+
+            Returns:
+                A RelationQuerySet for the relation
+            """
             if connection is None:
                 connection = ConnectionRegistry.get_default_connection()
             return RelationQuerySet(cls, connection, relation=relation_name)
 
         return relation_query_builder
 
-    async def fetch_relation(self, relation_name, target_document=None, connection=None, **filters):
-        """Fetch related documents."""
+    async def fetch_relation(self, relation_name: str, target_document: Optional[Type] = None, 
+                            connection: Optional[Any] = None, **filters: Any) -> List[Any]:
+        """Fetch related documents.
+
+        This method fetches documents related to this document through
+        the specified relation.
+
+        Args:
+            relation_name: Name of the relation
+            target_document: The document class of the target documents (optional)
+            connection: The database connection to use (optional)
+            **filters: Filters to apply to the related documents
+
+        Returns:
+            List of related documents or relation records
+        """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection()
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.get_related(self, target_document, **filters)
 
-    async def resolve_relation(self, relation_name, target_document_class=None, connection=None):
-        """
-        Resolve related documents from a relation fetch result.
+    async def resolve_relation(self, relation_name: str, target_document_class: Optional[Type] = None, 
+                                 connection: Optional[Any] = None) -> List[Any]:
+        """Resolve related documents from a relation fetch result.
+
+        This method resolves related documents from a relation fetch result.
+        It fetches the relation data and then resolves each related document.
 
         Args:
             relation_name: Name of the relation to resolve
@@ -284,33 +477,86 @@ class Document(metaclass=DocumentMetaclass):
 
         return resolved_documents
 
-    async def relate_to(self, relation_name, target_instance, connection=None, **attrs):
-        """Create a relation to another document."""
+    async def relate_to(self, relation_name: str, target_instance: Any, 
+                        connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
+        """Create a relation to another document.
+
+        This method creates a relation from this document to another document.
+
+        Args:
+            relation_name: Name of the relation
+            target_instance: The document instance to relate to
+            connection: The database connection to use (optional)
+            **attrs: Attributes to set on the relation
+
+        Returns:
+            The created relation record or None if creation failed
+        """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection()
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.relate(self, target_instance, **attrs)
 
-    async def update_relation_to(self, relation_name, target_instance, connection=None, **attrs):
-        """Update a relation to another document."""
+    async def update_relation_to(self, relation_name: str, target_instance: Any, 
+                               connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
+        """Update a relation to another document.
+
+        This method updates a relation from this document to another document.
+
+        Args:
+            relation_name: Name of the relation
+            target_instance: The document instance the relation is to
+            connection: The database connection to use (optional)
+            **attrs: Attributes to update on the relation
+
+        Returns:
+            The updated relation record or None if update failed
+        """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection()
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.update_relation(self, target_instance, **attrs)
 
-    async def delete_relation_to(self, relation_name, target_instance=None, connection=None):
-        """Delete a relation to another document."""
+    async def delete_relation_to(self, relation_name: str, target_instance: Optional[Any] = None, 
+                               connection: Optional[Any] = None) -> int:
+        """Delete a relation to another document.
+
+        This method deletes a relation from this document to another document.
+        If target_instance is not provided, it deletes all relations with the
+        specified name from this document.
+
+        Args:
+            relation_name: Name of the relation
+            target_instance: The document instance the relation is to (optional)
+            connection: The database connection to use (optional)
+
+        Returns:
+            Number of deleted relations
+        """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection()
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.delete_relation(self, target_instance)
 
-    async def traverse_path(self, path_spec, target_document=None, connection=None, **filters):
-        """
-        Traverse a path in the graph.
+    async def traverse_path(self, path_spec: str, target_document: Optional[Type] = None, 
+                             connection: Optional[Any] = None, **filters: Any) -> List[Any]:
+        """Traverse a path in the graph.
 
-        path_spec is a string like "->[watched]->->[acted_in]->" which describes
+        This method traverses a path in the graph starting from this document.
+        The path_spec is a string like "->[watched]->->[acted_in]->" which describes
         a path through the graph.
+
+        Args:
+            path_spec: String describing the path to traverse
+            target_document: The document class to return instances of (optional)
+            connection: The database connection to use (optional)
+            **filters: Filters to apply to the results
+
+        Returns:
+            List of documents or path results
+
+        Raises:
+            ValueError: If the document is not saved
         """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection()
@@ -350,9 +596,26 @@ class Document(metaclass=DocumentMetaclass):
             return result[0]
 
     @classmethod
-    async def bulk_create(cls, documents, connection=None, batch_size=1000,
-                          validate=True, return_documents=True):
-        """Create multiple documents in a single operation."""
+    async def bulk_create(cls, documents: List[Any], batch_size: int = 1000,
+                          validate: bool = True, return_documents: bool = True,
+                          connection: Optional[Any] = None) -> Union[List[Any], int]:
+        """Create multiple documents in a single operation.
+
+        This method creates multiple documents in a single operation, processing
+        them in batches for better performance. It can optionally validate the
+        documents and return the created documents.
+
+        Args:
+            documents: List of Document instances to create
+            batch_size: Number of documents per batch (default: 1000)
+            validate: Whether to validate documents (default: True)
+            return_documents: Whether to return created documents (default: True)
+            connection: The database connection to use (optional)
+
+        Returns:
+            List of created documents with their IDs set if return_documents=True,
+            otherwise returns the count of created documents
+        """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection()
         return await cls.objects(connection).bulk_create(
@@ -362,3 +625,82 @@ class Document(metaclass=DocumentMetaclass):
             return_documents=return_documents
         )
 
+    @classmethod
+    async def create_index(cls, index_name: str, fields: List[str], unique: bool = False,
+                           search: bool = False, analyzer: Optional[str] = None,
+                           comment: Optional[str] = None, connection: Optional[Any] = None) -> None:
+        """Create an index on the document's collection.
+
+        Args:
+            index_name: Name of the index
+            fields: List of field names to include in the index
+            unique: Whether the index should enforce uniqueness
+            search: Whether the index is a search index
+            analyzer: Analyzer to use for search indexes
+            comment: Optional comment for the index
+            connection: Optional connection to use
+        """
+        if connection is None:
+            from .connection import ConnectionRegistry
+            connection = ConnectionRegistry.get_default_connection()
+
+        collection_name = cls._get_collection_name()
+        fields_str = ", ".join(fields)
+
+        # Build the index definition
+        query = f"DEFINE INDEX {index_name} ON {collection_name} FIELDS {fields_str}"
+
+        # Add index type
+        if unique:
+            query += " UNIQUE"
+        elif search and analyzer:
+            query += f" SEARCH ANALYZER {analyzer}"
+
+        # Add comment if provided
+        if comment:
+            query += f" COMMENT '{comment}'"
+
+        # Execute the query
+        await connection.client.query(query)
+
+    @classmethod
+    async def create_indexes(cls, connection: Optional[Any] = None) -> None:
+        """Create all indexes defined in the Meta class.
+
+        Args:
+            connection: Optional connection to use
+        """
+        if not hasattr(cls, '_meta') or 'indexes' not in cls._meta or not cls._meta['indexes']:
+            return
+
+        for index_def in cls._meta['indexes']:
+            # Handle different index definition formats
+            if isinstance(index_def, dict):
+                # Dictionary format with options
+                index_name = index_def.get('name')
+                fields = index_def.get('fields', [])
+                unique = index_def.get('unique', False)
+                search = index_def.get('search', False)
+                analyzer = index_def.get('analyzer')
+                comment = index_def.get('comment')
+            elif isinstance(index_def, tuple) and len(index_def) >= 2:
+                # Tuple format (name, fields, [unique])
+                index_name = index_def[0]
+                fields = index_def[1] if isinstance(index_def[1], list) else [index_def[1]]
+                unique = index_def[2] if len(index_def) > 2 else False
+                search = False
+                analyzer = None
+                comment = None
+            else:
+                # Skip invalid index definitions
+                continue
+
+            await cls.create_index(
+                index_name=index_name,
+                fields=fields,
+                unique=unique,
+                search=search,
+                analyzer=analyzer,
+                comment=comment,
+                connection=connection
+            )

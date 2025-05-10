@@ -1,100 +1,59 @@
 
 import json
 import asyncio
+from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
 from .exceptions import MultipleObjectsReturned, DoesNotExist
 from .connection import ConnectionRegistry
 from surrealdb import RecordID
+from .base_query import BaseQuerySet
 
-class QuerySet:
-    """Query builder for SurrealDB."""
+class QuerySet(BaseQuerySet):
+    """Query builder for SurrealDB.
 
-    def __init__(self, document_class, connection):
+    This class provides a query builder for document classes with a predefined schema.
+    It extends BaseQuerySet to provide methods for querying and manipulating
+    documents of a specific document class.
+
+    Attributes:
+        document_class: The document class to query
+        connection: The database connection to use for queries
+    """
+
+    def __init__(self, document_class: Type, connection: Any) -> None:
+        """Initialize a new QuerySet.
+
+        Args:
+            document_class: The document class to query
+            connection: The database connection to use for queries
+        """
+        super().__init__(connection)
         self.document_class = document_class
-        self.connection = connection
-        self.query_parts = []
-        self.limit_value = None
-        self.start_value = None
-        self.order_by_value = None
 
-    def filter(self, **kwargs):
-        """Add filter conditions."""
-        for k, v in kwargs.items():
-            parts = k.split('__')
-            field = parts[0]
+    def _build_query(self) -> str:
+        """Build the query string.
 
-            # Handle operators
-            if len(parts) > 1:
-                op = parts[1]
-                if op == 'gt':
-                    self.query_parts.append((field, '>', v))
-                elif op == 'lt':
-                    self.query_parts.append((field, '<', v))
-                elif op == 'gte':
-                    self.query_parts.append((field, '>=', v))
-                elif op == 'lte':
-                    self.query_parts.append((field, '<=', v))
-                elif op == 'ne':
-                    self.query_parts.append((field, '!=', v))
-                elif op == 'in':
-                    self.query_parts.append((field, 'INSIDE', v))
-                elif op == 'nin':
-                    self.query_parts.append((field, 'NOT INSIDE', v))
-                elif op == 'contains':
-                    if isinstance(v, str):
-                        self.query_parts.append((f"string::contains({field}, '{v}')", '=', True))
-                    else:
-                        self.query_parts.append((field, 'CONTAINS', v))
-                elif op == 'startswith':
-                    self.query_parts.append((f"string::startsWith({field}, '{v}')", '=', True))
-                elif op == 'endswith':
-                    self.query_parts.append((f"string::endsWith({field}, '{v}')", '=', True))
-                elif op == 'regex':
-                    self.query_parts.append((f"string::matches({field}, r'{v}')", '=', True))
-                else:
-                    raise ValueError(f"Unknown operator: {op}")
-            else:
-                # Simple equality
-                self.query_parts.append((field, '=', v))
+        This method builds the query string for the document class query.
+        It adds conditions from query_parts if any are present.
 
-        return self
-
-    def limit(self, value):
-        """Set limit."""
-        self.limit_value = value
-        return self
-
-    def start(self, value):
-        """Set start (offset)."""
-        self.start_value = value
-        return self
-
-    def order_by(self, field, direction='ASC'):
-        """Set ordering."""
-        self.order_by_value = (field, direction)
-        return self
-
-    def _build_query(self):
+        Returns:
+            The query string
+        """
         query = f"SELECT * FROM {self.document_class._get_collection_name()}"
 
         if self.query_parts:
-            conditions = []
-            for field, op, value in self.query_parts:
-                # Handle special cases
-                if op == '=' and isinstance(field, str) and '::' in field:
-                    conditions.append(f"{field}")
-                else:
-                    # Special handling for INSIDE and NOT INSIDE operators
-                    if op in ('INSIDE', 'NOT INSIDE'):
-                        value_str = json.dumps(value)
-                        conditions.append(f"{field} {op} {value_str}")
-                    else:
-                        conditions.append(f"{field} {op} {json.dumps(value)}")
-
+            conditions = self._build_conditions()
             query += f" WHERE {' AND '.join(conditions)}"
         return query
 
-    async def all(self):
-        """Execute the query and return all results."""
+    async def all(self) -> List[Any]:
+        """Execute the query and return all results.
+
+        This method builds and executes the query, then converts the results
+        to instances of the document class.
+
+        Returns:
+            List of document instances
+        """
         query = self._build_query()
         results = await self.connection.client.query(query)
 
@@ -105,30 +64,19 @@ class QuerySet:
         processed_results = [self.document_class.from_db(doc) for doc in results]
         return processed_results
 
-    async def first(self):
-        """Execute the query and return the first result."""
-        self.limit_value = 1
-        results = await self.all()
-        return results[0] if results else None
+    async def count(self) -> int:
+        """Count documents matching the query.
 
-    async def count(self):
-        """Count documents."""
+        This method builds and executes a count query to count the number
+        of documents matching the query.
+
+        Returns:
+            Number of matching documents
+        """
         count_query = f"SELECT count() FROM {self.document_class._get_collection_name()}"
 
         if self.query_parts:
-            conditions = []
-            for field, op, value in self.query_parts:
-                # Handle special cases
-                if op == '=' and isinstance(field, str) and '::' in field:
-                    conditions.append(f"{field}")
-                else:
-                    # Special handling for INSIDE and NOT INSIDE operators
-                    if op in ('INSIDE', 'NOT INSIDE'):
-                        value_str = json.dumps(value)
-                        conditions.append(f"{field} {op} {value_str}")
-                    else:
-                        conditions.append(f"{field} {op} {json.dumps(value)}")
-
+            conditions = self._build_conditions()
             count_query += f" WHERE {' AND '.join(conditions)}"
 
         result = await self.connection.client.query(count_query)
@@ -138,8 +86,21 @@ class QuerySet:
 
         return result[0][0]['count']
 
-    async def get(self, **kwargs):
-        """Get a single document matching the query."""
+    async def get(self, **kwargs: Any) -> Any:
+        """Get a single document matching the query.
+
+        This method applies filters and ensures that exactly one document is returned.
+
+        Args:
+            **kwargs: Field names and values to filter by
+
+        Returns:
+            The matching document
+
+        Raises:
+            DoesNotExist: If no matching document is found
+            MultipleObjectsReturned: If multiple matching documents are found
+        """
         self.filter(**kwargs)
         self.limit_value = 2  # Get 2 to check for multiple
         results = await self.all()
@@ -151,29 +112,35 @@ class QuerySet:
 
         return results[0]
 
-    async def create(self, **kwargs):
-        """Create a new document."""
+    async def create(self, **kwargs: Any) -> Any:
+        """Create a new document.
+
+        This method creates a new document with the given field values.
+
+        Args:
+            **kwargs: Field names and values for the new document
+
+        Returns:
+            The created document
+        """
         document = self.document_class(**kwargs)
         return await document.save(self.connection)
 
-    async def update(self, **kwargs):
-        """Update documents matching the query."""
+    async def update(self, **kwargs: Any) -> List[Any]:
+        """Update documents matching the query.
+
+        This method updates documents matching the query with the given field values.
+
+        Args:
+            **kwargs: Field names and values to update
+
+        Returns:
+            List of updated documents
+        """
         update_query = f"UPDATE {self.document_class._get_collection_name()}"
 
         if self.query_parts:
-            conditions = []
-            for field, op, value in self.query_parts:
-                # Handle special cases
-                if op == '=' and isinstance(field, str) and '::' in field:
-                    conditions.append(f"{field}")
-                else:
-                    # Special handling for INSIDE and NOT INSIDE operators
-                    if op in ('INSIDE', 'NOT INSIDE'):
-                        value_str = json.dumps(value)
-                        conditions.append(f"{field} {op} {value_str}")
-                    else:
-                        conditions.append(f"{field} {op} {json.dumps(value)}")
-
+            conditions = self._build_conditions()
             update_query += f" WHERE {' AND '.join(conditions)}"
 
         update_query += f" SET {', '.join(f'{k} = {json.dumps(v)}' for k, v in kwargs.items())}"
@@ -185,24 +152,18 @@ class QuerySet:
 
         return [self.document_class.from_db(doc) for doc in result[0]]
 
-    async def delete(self):
-        """Delete documents matching the query."""
+    async def delete(self) -> int:
+        """Delete documents matching the query.
+
+        This method deletes documents matching the query.
+
+        Returns:
+            Number of deleted documents
+        """
         delete_query = f"DELETE FROM {self.document_class._get_collection_name()}"
 
         if self.query_parts:
-            conditions = []
-            for field, op, value in self.query_parts:
-                # Handle special cases
-                if op == '=' and isinstance(field, str) and '::' in field:
-                    conditions.append(f"{field}")
-                else:
-                    # Special handling for INSIDE and NOT INSIDE operators
-                    if op in ('INSIDE', 'NOT INSIDE'):
-                        value_str = json.dumps(value)
-                        conditions.append(f"{field} {op} {value_str}")
-                    else:
-                        conditions.append(f"{field} {op} {json.dumps(value)}")
-
+            conditions = self._build_conditions()
             delete_query += f" WHERE {' AND '.join(conditions)}"
 
         result = await self.connection.client.query(delete_query)
@@ -212,8 +173,13 @@ class QuerySet:
 
         return len(result[0])
 
-    async def bulk_create(self, documents, batch_size=1000, validate=True, return_documents=True):
+    async def bulk_create(self, documents: List[Any], batch_size: int = 1000, 
+                      validate: bool = True, return_documents: bool = True) -> Union[List[Any], int]:
         """Create multiple documents in a single operation.
+
+        This method creates multiple documents in a single operation, processing
+        them in batches for better performance. It can optionally validate the
+        documents and return the created documents.
 
         Args:
             documents: List of Document instances to create
@@ -271,16 +237,49 @@ class QuerySet:
 
 
 class RelationQuerySet:
-    """Query set specifically for graph relations."""
+    """Query set specifically for graph relations.
 
-    def __init__(self, from_document, connection, relation=None):
+    This class provides methods for querying and manipulating graph relations
+    between documents in the database. It allows creating, retrieving, updating,
+    and deleting relations between documents.
+
+    Attributes:
+        from_document: The document class the relation is from
+        connection: The database connection to use for queries
+        relation: The name of the relation
+        query_parts: List of query parts
+    """
+
+    def __init__(self, from_document: Type, connection: Any, relation: Optional[str] = None) -> None:
+        """Initialize a new RelationQuerySet.
+
+        Args:
+            from_document: The document class the relation is from
+            connection: The database connection to use for queries
+            relation: The name of the relation
+        """
         self.from_document = from_document
         self.connection = connection
         self.relation = relation
-        self.query_parts = []
+        self.query_parts: List[Any] = []
 
-    async def relate(self, from_instance, to_instance, **attrs):
-        """Create a relation between two instances."""
+    async def relate(self, from_instance: Any, to_instance: Any, **attrs: Any) -> Optional[Any]:
+        """Create a relation between two instances.
+
+        This method creates a relation between two document instances in the database.
+        It constructs a RELATE query with the given relation name and attributes.
+
+        Args:
+            from_instance: The instance to create the relation from
+            to_instance: The instance to create the relation to
+            **attrs: Attributes to set on the relation
+
+        Returns:
+            The created relation record or None if creation failed
+
+        Raises:
+            ValueError: If either instance is not saved or if no relation name is specified
+        """
         if not from_instance.id:
             raise ValueError(f"Cannot create relation from unsaved {self.from_document.__name__}")
 
@@ -327,8 +326,24 @@ class RelationQuerySet:
 
         return None
 
-    async def get_related(self, instance, target_document=None, **filters):
-        """Get related documents."""
+    async def get_related(self, instance: Any, target_document: Optional[Type] = None, **filters: Any) -> List[Any]:
+        """Get related documents.
+
+        This method retrieves documents related to the given instance through
+        the specified relation. It can return either the target documents or
+        the relation records themselves.
+
+        Args:
+            instance: The instance to get related documents for
+            target_document: The document class of the target documents (optional)
+            **filters: Filters to apply to the related documents
+
+        Returns:
+            List of related documents or relation records
+
+        Raises:
+            ValueError: If the instance is not saved or if no relation name is specified
+        """
         if not instance.id:
             raise ValueError(f"Cannot get relations for unsaved {self.from_document.__name__}")
 
@@ -370,8 +385,23 @@ class RelationQuerySet:
             # When no target_document, we're getting relation data
             return result[0]
 
-    async def update_relation(self, from_instance, to_instance, **attrs):
-        """Update an existing relation."""
+    async def update_relation(self, from_instance: Any, to_instance: Any, **attrs: Any) -> Optional[Any]:
+        """Update an existing relation.
+
+        This method updates an existing relation between two document instances
+        in the database. If the relation doesn't exist, it creates it.
+
+        Args:
+            from_instance: The instance the relation is from
+            to_instance: The instance the relation is to
+            **attrs: Attributes to update on the relation
+
+        Returns:
+            The updated relation record or None if update failed
+
+        Raises:
+            ValueError: If either instance is not saved or if no relation name is specified
+        """
         if not from_instance.id or not to_instance.id:
             raise ValueError("Cannot update relation between unsaved documents")
 
@@ -416,8 +446,23 @@ class RelationQuerySet:
 
         return None
 
-    async def delete_relation(self, from_instance, to_instance=None):
-        """Delete a relation."""
+    async def delete_relation(self, from_instance: Any, to_instance: Optional[Any] = None) -> int:
+        """Delete a relation.
+
+        This method deletes a relation between two document instances in the database.
+        If to_instance is not provided, it deletes all relations from from_instance.
+
+        Args:
+            from_instance: The instance the relation is from
+            to_instance: The instance the relation is to (optional)
+
+        Returns:
+            Number of deleted relations
+
+        Raises:
+            ValueError: If from_instance is not saved, if to_instance is provided but not saved,
+                       or if no relation name is specified
+        """
         if not from_instance.id:
             raise ValueError(f"Cannot delete relation for unsaved {self.from_document.__name__}")
 
@@ -458,29 +503,83 @@ class RelationQuerySet:
 
 
 class QuerySetDescriptor:
-    """Descriptor that provides QuerySet access through Document.objects"""
+    """Descriptor that provides QuerySet access through Document.objects.
 
-    def __init__(self):
-        self.owner = None
-        self.connection = None
+    This class is a descriptor that provides access to a QuerySet through
+    the Document.objects attribute. It allows querying documents of a specific
+    document class using the Document.objects attribute.
 
-    def __get__(self, obj, owner):
+    Attributes:
+        owner: The document class that owns this descriptor
+        connection: The database connection to use for queries
+    """
+
+    def __init__(self) -> None:
+        """Initialize a new QuerySetDescriptor."""
+        self.owner: Optional[Type] = None
+        self.connection: Optional[Any] = None
+
+    def __get__(self, obj: Any, owner: Type) -> 'QuerySetDescriptor':
+        """Get the descriptor for the given owner.
+
+        This method is called when the descriptor is accessed through
+        an attribute of a class or instance.
+
+        Args:
+            obj: The instance the descriptor is accessed through, or None
+            owner: The class the descriptor is accessed through
+
+        Returns:
+            The descriptor instance
+        """
         self.owner = owner
         self.connection = ConnectionRegistry.get_default_connection()
         return self
 
-    async def __call__(self, **kwargs):
-        """Allow direct filtering through call syntax."""
+    async def __call__(self, **kwargs: Any) -> List[Any]:
+        """Allow direct filtering through call syntax.
+
+        This method allows calling the descriptor directly with filters
+        to query the document class.
+
+        Args:
+            **kwargs: Field names and values to filter by
+
+        Returns:
+            List of matching documents
+        """
         queryset = QuerySet(self.owner, self.connection)
         # Apply filters and return results
         return await queryset.filter(**kwargs).all()
 
-    async def get(self, **kwargs):
-        """Allow direct get operation."""
+    async def get(self, **kwargs: Any) -> Any:
+        """Allow direct get operation.
+
+        This method allows getting a single document matching the given filters.
+
+        Args:
+            **kwargs: Field names and values to filter by
+
+        Returns:
+            The matching document
+
+        Raises:
+            DoesNotExist: If no matching document is found
+            MultipleObjectsReturned: If multiple matching documents are found
+        """
         queryset = QuerySet(self.owner, self.connection)
         return await queryset.get(**kwargs)
 
-    def filter(self, **kwargs):
-        """Create a QuerySet with filters."""
+    def filter(self, **kwargs: Any) -> QuerySet:
+        """Create a QuerySet with filters.
+
+        This method creates a new QuerySet with the given filters.
+
+        Args:
+            **kwargs: Field names and values to filter by
+
+        Returns:
+            A QuerySet with the given filters
+        """
         queryset = QuerySet(self.owner, self.connection)
         return queryset.filter(**kwargs)
