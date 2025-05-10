@@ -1,7 +1,12 @@
 import json
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, Type, cast
 from .exceptions import MultipleObjectsReturned, DoesNotExist
 from surrealdb import RecordID
+
+# Import these at runtime to avoid circular imports
+def _get_connection_classes():
+    from .connection import SurrealEngineAsyncConnection, SurrealEngineSyncConnection
+    return SurrealEngineAsyncConnection, SurrealEngineSyncConnection
 
 class BaseQuerySet:
     """Base query builder for SurrealDB.
@@ -37,6 +42,15 @@ class BaseQuerySet:
         self.split_fields: List[str] = []
         self.fetch_fields: List[str] = []
         self.with_index: Optional[str] = None
+
+    def is_async_connection(self) -> bool:
+        """Check if the connection is asynchronous.
+
+        Returns:
+            True if the connection is asynchronous, False otherwise
+        """
+        SurrealEngineAsyncConnection, SurrealEngineSyncConnection = _get_connection_classes()
+        return isinstance(self.connection, SurrealEngineAsyncConnection)
 
     def filter(self, **kwargs) -> 'BaseQuerySet':
         """Add filter conditions to the query.
@@ -297,7 +311,7 @@ class BaseQuerySet:
         return clauses
 
     async def all(self) -> List[Any]:
-        """Execute the query and return all results.
+        """Execute the query and return all results asynchronously.
 
         This method must be implemented by subclasses to execute the query
         and return the results.
@@ -310,8 +324,22 @@ class BaseQuerySet:
         """
         raise NotImplementedError("Subclasses must implement all")
 
+    def all_sync(self) -> List[Any]:
+        """Execute the query and return all results synchronously.
+
+        This method must be implemented by subclasses to execute the query
+        and return the results.
+
+        Returns:
+            List of results
+
+        Raises:
+            NotImplementedError: If not implemented by a subclass
+        """
+        raise NotImplementedError("Subclasses must implement all_sync")
+
     async def first(self) -> Optional[Any]:
-        """Execute the query and return the first result.
+        """Execute the query and return the first result asynchronously.
 
         This method limits the query to one result and returns the first item
         or None if no results are found.
@@ -323,8 +351,21 @@ class BaseQuerySet:
         results = await self.all()
         return results[0] if results else None
 
+    def first_sync(self) -> Optional[Any]:
+        """Execute the query and return the first result synchronously.
+
+        This method limits the query to one result and returns the first item
+        or None if no results are found.
+
+        Returns:
+            The first result or None if no results
+        """
+        self.limit_value = 1
+        results = self.all_sync()
+        return results[0] if results else None
+
     async def get(self, **kwargs) -> Any:
-        """Get a single document matching the query.
+        """Get a single document matching the query asynchronously.
 
         This method applies filters and ensures that exactly one document is returned.
         For ID-based lookups, it uses direct record syntax instead of WHERE clause.
@@ -367,8 +408,52 @@ class BaseQuerySet:
         # For non-ID lookups, use regular filtering
         return await self._get_with_filters(**kwargs)
 
+    def get_sync(self, **kwargs) -> Any:
+        """Get a single document matching the query synchronously.
+
+        This method applies filters and ensures that exactly one document is returned.
+        For ID-based lookups, it uses direct record syntax instead of WHERE clause.
+
+        Args:
+            **kwargs: Field names and values to filter by
+
+        Returns:
+            The matching document
+
+        Raises:
+            DoesNotExist: If no matching document is found
+            MultipleObjectsReturned: If multiple matching documents are found
+        """
+        # Special handling for ID-based lookup
+        if len(kwargs) == 1 and 'id' in kwargs:
+            id_value = kwargs['id']
+            # If it's already a full record ID (table:id format)
+            if isinstance(id_value, str) and ':' in id_value:
+                query = f"SELECT * FROM {id_value}"
+            else:
+                # Get table name from document class if available
+                table_name = getattr(self, 'document_class', None)
+                if table_name:
+                    table_name = table_name._get_collection_name()
+                else:
+                    table_name = getattr(self, 'table_name', None)
+
+                if table_name:
+                    query = f"SELECT * FROM {table_name}:{id_value}"
+                else:
+                    # Fall back to regular filtering if we can't determine the table
+                    return self._get_with_filters_sync(**kwargs)
+
+            result = self.connection.client.query(query)
+            if not result or not result[0]:
+                raise DoesNotExist(f"Object with ID '{id_value}' does not exist.")
+            return result[0][0]
+
+        # For non-ID lookups, use regular filtering
+        return self._get_with_filters_sync(**kwargs)
+
     async def _get_with_filters(self, **kwargs) -> Any:
-        """Internal method to get a single document using filters.
+        """Internal method to get a single document using filters asynchronously.
 
         Args:
             **kwargs: Field names and values to filter by
@@ -391,8 +476,32 @@ class BaseQuerySet:
 
         return results[0]
 
+    def _get_with_filters_sync(self, **kwargs) -> Any:
+        """Internal method to get a single document using filters synchronously.
+
+        Args:
+            **kwargs: Field names and values to filter by
+
+        Returns:
+            The matching document
+
+        Raises:
+            DoesNotExist: If no matching document is found
+            MultipleObjectsReturned: If multiple matching documents are found
+        """
+        self.filter(**kwargs)
+        self.limit_value = 2  # Get 2 to check for multiple
+        results = self.all_sync()
+
+        if not results:
+            raise DoesNotExist(f"Object matching query does not exist.")
+        if len(results) > 1:
+            raise MultipleObjectsReturned(f"Multiple objects returned instead of one")
+
+        return results[0]
+
     async def count(self) -> int:
-        """Count documents matching the query.
+        """Count documents matching the query asynchronously.
 
         This method must be implemented by subclasses to count the number
         of documents matching the query.
@@ -404,6 +513,20 @@ class BaseQuerySet:
             NotImplementedError: If not implemented by a subclass
         """
         raise NotImplementedError("Subclasses must implement count")
+
+    def count_sync(self) -> int:
+        """Count documents matching the query synchronously.
+
+        This method must be implemented by subclasses to count the number
+        of documents matching the query.
+
+        Returns:
+            Number of matching documents
+
+        Raises:
+            NotImplementedError: If not implemented by a subclass
+        """
+        raise NotImplementedError("Subclasses must implement count_sync")
 
     def __await__(self):
         """Make the queryset awaitable.

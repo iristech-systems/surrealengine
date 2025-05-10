@@ -2,7 +2,7 @@ import json
 from typing import Any, Dict, List, Optional, Type, Union, ClassVar
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
 from .fields import Field
-from .connection import ConnectionRegistry
+from .connection import ConnectionRegistry, SurrealEngineAsyncConnection, SurrealEngineSyncConnection
 from surrealdb import RecordID
 
 
@@ -275,7 +275,7 @@ class Document(metaclass=DocumentMetaclass):
         return instance
 
     async def save(self, connection: Optional[Any] = None) -> 'Document':
-        """Save the document to the database.
+        """Save the document to the database asynchronously.
 
         This method saves the document to the database, either creating
         a new document or updating an existing one based on whether the
@@ -291,7 +291,7 @@ class Document(metaclass=DocumentMetaclass):
             ValidationError: If the document fails validation
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection()
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
 
         self.validate()
         data = self.to_db()
@@ -325,8 +325,59 @@ class Document(metaclass=DocumentMetaclass):
 
         return self
 
+    def save_sync(self, connection: Optional[Any] = None) -> 'Document':
+        """Save the document to the database synchronously.
+
+        This method saves the document to the database, either creating
+        a new document or updating an existing one based on whether the
+        document has an ID.
+
+        Args:
+            connection: The database connection to use (optional)
+
+        Returns:
+            The saved document instance
+
+        Raises:
+            ValidationError: If the document fails validation
+        """
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+
+        self.validate()
+        data = self.to_db()
+
+        if self.id:
+            # Update existing document
+            result = connection.client.update(
+                f"{self._get_collection_name()}:{self.id}",
+                data
+            )
+        else:
+            # Create new document
+            result = connection.client.create(
+                self._get_collection_name(),
+                data
+            )
+
+        # Update the current instance with the returned data
+        if result:
+            if isinstance(result, list) and result:
+                doc_data = result[0]
+            else:
+                doc_data = result
+
+            # Update the instance's _data with the returned document
+            if isinstance(doc_data, dict):
+                self._data.update(doc_data)
+                # Make sure to capture the ID if it's a new document
+                if 'id' in doc_data:
+                    self._data['id'] = doc_data['id']
+
+        return self
+
     async def delete(self, connection: Optional[Any] = None) -> bool:
-        """Delete the document from the database.
+        """Delete the document from the database asynchronously.
 
         This method deletes the document from the database.
 
@@ -340,15 +391,37 @@ class Document(metaclass=DocumentMetaclass):
             ValueError: If the document doesn't have an ID
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection()
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
         if not self.id:
             raise ValueError("Cannot delete a document without an ID")
 
         await connection.client.delete(f"{self._get_collection_name()}:{self.id}")
         return True
 
+    def delete_sync(self, connection: Optional[Any] = None) -> bool:
+        """Delete the document from the database synchronously.
+
+        This method deletes the document from the database.
+
+        Args:
+            connection: The database connection to use (optional)
+
+        Returns:
+            True if the document was deleted
+
+        Raises:
+            ValueError: If the document doesn't have an ID
+        """
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        if not self.id:
+            raise ValueError("Cannot delete a document without an ID")
+
+        connection.client.delete(f"{self._get_collection_name()}:{self.id}")
+        return True
+
     async def refresh(self, connection: Optional[Any] = None) -> 'Document':
-        """Refresh the document from the database.
+        """Refresh the document from the database asynchronously.
 
         This method refreshes the document's data from the database.
 
@@ -362,11 +435,45 @@ class Document(metaclass=DocumentMetaclass):
             ValueError: If the document doesn't have an ID
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection()
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
         if not self.id:
             raise ValueError("Cannot refresh a document without an ID")
 
         result = await connection.client.select(f"{self._get_collection_name()}:{self.id}")
+        if result:
+            if isinstance(result, list) and result:
+                doc = result[0]
+            else:
+                doc = result
+
+            for field_name, field in self._fields.items():
+                db_field = field.db_field or field_name
+                if db_field in doc:
+                    self._data[field_name] = field.from_db(doc[db_field])
+
+            self._changed_fields = []
+        return self
+
+    def refresh_sync(self, connection: Optional[Any] = None) -> 'Document':
+        """Refresh the document from the database synchronously.
+
+        This method refreshes the document's data from the database.
+
+        Args:
+            connection: The database connection to use (optional)
+
+        Returns:
+            The refreshed document instance
+
+        Raises:
+            ValueError: If the document doesn't have an ID
+        """
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        if not self.id:
+            raise ValueError("Cannot refresh a document without an ID")
+
+        result = connection.client.select(f"{self._get_collection_name()}:{self.id}")
         if result:
             if isinstance(result, list) and result:
                 doc = result[0]
@@ -599,7 +706,7 @@ class Document(metaclass=DocumentMetaclass):
     async def bulk_create(cls, documents: List[Any], batch_size: int = 1000,
                           validate: bool = True, return_documents: bool = True,
                           connection: Optional[Any] = None) -> Union[List[Any], int]:
-        """Create multiple documents in a single operation.
+        """Create multiple documents in a single operation asynchronously.
 
         This method creates multiple documents in a single operation, processing
         them in batches for better performance. It can optionally validate the
@@ -617,8 +724,38 @@ class Document(metaclass=DocumentMetaclass):
             otherwise returns the count of created documents
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection()
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
         return await cls.objects(connection).bulk_create(
+            documents,
+            batch_size=batch_size,
+            validate=validate,
+            return_documents=return_documents
+        )
+
+    @classmethod
+    def bulk_create_sync(cls, documents: List[Any], batch_size: int = 1000,
+                        validate: bool = True, return_documents: bool = True,
+                        connection: Optional[Any] = None) -> Union[List[Any], int]:
+        """Create multiple documents in a single operation synchronously.
+
+        This method creates multiple documents in a single operation, processing
+        them in batches for better performance. It can optionally validate the
+        documents and return the created documents.
+
+        Args:
+            documents: List of Document instances to create
+            batch_size: Number of documents per batch (default: 1000)
+            validate: Whether to validate documents (default: True)
+            return_documents: Whether to return created documents (default: True)
+            connection: The database connection to use (optional)
+
+        Returns:
+            List of created documents with their IDs set if return_documents=True,
+            otherwise returns the count of created documents
+        """
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        return cls.objects(connection).bulk_create_sync(
             documents,
             batch_size=batch_size,
             validate=validate,
@@ -629,7 +766,7 @@ class Document(metaclass=DocumentMetaclass):
     async def create_index(cls, index_name: str, fields: List[str], unique: bool = False,
                            search: bool = False, analyzer: Optional[str] = None,
                            comment: Optional[str] = None, connection: Optional[Any] = None) -> None:
-        """Create an index on the document's collection.
+        """Create an index on the document's collection asynchronously.
 
         Args:
             index_name: Name of the index
@@ -642,7 +779,7 @@ class Document(metaclass=DocumentMetaclass):
         """
         if connection is None:
             from .connection import ConnectionRegistry
-            connection = ConnectionRegistry.get_default_connection()
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
 
         collection_name = cls._get_collection_name()
         fields_str = ", ".join(fields)
@@ -664,8 +801,46 @@ class Document(metaclass=DocumentMetaclass):
         await connection.client.query(query)
 
     @classmethod
+    def create_index_sync(cls, index_name: str, fields: List[str], unique: bool = False,
+                         search: bool = False, analyzer: Optional[str] = None,
+                         comment: Optional[str] = None, connection: Optional[Any] = None) -> None:
+        """Create an index on the document's collection synchronously.
+
+        Args:
+            index_name: Name of the index
+            fields: List of field names to include in the index
+            unique: Whether the index should enforce uniqueness
+            search: Whether the index is a search index
+            analyzer: Analyzer to use for search indexes
+            comment: Optional comment for the index
+            connection: Optional connection to use
+        """
+        if connection is None:
+            from .connection import ConnectionRegistry
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+
+        collection_name = cls._get_collection_name()
+        fields_str = ", ".join(fields)
+
+        # Build the index definition
+        query = f"DEFINE INDEX {index_name} ON {collection_name} FIELDS {fields_str}"
+
+        # Add index type
+        if unique:
+            query += " UNIQUE"
+        elif search and analyzer:
+            query += f" SEARCH ANALYZER {analyzer}"
+
+        # Add comment if provided
+        if comment:
+            query += f" COMMENT '{comment}'"
+
+        # Execute the query
+        connection.client.query(query)
+
+    @classmethod
     async def create_indexes(cls, connection: Optional[Any] = None) -> None:
-        """Create all indexes defined in the Meta class.
+        """Create all indexes defined in the Meta class asynchronously.
 
         Args:
             connection: Optional connection to use
@@ -696,6 +871,48 @@ class Document(metaclass=DocumentMetaclass):
                 continue
 
             await cls.create_index(
+                index_name=index_name,
+                fields=fields,
+                unique=unique,
+                search=search,
+                analyzer=analyzer,
+                comment=comment,
+                connection=connection
+            )
+
+    @classmethod
+    def create_indexes_sync(cls, connection: Optional[Any] = None) -> None:
+        """Create all indexes defined in the Meta class synchronously.
+
+        Args:
+            connection: Optional connection to use
+        """
+        if not hasattr(cls, '_meta') or 'indexes' not in cls._meta or not cls._meta['indexes']:
+            return
+
+        for index_def in cls._meta['indexes']:
+            # Handle different index definition formats
+            if isinstance(index_def, dict):
+                # Dictionary format with options
+                index_name = index_def.get('name')
+                fields = index_def.get('fields', [])
+                unique = index_def.get('unique', False)
+                search = index_def.get('search', False)
+                analyzer = index_def.get('analyzer')
+                comment = index_def.get('comment')
+            elif isinstance(index_def, tuple) and len(index_def) >= 2:
+                # Tuple format (name, fields, [unique])
+                index_name = index_def[0]
+                fields = index_def[1] if isinstance(index_def[1], list) else [index_def[1]]
+                unique = index_def[2] if len(index_def) > 2 else False
+                search = False
+                analyzer = None
+                comment = None
+            else:
+                # Skip invalid index definitions
+                continue
+
+            cls.create_index_sync(
                 index_name=index_name,
                 fields=fields,
                 unique=unique,

@@ -1,8 +1,17 @@
 """
-SurrealEngine: Async Object-Document Mapper for SurrealDB
+SurrealEngine: Object-Document Mapper for SurrealDB with both sync and async support
 """
 
-from .connection import SurrealEngineConnection, ConnectionRegistry
+from .connection import (
+    SurrealEngineAsyncConnection, 
+    SurrealEngineSyncConnection, 
+    ConnectionRegistry,
+    create_connection,
+    BaseSurrealEngineConnection
+)
+
+# For backward compatibility
+SurrealEngineConnection = SurrealEngineAsyncConnection
 from .schemaless import SurrealEngine
 from .document import Document
 from .exceptions import (
@@ -30,7 +39,11 @@ from .query import QuerySet, RelationQuerySet
 __version__ = "0.1.0"
 __all__ = [
     "SurrealEngine",
-    "SurrealEngineConnection",
+    "SurrealEngineAsyncConnection",
+    "SurrealEngineSyncConnection",
+    "SurrealEngineConnection",  # For backward compatibility
+    "BaseSurrealEngineConnection",
+    "create_connection",
     "ConnectionRegistry",
     "Document",
     "DoesNotExist",

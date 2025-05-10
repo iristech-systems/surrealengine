@@ -1,57 +1,102 @@
 
 # SurrealEngine
 
-SurrealEngine is an async Object-Document Mapper (ODM) for SurrealDB, providing a Pythonic interface for working with SurrealDB databases.
+SurrealEngine is an Object-Document Mapper (ODM) for SurrealDB, providing a Pythonic interface for working with SurrealDB databases. It supports both synchronous and asynchronous operations.
 
-> **Important Note**: I have been testing SurrealDB in certain use-cases and am not a long time user or well verse in the deep down details of the system. I focus on user ergonomics over direct compatibility with the core python SurrealDB SDK.  This means much of the module translates queries directly into SurrealQL vs operating through SDK abstraction.  Currently, schema registration with SurrealDB is not implemented. The ODM provides Python-side validation and structure only.  
+> **Important Note**: I have been testing SurrealDB in certain use-cases and am not a long time user or well verse in the deep down details of the system. I focus on user ergonomics over direct compatibility with the core python SurrealDB SDK. This means much of the module translates queries directly into SurrealQL vs operating through SDK abstraction. Currently, schema registration with SurrealDB is not implemented. The ODM provides Python-side validation and structure only.
 
 ## Requirements
 
 - Python >= 3.13 (Built and Tested on)
-- surrealdb >= 1.0.3  (Built and Tested on)
+- surrealdb >= 1.0.3 (Built and Tested on)
 
 ## Installation
 ```bash
 pip install surrealengine
-``` 
+```
 
 ## Quick Start
 
 ### Connecting to SurrealDB
-> **Important Note**:  Connection management is done through the Python SDK and is established within the context/workspace. Initialization and Import of SurrealEngine is not required to use the system, better documentation of flows soon to come.
+
+SurrealEngine supports both synchronous and asynchronous connections. Choose the one that fits your application's needs.
+
+#### Asynchronous Connection
 ```python
-from surrealengine import SurrealEngineConnection
-conn = SurrealEngineConnection(
+from surrealengine import SurrealEngineAsyncConnection, SurrealEngine
+
+# Create an async connection
+async_conn = SurrealEngineAsyncConnection(
     url="wss://CONNECTION_STRING",
     namespace="NAMESPACE",
     database="DATABASE_NAME",
     username="USERNAME",
     password="PASSWORD",
 )
-await conn.connect()
-``` 
-OR
-> **Important Note**: SurrealEngine import allows usage without Document Class declaration and no pythonic validation.  
+await async_conn.connect()
+async_db = SurrealEngine(async_conn)
+```
+
+#### Synchronous Connection
 ```python
-from surrealengine import SurrealEngineConnection, SurrealEngine
-conn = SurrealEngineConnection(
+from surrealengine import SurrealEngineSyncConnection, SurrealEngine
+
+# Create a sync connection
+sync_conn = SurrealEngineSyncConnection(
     url="wss://CONNECTION_STRING",
     namespace="NAMESPACE",
     database="DATABASE_NAME",
     username="USERNAME",
     password="PASSWORD",
 )
-await conn.connect()
-db = SurrealEngine(conn)
-``` 
+sync_conn.connect()  # Note: No await needed
+sync_db = SurrealEngine(sync_conn)
+```
+
+#### Using the Factory Function
+```python
+from surrealengine import create_connection, SurrealEngine
+
+# Create an async connection
+async_conn = create_connection(
+    url="wss://CONNECTION_STRING",
+    namespace="NAMESPACE",
+    database="DATABASE_NAME",
+    username="USERNAME",
+    password="PASSWORD",
+    async_mode=True  # Default is True
+)
+await async_conn.connect()
+
+# Create a sync connection
+sync_conn = create_connection(
+    url="wss://CONNECTION_STRING",
+    namespace="NAMESPACE",
+    database="DATABASE_NAME",
+    username="USERNAME",
+    password="PASSWORD",
+    async_mode=False
+)
+sync_conn.connect()
+```
+
+> **Note**: For backward compatibility, `SurrealEngineConnection` is an alias for `SurrealEngineAsyncConnection`.
 ### Basic Document Model
+
+Document models are defined the same way for both sync and async operations:
+
 ```python
+from surrealengine import Document, StringField, IntField, FloatField, DateTimeField
+
 class Person(Document):
     name = StringField(required=True)
     age = IntField()
 
     class Meta:
         collection = "person"
+        indexes = [
+            {"name": "idx_person_name", "fields": ["name"], "unique": True}
+        ]
 
 class Actor(Document):
     name = StringField(required=True)
@@ -78,33 +123,101 @@ class Movie(Document):
 ``` 
 
 ### Creating and Querying Documents
+
+#### Asynchronous Operations
+
 ```python
 # Creating a document
 jane = await Person(name="Jane", age=30).save()
-jane.id
-jane.name
-jane.age
-# Get a document
+
+# Get a document by ID
+person = await Person.objects.get(id=jane.id)
+
+# Get a document by field
 person = await Person.objects.get(name="Jane")
-# Access fields
-person.id
-person.name
-person.age
-# Get documents
-Person(name="Jane") # Just joining team SurrealFan sooo could be problematic with core SurrealDB functionality.  Also should be awaitable, but is not.
-await Person.objects(name="Jane")
-await Person.objects.filter(name="Jane").all()
-# Get without schema declaration
-await db.person(name="Jane")
-await db.person.objects(name="Jane")
-await conn.client.query("SELECT * FROM person WHERE name = 'Jane'")
+
+# Query documents
+people = await Person.objects.filter(age__gt=25).all()
+
+# Create an index
+await Person.create_index(
+    "person_age_index",
+    fields=["age"],
+    unique=False,
+    comment="Person age index"
+)
+
+# Create all indexes defined in Meta
+await Person.create_indexes()
+
+# Bulk create documents
+people = [
+    Person(name=f"Person {i}", age=20+i) 
+    for i in range(10)
+]
+created_people = await Person.bulk_create(people)
+
+# Update documents
+updated = await Person.objects.filter(age__lt=30).update(age=30)
+
+# Delete documents
+deleted_count = await Person.objects.filter(age__gt=50).delete()
+
+# Schemaless queries
+results = await async_db.person(name="Jane")
+results = await async_db.person.objects.filter(age__gt=25).all()
+```
+
+#### Synchronous Operations
+
+```python
+# Creating a document
+jane = Person(name="Jane", age=30).save_sync()
+
+# Get a document by ID
+person = Person.objects.get_sync(id=jane.id)
+
+# Get a document by field
+person = Person.objects.get_sync(name="Jane")
+
+# Query documents
+people = Person.objects.filter_sync(age__gt=25).all_sync()
+
+# Create an index
+Person.create_index_sync(
+    "person_age_index",
+    fields=["age"],
+    unique=False,
+    comment="Person age index"
+)
+
+# Create all indexes defined in Meta
+Person.create_indexes_sync()
+
+# Bulk create documents
+people = [
+    Person(name=f"Person {i}", age=20+i) 
+    for i in range(10)
+]
+created_people = Person.bulk_create_sync(people)
+
+# Update documents
+updated = Person.objects.filter_sync(age__lt=30).update_sync(age=30)
+
+# Delete documents
+deleted_count = Person.objects.filter_sync(age__gt=50).delete_sync()
+
+# Schemaless queries
+results = sync_db.person.call_sync(name="Jane")
+results = sync_db.person.objects.filter(age__gt=25).all_sync()
 ```
 
 ### Working with Relations
 
-Create and relate documents:
+#### Asynchronous Operations
+
 ```python
-# Create an actor
+# Create an actor and a movie
 actor = Actor(
     name="Tom Hanks",
     birth_date="1956-07-09",
@@ -112,7 +225,6 @@ actor = Actor(
 )
 await actor.save()
 
-# Create a movie
 movie = Movie(
     title="Forrest Gump",
     release_year=1994,
@@ -121,71 +233,349 @@ movie = Movie(
 )
 await movie.save()
 
+# Create a relation
 await actor.relate_to(
-        'acted_in',
-        movie,
-        role="Forrest Gump",
-        award="Academy Award for Best Actor"
-    )
-``` 
+    'acted_in',
+    movie,
+    role="Forrest Gump",
+    award="Academy Award for Best Actor"
+)
 
-### Working with Relations
-
-```python
 # Fetch actor
 actor = await Actor.objects.get(name="Tom Hanks")
-actor.to_dict()
-{'birth_date': '1956-07-09T00:00:00',
- 'name': 'Tom Hanks',
- 'nationality': 'American'}
+
 # Get relation data
 relations = await actor.fetch_relation('acted_in')
-{'id': RecordID(table_name=actor, record_id=q33bto59e6b49wjoie12),
- 'related': [RecordID(table_name=movie, record_id=4gys3es1yv8bld17xc67),
-  RecordID(table_name=movie, record_id=3efb85z1xxm32au81gi9)]}
+# Example output:
+# {'id': RecordID(table_name=actor, record_id=q33bto59e6b49wjoie12),
+#  'related': [RecordID(table_name=movie, record_id=4gys3es1yv8bld17xc67)]}
+
 # Resolve related documents
 movies = await actor.resolve_relation('acted_in')
-[{'director': 'Robert Zemeckis',
-  'id': RecordID(table_name=movie, record_id=4gys3es1yv8bld17xc67),
-  'rating': 8.8,
-  'release_year': 1994,
-  'title': 'Forrest Gump'},
- {'director': 'Robert Zemeckis',
-  'id': RecordID(table_name=movie, record_id=3efb85z1xxm32au81gi9),
-  'rating': 8.8,
-  'release_year': 2025,
-  'title': 'New Movie'}]
+# Example output:
+# [{'director': 'Robert Zemeckis',
+#   'id': RecordID(table_name=movie, record_id=4gys3es1yv8bld17xc67),
+#   'rating': 8.8,
+#   'release_year': 1994,
+#   'title': 'Forrest Gump'}]
+
+# Update relation
+await actor.update_relation('acted_in', movie, award="Multiple Awards")
+
+# Delete relation
+await actor.delete_relation('acted_in', movie)
 ```
 
-### Querying
-``` python
-# Using the document class
-result1 = await Person.objects(age=30)
+#### Synchronous Operations
 
-# Using the database engine (Without Model declaration)
-result2 = await db.person.objects.filter(age=30).all()
+```python
+# Create an actor and a movie
+actor = Actor(
+    name="Tom Hanks",
+    birth_date="1956-07-09",
+    nationality="American"
+)
+actor.save_sync()
+
+movie = Movie(
+    title="Forrest Gump",
+    release_year=1994,
+    rating=8.8,
+    director="Robert Zemeckis"
+)
+movie.save_sync()
+
+# Create a relation
+actor.relate_to_sync(
+    'acted_in',
+    movie,
+    role="Forrest Gump",
+    award="Academy Award for Best Actor"
+)
+
+# Fetch actor
+actor = Actor.objects.get_sync(name="Tom Hanks")
+
+# Get relation data
+relations = actor.fetch_relation_sync('acted_in')
+
+# Resolve related documents
+movies = actor.resolve_relation_sync('acted_in')
+
+# Update relation
+actor.update_relation_sync('acted_in', movie, award="Multiple Awards")
+
+# Delete relation
+actor.delete_relation_sync('acted_in', movie)
+```
+
+### Advanced Querying
+
+#### Asynchronous Operations
+
+```python
+# Filter with complex conditions
+results = await Person.objects.filter(
+    age__gt=25,
+    name__contains="Jo"
+).all()
+
+# Order results
+results = await Person.objects.filter(age__gt=25).order_by("name", "DESC").all()
+
+# Limit results
+results = await Person.objects.filter(age__gt=25).limit(10).all()
+
+# Pagination
+page1 = await Person.objects.filter(age__gt=25).limit(10).all()
+page2 = await Person.objects.filter(age__gt=25).limit(10).start(10).all()
+
+# Count results
+count = await Person.objects.filter(age__gt=25).count()
+
+# Using indexes
+results = await Person.objects.with_index("person_age_index").filter(age__gt=25).all()
+
+# Using the database engine (schemaless)
+results = await async_db.person.objects.filter(age__gt=25).all()
+```
+
+#### Synchronous Operations
+
+```python
+# Filter with complex conditions
+results = Person.objects.filter_sync(
+    age__gt=25,
+    name__contains="Jo"
+).all_sync()
+
+# Order results
+results = Person.objects.filter_sync(age__gt=25).order_by("name", "DESC").all_sync()
+
+# Limit results
+results = Person.objects.filter_sync(age__gt=25).limit(10).all_sync()
+
+# Pagination
+page1 = Person.objects.filter_sync(age__gt=25).limit(10).all_sync()
+page2 = Person.objects.filter_sync(age__gt=25).limit(10).start(10).all_sync()
+
+# Count results
+count = Person.objects.filter_sync(age__gt=25).count_sync()
+
+# Using indexes
+results = Person.objects.with_index("person_age_index").filter(age__gt=25).all_sync()
+
+# Using the database engine (schemaless)
+results = sync_db.person.objects.filter(age__gt=25).all_sync()
+```
+
+### Schemaless Operations
+
+SurrealEngine provides a schemaless API for working with tables without a predefined schema. This is useful for exploratory data analysis, prototyping, or working with dynamic data structures.
+
+#### Schemaless Relation Operations
+
+##### Asynchronous Operations
+
+```python
+# Create a relation between two records
+await async_db.person.relate("person:jane", "knows", "person:john", since="2020-01-01")
+
+# Get related records
+related = await async_db.person.get_related("person:jane", "knows")
+
+# Get related records with target table
+friends = await async_db.person.get_related("person:jane", "knows", "person")
+
+# Update a relation
+await async_db.person.update_relation("person:jane", "knows", "person:john", since="2021-01-01", close=True)
+
+# Delete a relation
+await async_db.person.delete_relation("person:jane", "knows", "person:john")
+
+# Delete all relations of a type
+await async_db.person.delete_relation("person:jane", "knows")
+```
+
+##### Synchronous Operations
+
+```python
+# Create a relation between two records
+sync_db.person.relate_sync("person:jane", "knows", "person:john", since="2020-01-01")
+
+# Get related records
+related = sync_db.person.get_related_sync("person:jane", "knows")
+
+# Get related records with target table
+friends = sync_db.person.get_related_sync("person:jane", "knows", "person")
+
+# Update a relation
+sync_db.person.update_relation_sync("person:jane", "knows", "person:john", since="2021-01-01", close=True)
+
+# Delete a relation
+sync_db.person.delete_relation_sync("person:jane", "knows", "person:john")
+
+# Delete all relations of a type
+sync_db.person.delete_relation_sync("person:jane", "knows")
+```
+
+#### Schemaless Bulk Operations
+
+##### Asynchronous Operations
+
+```python
+# Create multiple records in a single operation
+people = [
+    {"name": f"Person {i}", "age": 20+i} 
+    for i in range(10)
+]
+created_people = await async_db.person.bulk_create(people)
+
+# Create multiple records without returning them
+count = await async_db.person.bulk_create(people, return_documents=False)
+
+# Create multiple records with custom batch size
+created_people = await async_db.person.bulk_create(people, batch_size=5)
+
+# Using the query set directly
+created_people = await async_db.person.objects.bulk_create(people)
+```
+
+##### Synchronous Operations
+
+```python
+# Create multiple records in a single operation
+people = [
+    {"name": f"Person {i}", "age": 20+i} 
+    for i in range(10)
+]
+created_people = sync_db.person.bulk_create_sync(people)
+
+# Create multiple records without returning them
+count = sync_db.person.bulk_create_sync(people, return_documents=False)
+
+# Create multiple records with custom batch size
+created_people = sync_db.person.bulk_create_sync(people, batch_size=5)
+
+# Using the query set directly
+created_people = sync_db.person.objects.bulk_create_sync(people)
+```
+
+#### Schemaless Transaction Operations
+
+##### Asynchronous Operations
+
+```python
+# Define coroutines to execute in a transaction
+async def create_person():
+    return await async_db.person.objects.create(name="Jane", age=30)
+
+async def create_movie():
+    return await async_db.movie.objects.create(title="Inception", year=2010)
+
+# Execute coroutines in a transaction
+results = await async_db.person.transaction([
+    create_person(),
+    create_movie()
+])
+
+# Access the results
+person, movie = results
+```
+
+##### Synchronous Operations
+
+```python
+# Define functions to execute in a transaction
+def create_person():
+    return sync_db.person.objects.create_sync(name="Jane", age=30)
+
+def create_movie():
+    return sync_db.movie.objects.create_sync(title="Inception", year=2010)
+
+# Execute functions in a transaction
+results = sync_db.person.transaction_sync([
+    create_person,
+    create_movie
+])
+
+# Access the results
+person, movie = results
 ```
 ## Available Fields
+
 - `StringField`: For text data
-- : For integer values `IntField`
+- `IntField`: For integer values
 - `FloatField`: For floating-point numbers with optional min/max values
 - `DateTimeField`: For datetime values
 - `BooleanField`: For true/false values
-- : For arrays `ListField`
-- : For nested objects `DictField`
-- : For document references `ReferenceField`
-- : For graph relationships `RelationField`
+- `ListField`: For arrays
+- `DictField`: For nested objects
+- `ReferenceField`: For document references
+- `RelationField`: For graph relationships
 - `GeometryField`: For geometric data
+- `FutureField`: For future/promise values
+
+## When to Use Sync vs. Async
+
+### Use Synchronous Operations When:
+
+- Working in a synchronous environment (like scripts, CLI tools)
+- Simplicity is more important than performance
+- Making simple, sequential database operations
+- Working with frameworks that don't support async (like Flask)
+- Prototyping or debugging
+
+```python
+# Example of synchronous usage
+from surrealengine import SurrealEngineSyncConnection, SurrealEngine, Document
+
+# Connect
+conn = SurrealEngineSyncConnection(url="wss://...", namespace="test", database="test", username="root", password="pass")
+conn.connect()
+db = SurrealEngine(conn)
+
+# Use
+person = db.person.call_sync(name="Jane")
+```
+
+### Use Asynchronous Operations When:
+
+- Working in an async environment (like FastAPI, asyncio)
+- Performance and scalability are important
+- Making many concurrent database operations
+- Building high-throughput web applications
+- Handling many simultaneous connections
+
+```python
+# Example of asynchronous usage
+import asyncio
+from surrealengine import SurrealEngineAsyncConnection, SurrealEngine, Document
+
+async def main():
+    # Connect
+    conn = SurrealEngineAsyncConnection(url="wss://...", namespace="test", database="test", username="root", password="pass")
+    await conn.connect()
+    db = SurrealEngine(conn)
+
+    # Use
+    person = await db.person(name="Jane")
+
+asyncio.run(main())
+```
 
 ## Features in Development
+
 - Schema registration with SurrealDB
 - Migration support
 - Advanced indexing
-- Bulk operations optimization
 - Transaction support
 - More complex graph queries
 
 ## Contributing
+
 Contributions are welcome! Please feel free to submit a Pull Request.
+
 ## License
+
 [Your License Here]
