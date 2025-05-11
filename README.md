@@ -3,12 +3,12 @@
 
 SurrealEngine is an Object-Document Mapper (ODM) for SurrealDB, providing a Pythonic interface for working with SurrealDB databases. It supports both synchronous and asynchronous operations.
 
-> **Important Note**: I have been testing SurrealDB in certain use-cases and am not a long time user or well verse in the deep down details of the system. I focus on user ergonomics over direct compatibility with the core python SurrealDB SDK. This means much of the module translates queries directly into SurrealQL vs operating through SDK abstraction. Currently, schema registration with SurrealDB is not implemented. The ODM provides Python-side validation and structure only.
+> **Important Note**: I have been testing SurrealDB in certain use-cases and am not a long time user or well verse in the deep down details of the system. I focus on user ergonomics over direct compatibility with the core python SurrealDB SDK.  This means much of the module translates queries directly into SurrealQL vs operating through SDK abstraction.  Currently, schema registration with SurrealDB is not implemented. The ODM provides Python-side validation and structure only. 
 
 ## Requirements
 
-- Python >= 3.13 (Built and Tested on)
-- surrealdb >= 1.0.3 (Built and Tested on)
+- Python >= 3.8
+- surrealdb >= 1.0.3
 
 ## Installation
 ```bash
@@ -16,6 +16,8 @@ pip install surrealengine
 ```
 
 ## Quick Start
+
+> **Note**: The examples below demonstrate the key features of SurrealEngine.
 
 ### Connecting to SurrealDB
 
@@ -86,7 +88,7 @@ sync_conn.connect()
 Document models are defined the same way for both sync and async operations:
 
 ```python
-from surrealengine import Document, StringField, IntField, FloatField, DateTimeField
+from surrealengine import Document, StringField, IntField, FloatField, DateTimeField, ListField, DictField, BooleanField
 
 class Person(Document):
     name = StringField(required=True)
@@ -211,6 +213,35 @@ deleted_count = Person.objects.filter_sync(age__gt=50).delete_sync()
 results = sync_db.person.call_sync(name="Jane")
 results = sync_db.person.objects.filter(age__gt=25).all_sync()
 ```
+
+### Working with Document IDs
+
+SurrealDB uses a unique identifier format for documents: `collection:id`. SurrealEngine handles this format automatically:
+
+```python
+# Create a document
+person = await Person(name="Jane", age=30).save()
+
+# The ID is a RecordID object
+print(person.id)  # Output: person:abc123def456
+
+# You can access the raw ID string
+print(str(person.id))  # Output: "person:abc123def456"
+
+# Or access the table name and record ID separately
+print(person.id.table_name)  # Output: "person"
+print(person.id.record_id)   # Output: "abc123def456"
+
+# When updating a document, you can use the full ID or just the RecordID object
+await person.save()  # Uses the RecordID object internally
+
+# When querying by ID, you can use either format
+person = await Person.objects.get(id="person:abc123def456")
+# or
+person = await Person.objects.get(id=person.id)
+```
+
+SurrealEngine automatically handles the conversion between different ID formats, making it easy to work with document references.
 
 ### Working with Relations
 
@@ -502,19 +533,82 @@ results = sync_db.person.transaction_sync([
 # Access the results
 person, movie = results
 ```
+
+### Graph Traversal
+
+SurrealEngine provides powerful graph traversal capabilities through both the Document class and the dedicated GraphQuery class.
+
+#### Document Path Traversal
+
+You can traverse paths in the graph starting from a document instance:
+
+```python
+# Async traversal
+# Find all movies that actors in the same nationality as this actor have acted in
+movies = await actor.traverse_path(
+    "->[acted_in]->actor<-[acted_in]-", 
+    target_document=Movie,
+    nationality=actor.nationality
+)
+
+# Sync traversal
+movies = actor.traverse_path_sync(
+    "->[acted_in]->actor<-[acted_in]-", 
+    target_document=Movie,
+    nationality=actor.nationality
+)
+```
+
+#### GraphQuery Builder
+
+For more complex graph queries, use the GraphQuery class:
+
+```python
+from surrealengine import GraphQuery
+
+# Async graph query
+query = GraphQuery(async_conn)
+results = await query.start_from(Actor, name="Tom Hanks")
+                     .traverse("->[acted_in]->")
+                     .end_at(Movie)
+                     .filter_results(rating__gt=8.0)
+                     .execute()
+
+# Results will be Movie instances
+for movie in results:
+    print(f"{movie.title} ({movie.release_year}): {movie.rating}")
+```
+
+This fluent interface makes it easy to build complex graph traversals while maintaining readability.
+
 ## Available Fields
 
-- `StringField`: For text data
-- `IntField`: For integer values
-- `FloatField`: For floating-point numbers with optional min/max values
-- `DateTimeField`: For datetime values
+### Basic Types
+- `StringField`: For text data with optional min/max length and regex validation
+- `IntField`: For integer values with optional min/max constraints
+- `FloatField`: For floating-point numbers with optional min/max constraints
 - `BooleanField`: For true/false values
-- `ListField`: For arrays
-- `DictField`: For nested objects
+- `DateTimeField`: For datetime values, handles various input formats
+
+### Numeric Types
+- `DecimalField`: For precise decimal numbers (uses Python's Decimal)
+- `DurationField`: For time durations
+
+### Collection Types
+- `ListField`: For arrays, can specify the field type for items
+- `DictField`: For nested objects, can specify the field type for values
+
+### Reference Types
 - `ReferenceField`: For document references
 - `RelationField`: For graph relationships
-- `GeometryField`: For geometric data
-- `FutureField`: For future/promise values
+
+### Specialized Types
+- `GeometryField`: For geometric data (points, lines, polygons)
+- `BytesField`: For binary data
+- `RegexField`: For regular expression patterns
+- `RangeField`: For range values (min-max pairs)
+- `OptionField`: For optional values (similar to Rust's Option type)
+- `FutureField`: For future/promise values and computed fields
 
 ## When to Use Sync vs. Async
 
@@ -569,8 +663,9 @@ asyncio.run(main())
 - Schema registration with SurrealDB
 - Migration support
 - Advanced indexing
-- Transaction support
-- More complex graph queries
+- Query optimization
+- Expanded transaction support
+- Enhanced schema validation
 
 ## Contributing
 
@@ -578,4 +673,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-[Your License Here]
+MIT License

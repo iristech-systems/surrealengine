@@ -350,7 +350,7 @@ class Document(metaclass=DocumentMetaclass):
         if self.id:
             # Update existing document
             result = connection.client.update(
-                f"{self._get_collection_name()}:{self.id}",
+                self.id,
                 data
             )
         else:
@@ -520,7 +520,7 @@ class Document(metaclass=DocumentMetaclass):
 
     async def fetch_relation(self, relation_name: str, target_document: Optional[Type] = None, 
                             connection: Optional[Any] = None, **filters: Any) -> List[Any]:
-        """Fetch related documents.
+        """Fetch related documents asynchronously.
 
         This method fetches documents related to this document through
         the specified relation.
@@ -535,13 +535,34 @@ class Document(metaclass=DocumentMetaclass):
             List of related documents or relation records
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection()
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.get_related(self, target_document, **filters)
 
+    def fetch_relation_sync(self, relation_name: str, target_document: Optional[Type] = None, 
+                          connection: Optional[Any] = None, **filters: Any) -> List[Any]:
+        """Fetch related documents synchronously.
+
+        This method fetches documents related to this document through
+        the specified relation.
+
+        Args:
+            relation_name: Name of the relation
+            target_document: The document class of the target documents (optional)
+            connection: The database connection to use (optional)
+            **filters: Filters to apply to the related documents
+
+        Returns:
+            List of related documents or relation records
+        """
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
+        return relation_query.get_related_sync(self, target_document, **filters)
+
     async def resolve_relation(self, relation_name: str, target_document_class: Optional[Type] = None, 
                                  connection: Optional[Any] = None) -> List[Any]:
-        """Resolve related documents from a relation fetch result.
+        """Resolve related documents from a relation fetch result asynchronously.
 
         This method resolves related documents from a relation fetch result.
         It fetches the relation data and then resolves each related document.
@@ -555,7 +576,7 @@ class Document(metaclass=DocumentMetaclass):
             List of resolved document instances
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection()
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
 
         # First fetch the relation data
         relation_data = await self.fetch_relation(relation_name)
@@ -584,9 +605,54 @@ class Document(metaclass=DocumentMetaclass):
 
         return resolved_documents
 
+    def resolve_relation_sync(self, relation_name: str, target_document_class: Optional[Type] = None, 
+                             connection: Optional[Any] = None) -> List[Any]:
+        """Resolve related documents from a relation fetch result synchronously.
+
+        This method resolves related documents from a relation fetch result.
+        It fetches the relation data and then resolves each related document.
+
+        Args:
+            relation_name: Name of the relation to resolve
+            target_document_class: Class of the target document (optional)
+            connection: Database connection to use (optional)
+
+        Returns:
+            List of resolved document instances
+        """
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+
+        # First fetch the relation data
+        relation_data = self.fetch_relation_sync(relation_name)
+        if not relation_data:
+            return []
+
+        resolved_documents = []
+        if isinstance(relation_data, dict) and 'related' in relation_data and isinstance(relation_data['related'], list):
+                for related_id in relation_data['related']:
+                    if isinstance(related_id, RecordID):
+                        collection = related_id.table_name
+                        record_id = related_id.id
+
+                        # Fetch the actual document
+                        try:
+                            result = connection.client.select(related_id)
+                            if result and isinstance(result, list):
+                                doc = result[0]
+                            else:
+                                doc = result
+
+                            if doc:
+                                resolved_documents.append(doc)
+                        except Exception as e:
+                            print(f"Error resolving document {collection}:{record_id}: {str(e)}")
+
+        return resolved_documents
+
     async def relate_to(self, relation_name: str, target_instance: Any, 
                         connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
-        """Create a relation to another document.
+        """Create a relation to another document asynchronously.
 
         This method creates a relation from this document to another document.
 
@@ -600,13 +666,33 @@ class Document(metaclass=DocumentMetaclass):
             The created relation record or None if creation failed
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection()
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.relate(self, target_instance, **attrs)
 
+    def relate_to_sync(self, relation_name: str, target_instance: Any, 
+                      connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
+        """Create a relation to another document synchronously.
+
+        This method creates a relation from this document to another document.
+
+        Args:
+            relation_name: Name of the relation
+            target_instance: The document instance to relate to
+            connection: The database connection to use (optional)
+            **attrs: Attributes to set on the relation
+
+        Returns:
+            The created relation record or None if creation failed
+        """
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
+        return relation_query.relate_sync(self, target_instance, **attrs)
+
     async def update_relation_to(self, relation_name: str, target_instance: Any, 
                                connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
-        """Update a relation to another document.
+        """Update a relation to another document asynchronously.
 
         This method updates a relation from this document to another document.
 
@@ -620,13 +706,33 @@ class Document(metaclass=DocumentMetaclass):
             The updated relation record or None if update failed
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection()
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.update_relation(self, target_instance, **attrs)
 
+    def update_relation_to_sync(self, relation_name: str, target_instance: Any, 
+                               connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
+        """Update a relation to another document synchronously.
+
+        This method updates a relation from this document to another document.
+
+        Args:
+            relation_name: Name of the relation
+            target_instance: The document instance the relation is to
+            connection: The database connection to use (optional)
+            **attrs: Attributes to update on the relation
+
+        Returns:
+            The updated relation record or None if update failed
+        """
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
+        return relation_query.update_relation_sync(self, target_instance, **attrs)
+
     async def delete_relation_to(self, relation_name: str, target_instance: Optional[Any] = None, 
                                connection: Optional[Any] = None) -> int:
-        """Delete a relation to another document.
+        """Delete a relation to another document asynchronously.
 
         This method deletes a relation from this document to another document.
         If target_instance is not provided, it deletes all relations with the
@@ -641,13 +747,34 @@ class Document(metaclass=DocumentMetaclass):
             Number of deleted relations
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection()
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.delete_relation(self, target_instance)
 
+    def delete_relation_to_sync(self, relation_name: str, target_instance: Optional[Any] = None, 
+                               connection: Optional[Any] = None) -> int:
+        """Delete a relation to another document synchronously.
+
+        This method deletes a relation from this document to another document.
+        If target_instance is not provided, it deletes all relations with the
+        specified name from this document.
+
+        Args:
+            relation_name: Name of the relation
+            target_instance: The document instance the relation is to (optional)
+            connection: The database connection to use (optional)
+
+        Returns:
+            Number of deleted relations
+        """
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
+        return relation_query.delete_relation_sync(self, target_instance)
+
     async def traverse_path(self, path_spec: str, target_document: Optional[Type] = None, 
                              connection: Optional[Any] = None, **filters: Any) -> List[Any]:
-        """Traverse a path in the graph.
+        """Traverse a path in the graph asynchronously.
 
         This method traverses a path in the graph starting from this document.
         The path_spec is a string like "->[watched]->->[acted_in]->" which describes
@@ -666,7 +793,7 @@ class Document(metaclass=DocumentMetaclass):
             ValueError: If the document is not saved
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection()
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
         if not self.id:
             raise ValueError(f"Cannot traverse from unsaved {self.__class__.__name__}")
 
@@ -690,6 +817,63 @@ class Document(metaclass=DocumentMetaclass):
                 query += f" WHERE {' AND '.join(conditions)}"
 
         result = await connection.client.query(query)
+
+        if not result or not result[0]:
+            return []
+
+        # Process results based on query type
+        if target_document:
+            # Return list of related document instances
+            return [target_document.from_db(doc) for doc in result[0]]
+        else:
+            # Return raw path results
+            return result[0]
+
+    def traverse_path_sync(self, path_spec: str, target_document: Optional[Type] = None, 
+                          connection: Optional[Any] = None, **filters: Any) -> List[Any]:
+        """Traverse a path in the graph synchronously.
+
+        This method traverses a path in the graph starting from this document.
+        The path_spec is a string like "->[watched]->->[acted_in]->" which describes
+        a path through the graph.
+
+        Args:
+            path_spec: String describing the path to traverse
+            target_document: The document class to return instances of (optional)
+            connection: The database connection to use (optional)
+            **filters: Filters to apply to the results
+
+        Returns:
+            List of documents or path results
+
+        Raises:
+            ValueError: If the document is not saved
+        """
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        if not self.id:
+            raise ValueError(f"Cannot traverse from unsaved {self.__class__.__name__}")
+
+        start_id = f"{self.__class__._get_collection_name()}:{self.id}"
+
+        if target_document:
+            end_collection = target_document._get_collection_name()
+            query = f"SELECT * FROM {end_collection} WHERE {path_spec}{start_id}"
+        else:
+            query = f"SELECT {path_spec} as path FROM {start_id}"
+
+        # Add additional filters if provided
+        if filters:
+            conditions = []
+            for field, value in filters.items():
+                conditions.append(f"{field} = {json.dumps(value)}")
+
+            if target_document:
+                query += f" AND {' AND '.join(conditions)}"
+            else:
+                query += f" WHERE {' AND '.join(conditions)}"
+
+        result = connection.client.query(query)
 
         if not result or not result[0]:
             return []
