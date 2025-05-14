@@ -255,8 +255,13 @@ class BaseQuerySet:
             if op == '=' and isinstance(field, str) and '::' in field:
                 conditions.append(f"{field}")
             else:
+                # Special handling for RecordIDs - don't quote them
+                if field == 'id' and isinstance(value, str) and ':' in value:
+                    conditions.append(f"{field} {op} {value}")
                 # Special handling for INSIDE and NOT INSIDE operators
-                if op in ('INSIDE', 'NOT INSIDE'):
+                elif isinstance(value, RecordID) or (isinstance(value, str) and ':' in field):
+                    conditions.append(f"{field} {op} {value}")
+                elif op in ('INSIDE', 'NOT INSIDE'):
                     value_str = json.dumps(value)
                     conditions.append(f"{field} {op} {value_str}")
                 else:

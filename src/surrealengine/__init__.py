@@ -32,9 +32,19 @@ from .fields import (
     ReferenceField,
     RelationField,
     StringField,
-    FutureField
+    FutureField,
+    DecimalField,
+    DurationField,
+    OptionField
 )
 from .query import QuerySet, RelationQuerySet
+from .schema import (
+    get_document_classes,
+    create_tables_from_module,
+    create_tables_from_module_sync,
+    generate_schema_statements,
+    generate_schema_statements_from_module
+)
 
 __version__ = "0.1.0"
 __all__ = [
@@ -63,5 +73,12 @@ __all__ = [
     "GeometryField",
     "QuerySet",
     "RelationQuerySet",
-    "FutureField"
+    "DurationField",
+    "OptionField",
+    # Schema generation functions
+    "get_document_classes",
+    "create_tables_from_module",
+    "create_tables_from_module_sync",
+    "generate_schema_statements",
+    "generate_schema_statements_from_module"
 ]

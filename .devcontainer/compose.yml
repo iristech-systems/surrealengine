@@ -1,0 +1,42 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - .:/workspace
+    ports:
+      - "8888:8888"
+    depends_on:
+      - db
+    environment:
+      - SURREALDB_URL=ws://db:8000/rpc
+      - SURREALDB_USER=root
+      - SURREALDB_PASS=root
+      - SURREALDB_NS=test_ns
+      - SURREALDB_DB=test_db
+    networks:
+      - app-network
+
+  db:
+    image: surrealdb/surrealdb:latest
+    restart: always
+    command: start --log debug --user root --pass root
+    ports:
+      - "8001:8000"
+    volumes:
+      - db-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+
+volumes:
+  db-data:
+
+networks:
+  app-network:
+    driver: bridge

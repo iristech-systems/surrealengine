@@ -1,4 +1,5 @@
 import json
+import datetime
 from typing import Any, Dict, List, Optional, Type, Union, ClassVar
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
 from .fields import Field
@@ -395,7 +396,7 @@ class Document(metaclass=DocumentMetaclass):
         if not self.id:
             raise ValueError("Cannot delete a document without an ID")
 
-        await connection.client.delete(f"{self._get_collection_name()}:{self.id}")
+        await connection.client.delete(f"{self.id}")
         return True
 
     def delete_sync(self, connection: Optional[Any] = None) -> bool:
@@ -417,7 +418,7 @@ class Document(metaclass=DocumentMetaclass):
         if not self.id:
             raise ValueError("Cannot delete a document without an ID")
 
-        connection.client.delete(f"{self._get_collection_name()}:{self.id}")
+        connection.client.delete(f"{self.id}")
         return True
 
     async def refresh(self, connection: Optional[Any] = None) -> 'Document':
@@ -518,7 +519,7 @@ class Document(metaclass=DocumentMetaclass):
 
         return relation_query_builder
 
-    async def fetch_relation(self, relation_name: str, target_document: Optional[Type] = None, 
+    async def fetch_relation(self, relation_name: str, target_document: Optional[Type] = None,
                             connection: Optional[Any] = None, **filters: Any) -> List[Any]:
         """Fetch related documents asynchronously.
 
@@ -539,7 +540,7 @@ class Document(metaclass=DocumentMetaclass):
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.get_related(self, target_document, **filters)
 
-    def fetch_relation_sync(self, relation_name: str, target_document: Optional[Type] = None, 
+    def fetch_relation_sync(self, relation_name: str, target_document: Optional[Type] = None,
                           connection: Optional[Any] = None, **filters: Any) -> List[Any]:
         """Fetch related documents synchronously.
 
@@ -560,7 +561,7 @@ class Document(metaclass=DocumentMetaclass):
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return relation_query.get_related_sync(self, target_document, **filters)
 
-    async def resolve_relation(self, relation_name: str, target_document_class: Optional[Type] = None, 
+    async def resolve_relation(self, relation_name: str, target_document_class: Optional[Type] = None,
                                  connection: Optional[Any] = None) -> List[Any]:
         """Resolve related documents from a relation fetch result asynchronously.
 
@@ -605,7 +606,7 @@ class Document(metaclass=DocumentMetaclass):
 
         return resolved_documents
 
-    def resolve_relation_sync(self, relation_name: str, target_document_class: Optional[Type] = None, 
+    def resolve_relation_sync(self, relation_name: str, target_document_class: Optional[Type] = None,
                              connection: Optional[Any] = None) -> List[Any]:
         """Resolve related documents from a relation fetch result synchronously.
 
@@ -650,7 +651,7 @@ class Document(metaclass=DocumentMetaclass):
 
         return resolved_documents
 
-    async def relate_to(self, relation_name: str, target_instance: Any, 
+    async def relate_to(self, relation_name: str, target_instance: Any,
                         connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
         """Create a relation to another document asynchronously.
 
@@ -670,7 +671,7 @@ class Document(metaclass=DocumentMetaclass):
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.relate(self, target_instance, **attrs)
 
-    def relate_to_sync(self, relation_name: str, target_instance: Any, 
+    def relate_to_sync(self, relation_name: str, target_instance: Any,
                       connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
         """Create a relation to another document synchronously.
 
@@ -690,7 +691,7 @@ class Document(metaclass=DocumentMetaclass):
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return relation_query.relate_sync(self, target_instance, **attrs)
 
-    async def update_relation_to(self, relation_name: str, target_instance: Any, 
+    async def update_relation_to(self, relation_name: str, target_instance: Any,
                                connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
         """Update a relation to another document asynchronously.
 
@@ -710,7 +711,7 @@ class Document(metaclass=DocumentMetaclass):
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.update_relation(self, target_instance, **attrs)
 
-    def update_relation_to_sync(self, relation_name: str, target_instance: Any, 
+    def update_relation_to_sync(self, relation_name: str, target_instance: Any,
                                connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
         """Update a relation to another document synchronously.
 
@@ -730,7 +731,7 @@ class Document(metaclass=DocumentMetaclass):
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return relation_query.update_relation_sync(self, target_instance, **attrs)
 
-    async def delete_relation_to(self, relation_name: str, target_instance: Optional[Any] = None, 
+    async def delete_relation_to(self, relation_name: str, target_instance: Optional[Any] = None,
                                connection: Optional[Any] = None) -> int:
         """Delete a relation to another document asynchronously.
 
@@ -751,7 +752,7 @@ class Document(metaclass=DocumentMetaclass):
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.delete_relation(self, target_instance)
 
-    def delete_relation_to_sync(self, relation_name: str, target_instance: Optional[Any] = None, 
+    def delete_relation_to_sync(self, relation_name: str, target_instance: Optional[Any] = None,
                                connection: Optional[Any] = None) -> int:
         """Delete a relation to another document synchronously.
 
@@ -772,7 +773,7 @@ class Document(metaclass=DocumentMetaclass):
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return relation_query.delete_relation_sync(self, target_instance)
 
-    async def traverse_path(self, path_spec: str, target_document: Optional[Type] = None, 
+    async def traverse_path(self, path_spec: str, target_document: Optional[Type] = None,
                              connection: Optional[Any] = None, **filters: Any) -> List[Any]:
         """Traverse a path in the graph asynchronously.
 
@@ -829,7 +830,7 @@ class Document(metaclass=DocumentMetaclass):
             # Return raw path results
             return result[0]
 
-    def traverse_path_sync(self, path_spec: str, target_document: Optional[Type] = None, 
+    def traverse_path_sync(self, path_spec: str, target_document: Optional[Type] = None,
                           connection: Optional[Any] = None, **filters: Any) -> List[Any]:
         """Traverse a path in the graph synchronously.
 
@@ -939,6 +940,7 @@ class Document(metaclass=DocumentMetaclass):
         """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            print(connection)
         return cls.objects(connection).bulk_create_sync(
             documents,
             batch_size=batch_size,
@@ -1105,3 +1107,187 @@ class Document(metaclass=DocumentMetaclass):
                 comment=comment,
                 connection=connection
             )
+
+    @classmethod
+    def _get_field_type_for_surreal(cls, field: Field) -> str:
+        """Get the SurrealDB type for a field.
+
+        Args:
+            field: The field to get the type for
+
+        Returns:
+            The SurrealDB type as a string
+        """
+        from .fields import (
+            StringField, IntField, FloatField, BooleanField, 
+            DateTimeField, ListField, DictField, ReferenceField,
+            GeometryField, RelationField, DecimalField, DurationField,
+            BytesField, RegexField, RangeField, OptionField, FutureField,
+            UUIDField, TableField, RecordIDField
+        )
+
+        if isinstance(field, StringField):
+            return "string"
+        elif isinstance(field, IntField):
+            return "int"
+        elif isinstance(field, FloatField) or isinstance(field, DecimalField):
+            return "float"
+        elif isinstance(field, BooleanField):
+            return "bool"
+        elif isinstance(field, DateTimeField):
+            return "datetime"
+        elif isinstance(field, DurationField):
+            return "duration"
+        elif isinstance(field, ListField):
+            if field.field_type:
+                inner_type = cls._get_field_type_for_surreal(field.field_type)
+                return f"array<{inner_type}>"
+            return "array"
+        elif isinstance(field, DictField):
+            return "object"
+        elif isinstance(field, ReferenceField):
+            # Get the target collection name
+            target_cls = field.document_type
+            target_collection = target_cls._get_collection_name()
+            return f"record<{target_collection}>"
+        elif isinstance(field, RelationField):
+            # Get the target collection name
+            target_cls = field.to_document
+            target_collection = target_cls._get_collection_name()
+            return f"record<{target_collection}>"
+        elif isinstance(field, GeometryField):
+            return "geometry"
+        elif isinstance(field, BytesField):
+            return "bytes"
+        elif isinstance(field, RegexField):
+            return "regex"
+        elif isinstance(field, RangeField):
+            if field.value_type:
+                if field.value_type == int:
+                    return "range<int>"
+                elif field.value_type == float:
+                    return "range<float>"
+                elif field.value_type == datetime.datetime:
+                    return "range<datetime>"
+            return "range"
+        elif isinstance(field, OptionField):
+            if field.field_type:
+                inner_type = cls._get_field_type_for_surreal(field.field_type)
+                return f"option<{inner_type}>"
+            return "option"
+        elif isinstance(field, UUIDField):
+            return "uuid"
+        elif isinstance(field, TableField):
+            return "table"
+        elif isinstance(field, RecordIDField):
+            return "record"
+        elif isinstance(field, FutureField):
+            return "any"  # Future fields are computed at query time
+
+        # Default to any type if we can't determine a specific type
+        return "any"
+
+    @classmethod
+    async def create_table(cls, connection: Optional[Any] = None, schemafull: bool = True) -> None:
+        """Create the table for this document class asynchronously.
+
+        Args:
+            connection: Optional connection to use
+            schemafull: Whether to create a SCHEMAFULL table (default: True)
+        """
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+
+        collection_name = cls._get_collection_name()
+
+        # Create the table
+        schema_type = "SCHEMAFULL" if schemafull else "SCHEMALESS"
+        query = f"DEFINE TABLE {collection_name} {schema_type}"
+
+        # Add comment if available
+        if hasattr(cls, '__doc__') and cls.__doc__:
+            # Clean up docstring and escape single quotes
+            doc = cls.__doc__.strip().replace("'", "''")
+            if doc:
+                query += f" COMMENT '{doc}'"
+
+        await connection.client.query(query)
+
+        # Create fields if schemafull or if field is marked with define_schema=True
+        for field_name, field in cls._fields.items():
+            # Skip id field as it's handled by SurrealDB
+            if field_name == cls._meta.get('id_field', 'id'):
+                continue
+
+            # Only define fields if schemafull or if field is explicitly marked for schema definition
+            if schemafull or field.define_schema:
+                field_type = cls._get_field_type_for_surreal(field)
+                field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} TYPE {field_type}"
+
+                # Add constraints
+                if field.required:
+                    field_query += " ASSERT $value != NONE"
+
+                # Add comment if available
+                if hasattr(field, '__doc__') and field.__doc__:
+                    # Clean up docstring and escape single quotes
+                    doc = field.__doc__.strip().replace("'", "''")
+                    if doc:
+                        field_query += f" COMMENT '{doc}'"
+
+                await connection.client.query(field_query)
+
+    @classmethod
+    def create_table_sync(cls, connection: Optional[Any] = None, schemafull: bool = True) -> None:
+        """Create the table for this document class synchronously."""
+        if connection is None:
+            from .connection import ConnectionRegistry
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+
+        collection_name = cls._get_collection_name()
+
+        # Create the table
+        schema_type = "SCHEMAFULL" if schemafull else "SCHEMALESS"
+        query = f"DEFINE TABLE {collection_name} {schema_type}"
+
+        # Add comment if available
+        if hasattr(cls, '__doc__') and cls.__doc__:
+            # Clean up docstring: remove newlines, extra spaces, and escape quotes
+            doc = ' '.join(cls.__doc__.strip().split())
+            doc = doc.replace("'", "''")
+            if doc:
+                query += f" COMMENT '{doc}'"
+        try:
+            connection.client.query(query)
+        except Exception as e:
+            print(query)
+            raise e
+
+        # Create fields if schemafull or if field is marked with define_schema=True
+        for field_name, field in cls._fields.items():
+            # Skip id field as it's handled by SurrealDB
+            if field_name == cls._meta.get('id_field', 'id'):
+                continue
+
+            # Only define fields if schemafull or if field is explicitly marked for schema definition
+            if schemafull or field.define_schema:
+                field_type = cls._get_field_type_for_surreal(field)
+                field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} TYPE {field_type}"
+
+                # Add constraints
+                if field.required:
+                    field_query += " ASSERT $value != NONE"
+
+                # Add comment if available
+                if hasattr(field, '__doc__') and field.__doc__:
+                    # Clean up docstring: remove newlines, extra spaces, and escape quotes
+                    doc = ' '.join(field.__doc__.strip().split())
+                    doc = doc.replace("'", "''")
+                    if doc:
+                        field_query += f" COMMENT '{doc}'"
+
+                try:
+                    connection.client.query(field_query)
+                except Exception as e:
+                    print(field_query)
+                    raise e

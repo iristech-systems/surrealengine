@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+.vscode/
+.devcontainer/devcontainer-lock.json
+notebooks/*.ipynb_checkpoints/

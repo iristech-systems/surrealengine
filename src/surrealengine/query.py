@@ -43,6 +43,13 @@ class QuerySet(BaseQuerySet):
         if self.query_parts:
             conditions = self._build_conditions()
             query += f" WHERE {' AND '.join(conditions)}"
+
+        # Add other clauses from _build_clauses
+        clauses = self._build_clauses()
+        for clause_name, clause_sql in clauses.items():
+            if clause_name != 'WHERE':  # WHERE clause is already handled
+                query += f" {clause_sql}"
+
         return query
 
     async def all(self) -> List[Any]:
@@ -103,7 +110,7 @@ class QuerySet(BaseQuerySet):
         if not result or not result[0]:
             return 0
 
-        return result[0][0]['count']
+        return len(result)
 
     def count_sync(self) -> int:
         """Count documents matching the query synchronously.
@@ -125,7 +132,7 @@ class QuerySet(BaseQuerySet):
         if not result or not result[0]:
             return 0
 
-        return result[0][0]['count']
+        return len(result)
 
     async def get(self, **kwargs: Any) -> Any:
         """Get a single document matching the query asynchronously.

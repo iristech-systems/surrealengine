@@ -3,7 +3,7 @@
 
 SurrealEngine is an Object-Document Mapper (ODM) for SurrealDB, providing a Pythonic interface for working with SurrealDB databases. It supports both synchronous and asynchronous operations.
 
-> **Important Note**: I have been testing SurrealDB in certain use-cases and am not a long time user or well verse in the deep down details of the system. I focus on user ergonomics over direct compatibility with the core python SurrealDB SDK.  This means much of the module translates queries directly into SurrealQL vs operating through SDK abstraction.  Currently, schema registration with SurrealDB is not implemented. The ODM provides Python-side validation and structure only. 
+> **Important Note**: Active Development - README out of sync with project view example_scripts and notebooks. I have been testing SurrealDB in certain use-cases and am not a long time user or well verse in the deep down details of the system. I focus on user ergonomics over direct compatibility with the core python SurrealDB SDK.  This means much of the module translates queries directly into SurrealQL vs operating through SDK abstraction.
 
 ## Requirements
 
@@ -658,9 +658,93 @@ async def main():
 asyncio.run(main())
 ```
 
+## Schema Generation
+
+SurrealEngine now supports generating SurrealDB schema statements from Document classes. This allows you to create tables and fields in SurrealDB based on your Python models.
+
+### Creating Tables from Document Classes
+
+You can create tables for your Document classes using the `create_table` and `create_table_sync` methods:
+
+```python
+# Async version - Create a SCHEMAFULL table
+await Person.create_table(connection=async_conn, schemafull=True)
+
+# Sync version - Create a SCHEMALESS table
+Person.create_table_sync(connection=sync_conn, schemafull=False)
+```
+
+#### Hybrid Schema Approach
+
+SurrealEngine supports a hybrid approach where you can create SCHEMALESS tables but still define specific fields in the schema. This is useful when you want the flexibility of a SCHEMALESS table but still want to enforce types or constraints on certain fields:
+
+```python
+from surrealengine import Document, StringField, IntField
+
+class Product(Document):
+    # This field will be defined in the schema even for SCHEMALESS tables
+    name = StringField(required=True, define_schema=True)
+
+    # This field will be defined in the schema even for SCHEMALESS tables
+    price = FloatField(define_schema=True)
+
+    # This field won't be defined in the schema for SCHEMALESS tables
+    description = StringField()
+
+    # Other fields that won't be defined in the schema for SCHEMALESS tables
+    tags = ListField()
+    metadata = DictField()
+
+# Create a SCHEMALESS table with only name and price fields defined in the schema
+await Product.create_table(connection=async_conn, schemafull=False)
+```
+
+This approach gives you the best of both worlds - the flexibility to add arbitrary fields while still enforcing schema constraints on your critical fields.
+
+### Creating Tables for All Document Classes in a Module
+
+You can also create tables for all Document classes in a module using the utility functions:
+
+```python
+from surrealengine import create_tables_from_module, create_tables_from_module_sync
+
+# Async version
+await create_tables_from_module("myapp.models", connection=async_conn)
+
+# Sync version
+create_tables_from_module_sync("myapp.models", connection=sync_conn)
+```
+
+### Generating Schema Statements
+
+If you want to generate schema statements without executing them (e.g., for migration scripts), you can use the following functions:
+
+```python
+from surrealengine import generate_schema_statements, generate_schema_statements_from_module
+
+# Generate statements for a single Document class (SCHEMAFULL)
+statements = generate_schema_statements(Person)
+for stmt in statements:
+    print(stmt)
+
+# Generate statements for a single Document class (SCHEMALESS)
+# Only fields with define_schema=True will be included
+statements = generate_schema_statements(Product, schemafull=False)
+for stmt in statements:
+    print(stmt)
+
+# Generate statements for all Document classes in a module
+schema_dict = generate_schema_statements_from_module("myapp.models")
+for class_name, statements in schema_dict.items():
+    print(f"-- Statements for {class_name}")
+    for stmt in statements:
+        print(stmt)
+```
+
+The `generate_schema_statements` function respects the hybrid schema approach. When `schemafull=False`, it will only generate DEFINE FIELD statements for fields marked with `define_schema=True`.
+
 ## Features in Development
 
-- Schema registration with SurrealDB
 - Migration support
 - Advanced indexing
 - Query optimization

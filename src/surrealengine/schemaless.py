@@ -235,6 +235,13 @@ class SchemalessQuerySet(BaseQuerySet):
             self.query_parts = original_query_parts
 
             query += f" WHERE {' AND '.join(conditions)}"
+
+        # Add other clauses from _build_clauses
+        clauses = self._build_clauses()
+        for clause_name, clause_sql in clauses.items():
+            if clause_name != 'WHERE':  # WHERE clause is already handled
+                query += f" {clause_sql}"
+
         return query
 
     async def bulk_create(self, documents: List[Dict[str, Any]], batch_size: int = 1000, 

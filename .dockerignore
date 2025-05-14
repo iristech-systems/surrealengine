@@ -1,0 +1,10 @@
+__pycache__
+*.pyc
+.env
+.vscode
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+.devcontainer
+notebooks/*.ipynb_checkpoints

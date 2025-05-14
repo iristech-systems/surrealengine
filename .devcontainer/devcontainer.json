@@ -1,0 +1,19 @@
+{
+    "name": "Python with SurrealDB and JupyterLab",
+    "dockerComposeFile": "compose.yml",
+    "service": "app",
+    "workspaceFolder": "/workspace",
+    "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter"
+    ],
+    "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python3.13",
+        "python.linting.enabled": true,
+        "python.linting.pylintEnabled": true
+    },
+    "forwardPorts": [8888, 8001],
+    "postCreateCommand": "pip install --no-cache-dir -r requirements.txt",
+    "remoteUser": "root"
+}

@@ -1,7 +1,10 @@
 import datetime
 import re
+import uuid
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Pattern, Type, TypeVar, Union, cast
+from surrealdb.data.types.datetime import IsoDateTimeWrapper
+from .exceptions import ValidationError
 
 # Type variable for field types
 T = TypeVar('T')
@@ -19,21 +22,25 @@ class Field:
         name: Name of the field (set during document class creation)
         db_field: Name of the field in the database
         owner_document: The document class that owns this field
+        define_schema: Whether to define this field in the schema (even for SCHEMALESS tables)
     """
 
-    def __init__(self, required: bool = False, default: Any = None, db_field: Optional[str] = None) -> None:
+    def __init__(self, required: bool = False, default: Any = None, db_field: Optional[str] = None, 
+                 define_schema: bool = False) -> None:
         """Initialize a new Field.
 
         Args:
             required: Whether the field is required
             default: Default value for the field
             db_field: Name of the field in the database (defaults to the field name)
+            define_schema: Whether to define this field in the schema (even for SCHEMALESS tables)
         """
         self.required = required
         self.default = default
         self.name: Optional[str] = None  # Will be set during document class creation
         self.db_field = db_field
         self.owner_document: Optional[Type] = None
+        self.define_schema = define_schema
 
     def validate(self, value: Any) -> Any:
         """Validate the field value.
@@ -301,7 +308,22 @@ class DateTimeField(Field):
     """DateTime field type.
 
     This field type stores datetime values and provides validation and
-    conversion between Python datetime objects and ISO format strings.
+    conversion between Python datetime objects and SurrealDB datetime format.
+
+    SurrealDB v2.0.0+ requires datetime values to have a `d` prefix or be cast
+    as <datetime>. This field handles the conversion automatically, so you can
+    use standard Python datetime objects in your code.
+
+    Example:
+        ```python
+        class Event(Document):
+            created_at = DateTimeField(default=datetime.datetime.now)
+            scheduled_for = DateTimeField()
+
+        # Python datetime objects are automatically converted to SurrealDB format
+        event = Event(scheduled_for=datetime.datetime.now() + datetime.timedelta(days=7))
+        await event.save()
+        ```
     """
 
     def validate(self, value: Any) -> Optional[datetime.datetime]:
@@ -327,17 +349,18 @@ class DateTimeField(Field):
                 raise TypeError(f"Expected datetime for field '{self.name}', got {type(value)}")
         return value
 
-    def to_db(self, value: Any) -> Optional[str]:
+    def to_db(self, value: Any) -> Optional[Any]:
         """Convert Python datetime to database representation.
 
-        This method converts a Python datetime object to an ISO format string
-        for storage in the database.
+        This method converts a Python datetime object to a SurrealDB datetime format
+        for storage in the database. SurrealDB v2.0.0+ requires datetime values
+        to have a `d` prefix or be cast as <datetime>.
 
         Args:
             value: The Python datetime to convert
 
         Returns:
-            The ISO format string for the database
+            String with the datetime in SurrealDB format (<datetime>"iso_string")
         """
         if value is not None:
             if isinstance(value, str):
@@ -346,14 +369,15 @@ class DateTimeField(Field):
                 except ValueError:
                     pass
             if isinstance(value, datetime.datetime):
-                return value.isoformat()
+                # Format as <datetime>"iso_string" to ensure SurrealDB treats it as a datetime
+                return value
         return value
 
     def from_db(self, value: Any) -> Optional[datetime.datetime]:
         """Convert database value to Python datetime.
 
-        This method converts an ISO format string from the database to a
-        Python datetime object.
+        This method converts a value from the database to a Python datetime object.
+        It handles both string representations and IsoDateTimeWrapper instances.
 
         Args:
             value: The database value to convert
@@ -361,11 +385,25 @@ class DateTimeField(Field):
         Returns:
             The Python datetime object
         """
-        if value is not None and isinstance(value, str):
-            try:
-                return datetime.datetime.fromisoformat(value)
-            except ValueError:
-                pass
+        if value is not None:
+            # Handle IsoDateTimeWrapper instances
+            if isinstance(value, IsoDateTimeWrapper):
+                try:
+                    return datetime.datetime.fromisoformat(value.dt)
+                except ValueError:
+                    pass
+            # Handle string representations
+            elif isinstance(value, str):
+                # Remove `d` prefix if present (SurrealDB format)
+                if value.startswith("d'") and value.endswith("'"):
+                    value = value[2:-1]
+                try:
+                    return datetime.datetime.fromisoformat(value)
+                except ValueError:
+                    pass
+            # Handle datetime objects directly
+            elif isinstance(value, datetime.datetime):
+                return value
         return value
 
 
@@ -609,11 +647,11 @@ class ReferenceField(Field):
         if isinstance(value, self.document_type):
             if value.id is None:
                 raise ValueError(f"Cannot reference an unsaved {self.document_type.__name__} document")
-            return f"{self.document_type._meta['collection']}:{value.id}"
+            return value.id
 
         # If it's a dict (partial reference)
         if isinstance(value, dict) and value.get('id'):
-            return f"{self.document_type._meta['collection']}:{value['id']}"
+            return value['id']
 
         return value
 
@@ -637,29 +675,90 @@ class ReferenceField(Field):
 
 
 class GeometryField(Field):
-    """Base field for geometry types.
+    """Field for handling geometric data in SurrealDB.
 
-    This field type stores GeoJSON objects for representing geographic features.
-    It validates that the value is a dictionary (GeoJSON object).
+    This field validates and processes geometric data according to SurrealDB's
+    geometry specification. It supports various geometry types including Point,
+    LineString, Polygon, MultiPoint, MultiLineString, and MultiPolygon.
+
+    Attributes:
+        required (bool): Whether the field is required. Defaults to False.
+
+    Example:
+        ```python
+        class Location(Document):
+            point = GeometryField()
+
+        # Using GeometryPoint for precise coordinate handling
+        from surrealengine.geometry import GeometryPoint
+        loc = Location(point=GeometryPoint([-122.4194, 37.7749]))
+        ```
     """
 
-    def validate(self, value: Any) -> Optional[Dict[str, Any]]:
-        """Validate the geometry value.
-
-        This method checks if the value is a valid GeoJSON object (dictionary).
+    def __init__(self, required: bool = False, **kwargs):
+        """Initialize a GeometryField.
 
         Args:
-            value: The value to validate
+            required (bool, optional): Whether this field is required. Defaults to False.
+            **kwargs: Additional field options to be passed to the parent Field class.
+        """
+        super().__init__(required=required, **kwargs)
+
+    def validate(self, value):
+        """Validate geometry data.
+
+        Ensures the geometry data follows SurrealDB's expected format with proper structure
+        and coordinates. Does not modify the numeric values to preserve SurrealDB's
+        native geometry handling.
+
+        Args:
+            value: The geometry value to validate. Can be a GeometryPoint object or
+                  a dict with 'type' and 'coordinates' fields.
 
         Returns:
-            The validated geometry value
+            dict: The validated geometry data.
 
         Raises:
-            TypeError: If the value is not a dictionary
+            ValidationError: If the geometry data is invalid or improperly formatted.
         """
-        value = super().validate(value)
-        if value is not None and not isinstance(value, dict):
-            raise TypeError(f"Expected GeoJSON object for field '{self.name}', got {type(value)}")
+        if value is None:
+            if self.required:
+                raise ValidationError("This field is required")
+            return None
+
+        # Handle GeometryPoint and other Geometry objects
+        if hasattr(value, 'to_json'):
+            return value.to_json()
+
+        if not isinstance(value, dict):
+            raise ValidationError("Geometry value must be a dictionary")
+
+        if "type" not in value or "coordinates" not in value:
+            raise ValidationError("Geometry must have 'type' and 'coordinates' fields")
+
+        if not isinstance(value["coordinates"], list):
+            raise ValidationError("Coordinates must be a list")
+
+        # Validate structure based on geometry type without modifying values
+        if value["type"] == "Point":
+            if len(value["coordinates"]) != 2:
+                raise ValidationError("Point coordinates must be a list of two numbers")
+        elif value["type"] in ("LineString", "MultiPoint"):
+            if not all(isinstance(point, list) and len(point) == 2 for point in value["coordinates"]):
+                raise ValidationError("LineString/MultiPoint coordinates must be a list of [x,y] points")
+        elif value["type"] in ("Polygon", "MultiLineString"):
+            if not all(isinstance(line, list) and
+                       all(isinstance(point, list) and len(point) == 2 for point in line)
+                       for line in value["coordinates"]):
+                raise ValidationError("Polygon/MultiLineString must be a list of coordinate arrays")
+        elif value["type"] == "MultiPolygon":
+            if not all(isinstance(polygon, list) and
+                       all(isinstance(line, list) and
+                           all(isinstance(point, list) and len(point) == 2 for point in line)
+                           for line in polygon)
+                       for polygon in value["coordinates"]):
+                raise ValidationError("MultiPolygon must be a list of polygon arrays")
+
         return value
 
 
@@ -764,9 +863,8 @@ class RelationField(Field):
 class DecimalField(NumberField):
     """Decimal field type.
 
-    This field type stores decimal values with arbitrary precision using Python's
-    Decimal class. It provides validation to ensure the value is a valid decimal.
-    """
+    This field type stores decimal values with arbitrary precision using Python''s
+    Decimal class. It provides validation to ensure the value is a valid decimal."""
 
     def validate(self, value: Any) -> Optional[Decimal]:
         """Validate the decimal value.
@@ -1131,172 +1229,6 @@ class RegexField(Field):
         return value
 
 
-class RangeField(Field):
-    """Range field type.
-
-    This field type stores ranges of values and provides validation and
-    conversion between Python range objects and SurrealDB range format.
-    """
-
-    def __init__(self, value_type: Optional[Type] = None, **kwargs: Any) -> None:
-        """Initialize a new RangeField.
-
-        Args:
-            value_type: The type of values in the range (e.g., int, float, str)
-            **kwargs: Additional arguments to pass to the parent class
-        """
-        self.value_type = value_type
-        super().__init__(**kwargs)
-
-    def validate(self, value: Any) -> Any:
-        """Validate the range value.
-
-        This method checks if the value is a valid range representation.
-
-        Args:
-            value: The value to validate
-
-        Returns:
-            The validated range value
-
-        Raises:
-            TypeError: If the value is not a valid range representation
-        """
-        value = super().validate(value)
-        if value is not None:
-            if isinstance(value, range):
-                return value
-            if isinstance(value, (list, tuple)) and len(value) == 2:
-                start, end = value
-                if self.value_type:
-                    try:
-                        start = None if start is None else self.value_type(start)
-                        end = None if end is None else self.value_type(end)
-                    except (TypeError, ValueError):
-                        raise TypeError(f"Range values must be of type {self.value_type.__name__}")
-                return (start, end)
-            if isinstance(value, str) and '..' in value:
-                parts = value.split('..')
-                if len(parts) == 2:
-                    start = parts[0].strip() if parts[0].strip() else None
-                    end = parts[1].strip() if parts[1].strip() else None
-
-                    # Handle inclusive end with =
-                    inclusive_end = False
-                    if end and end.startswith('='):
-                        inclusive_end = True
-                        end = end[1:]
-
-                    if self.value_type:
-                        try:
-                            start = None if start is None else self.value_type(start)
-                            end = None if end is None else self.value_type(end)
-                            if inclusive_end and end is not None:
-                                # For inclusive end, add 1 for numeric types
-                                if self.value_type == int:
-                                    end += 1
-                                elif self.value_type == float:
-                                    end += 0.000001  # Small increment for float
-                        except (TypeError, ValueError):
-                            raise TypeError(f"Range values must be of type {self.value_type.__name__}")
-                    return (start, end)
-            raise TypeError(f"Expected range for field '{self.name}', got {type(value)}")
-        return value
-
-    def to_db(self, value: Any) -> Optional[str]:
-        """Convert Python range to database representation.
-
-        This method converts a Python range object or tuple to a SurrealDB range format
-        for storage in the database.
-
-        Args:
-            value: The Python range to convert
-
-        Returns:
-            The SurrealDB range format for the database
-        """
-        if value is None:
-            return None
-
-        if isinstance(value, range):
-            # Convert range to SurrealDB range format
-            start = value.start
-            # range.stop is exclusive, but SurrealDB's upper bound is inclusive by default
-            end = value.stop - 1 if value.stop is not None else None
-
-            start_str = '' if start is None else str(start)
-            end_str = '' if end is None else str(end)
-
-            return f'{start_str}..{end_str}'
-
-        if isinstance(value, (list, tuple)) and len(value) == 2:
-            start, end = value
-            start_str = '' if start is None else str(start)
-            end_str = '' if end is None else str(end)
-
-            return f'{start_str}..{end_str}'
-
-        if isinstance(value, str) and '..' in value:
-            # If it's already in SurrealDB range format, return as is
-            return value
-
-        raise TypeError(f"Cannot convert {type(value)} to range")
-
-    def from_db(self, value: Any) -> Any:
-        """Convert database value to Python range representation.
-
-        This method converts a SurrealDB range format from the database to a
-        Python range object or tuple.
-
-        Args:
-            value: The database value to convert
-
-        Returns:
-            The Python range representation
-        """
-        if value is None:
-            return None
-
-        if isinstance(value, range):
-            return value
-
-        if isinstance(value, (list, tuple)) and len(value) == 2:
-            return value
-
-        if isinstance(value, str) and '..' in value:
-            parts = value.split('..')
-            if len(parts) == 2:
-                start = parts[0].strip() if parts[0].strip() else None
-                end = parts[1].strip() if parts[1].strip() else None
-
-                # Handle inclusive end with =
-                inclusive_end = False
-                if end and end.startswith('='):
-                    inclusive_end = True
-                    end = end[1:]
-
-                if self.value_type:
-                    try:
-                        start = None if start is None else self.value_type(start)
-                        end = None if end is None else self.value_type(end)
-                        if inclusive_end and end is not None:
-                            # For inclusive end, add 1 for numeric types
-                            if self.value_type == int:
-                                end += 1
-                            elif self.value_type == float:
-                                end += 0.000001  # Small increment for float
-                    except (TypeError, ValueError):
-                        pass
-
-                # If both start and end are integers, return a range object
-                if isinstance(start, int) and isinstance(end, int):
-                    return range(start, end)
-
-                return (start, end)
-
-        return value
-
-
 class OptionField(Field):
     """Option field type.
 
@@ -1407,3 +1339,247 @@ class FutureField(Field):
         """
         # For future fields, we return a special SurrealDB syntax
         return f"<future> {{ {self.computation_expression} }}"
+
+
+class UUIDField(Field):
+    """UUID field type.
+
+    This field type stores UUID values and provides validation and
+    conversion between Python UUID objects and SurrealDB UUID format.
+
+    Example:
+        ```python
+        class User(Document):
+            id = UUIDField(default=uuid.uuid4)
+            api_key = UUIDField()
+        ```
+    """
+
+    def validate(self, value: Any) -> Optional[uuid.UUID]:
+        """Validate the UUID value.
+
+        This method checks if the value is a valid UUID or can be
+        converted to a UUID.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated UUID value
+
+        Raises:
+            TypeError: If the value cannot be converted to a UUID
+        """
+        value = super().validate(value)
+        if value is not None:
+            if isinstance(value, uuid.UUID):
+                return value
+            try:
+                return uuid.UUID(str(value))
+            except (ValueError, TypeError, AttributeError):
+                raise TypeError(f"Expected UUID for field '{self.name}', got {type(value)}")
+        return value
+
+    def to_db(self, value: Any) -> Optional[str]:
+        """Convert Python UUID to database representation.
+
+        This method converts a Python UUID object to a string for storage in the database.
+
+        Args:
+            value: The Python UUID to convert
+
+        Returns:
+            The string representation of the UUID for the database
+        """
+        if value is not None:
+            if isinstance(value, uuid.UUID):
+                return str(value)
+            try:
+                return str(uuid.UUID(str(value)))
+            except (ValueError, TypeError, AttributeError):
+                pass
+        return value
+
+    def from_db(self, value: Any) -> Optional[uuid.UUID]:
+        """Convert database value to Python UUID.
+
+        This method converts a string from the database to a Python UUID object.
+
+        Args:
+            value: The database value to convert
+
+        Returns:
+            The Python UUID object
+        """
+        if value is not None:
+            if isinstance(value, uuid.UUID):
+                return value
+            try:
+                return uuid.UUID(str(value))
+            except (ValueError, TypeError, AttributeError):
+                pass
+        return value
+
+
+class TableField(Field):
+    """Table field type.
+
+    This field type stores table names and provides validation and
+    conversion between Python strings and SurrealDB table format.
+
+    Example:
+        ```python
+        class Schema(Document):
+            table_name = TableField()
+            fields = DictField()
+        ```
+    """
+
+    def validate(self, value: Any) -> Optional[str]:
+        """Validate the table name.
+
+        This method checks if the value is a valid table name.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated table name
+
+        Raises:
+            TypeError: If the value is not a string
+            ValueError: If the table name is invalid
+        """
+        value = super().validate(value)
+        if value is not None:
+            if not isinstance(value, str):
+                raise TypeError(f"Expected string for table name in field '{self.name}', got {type(value)}")
+            # Basic validation for table names
+            if not value or ' ' in value:
+                raise ValueError(f"Invalid table name '{value}' for field '{self.name}'")
+        return value
+
+    def to_db(self, value: Any) -> Optional[str]:
+        """Convert Python string to database representation.
+
+        This method converts a Python string to a table name for storage in the database.
+
+        Args:
+            value: The Python string to convert
+
+        Returns:
+            The table name for the database
+        """
+        if value is not None and not isinstance(value, str):
+            try:
+                return str(value)
+            except (TypeError, ValueError):
+                pass
+        return value
+
+
+class RecordIDField(Field):
+    """RecordID field type.
+
+    This field type stores record IDs and provides validation and
+    conversion between Python values and SurrealDB record ID format.
+
+    A RecordID consists of a table name and a unique identifier, formatted as
+    `table:id`. This field can accept a string in this format, or a tuple/list
+    with the table name and ID.
+
+    Example:
+        ```python
+        class Reference(Document):
+            target = RecordIDField()
+        ```
+    """
+
+    def validate(self, value: Any) -> Optional[str]:
+        """Validate the record ID.
+
+        This method checks if the value is a valid record ID.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated record ID
+
+        Raises:
+            TypeError: If the value cannot be converted to a record ID
+            ValueError: If the record ID format is invalid
+        """
+        value = super().validate(value)
+        if value is not None:
+            if isinstance(value, str):
+                # Check if it's in the format "table:id"
+                if ':' not in value:
+                    raise ValueError(f"Invalid record ID format for field '{self.name}', expected 'table:id'")
+                return value
+            elif isinstance(value, (list, tuple)) and len(value) == 2:
+                # Convert [table, id] to "table:id"
+                table, id_val = value
+                if not isinstance(table, str) or not table:
+                    raise ValueError(f"Invalid table name in record ID for field '{self.name}'")
+                return f"{table}:{id_val}"
+            else:
+                raise TypeError(f"Expected record ID string or [table, id] list/tuple for field '{self.name}', got {type(value)}")
+        return value
+
+    def to_db(self, value: Any) -> Optional[str]:
+        """Convert Python value to database representation.
+
+        This method converts a Python value to a record ID for storage in the database.
+
+        Args:
+            value: The Python value to convert
+
+        Returns:
+            The record ID for the database
+        """
+        if value is None:
+            return None
+
+        if isinstance(value, str) and ':' in value:
+            return value
+        elif isinstance(value, (list, tuple)) and len(value) == 2:
+            table, id_val = value
+            return f"{table}:{id_val}"
+
+        return value
+
+    def from_db(self, value: Any) -> Optional[str]:
+        """Convert database value to Python representation.
+
+        This method converts a record ID from the database to a Python representation.
+
+        Args:
+            value: The database value to convert
+
+        Returns:
+            The Python representation of the record ID
+        """
+        # Record IDs are already in the correct format from the database
+        return value
+
+
+class SetField(ListField):
+    """Set field type.
+
+    This field type stores sets of unique values and provides validation and
+    conversion for the items in the set.
+    """
+
+    def to_db(self, value: Optional[List[Any]]) -> Optional[List[Any]]:
+        """Convert Python list to database representation with deduplication.
+        """
+        if value is not None:
+            # Deduplicate values before sending to DB
+            deduplicated = []
+            for item in value:
+                db_item = self.field_type.to_db(item) if self.field_type else item
+                if db_item not in deduplicated:
+                    deduplicated.append(db_item)
+            return deduplicated
+        return value
