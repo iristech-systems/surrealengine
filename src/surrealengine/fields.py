@@ -4,9 +4,10 @@ import uuid
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Pattern, Type, TypeVar, Union, cast
 from surrealdb.data.types.datetime import IsoDateTimeWrapper
+from surrealdb import RecordID
 from .exceptions import ValidationError
 from .signals import (
-    pre_validate, post_validate, pre_to_db, post_to_db, 
+    pre_validate, post_validate, pre_to_db, post_to_db,
     pre_from_db, post_from_db, SIGNAL_SUPPORT
 )
 
@@ -29,7 +30,7 @@ class Field:
         define_schema: Whether to define this field in the schema (even for SCHEMALESS tables)
     """
 
-    def __init__(self, required: bool = False, default: Any = None, db_field: Optional[str] = None, 
+    def __init__(self, required: bool = False, default: Any = None, db_field: Optional[str] = None,
                  define_schema: bool = False) -> None:
         """Initialize a new Field.
 
@@ -138,7 +139,7 @@ class StringField(Field):
         regex: Regular expression pattern to match
     """
 
-    def __init__(self, min_length: Optional[int] = None, max_length: Optional[int] = None, 
+    def __init__(self, min_length: Optional[int] = None, max_length: Optional[int] = None,
                  regex: Optional[str] = None, choices: Optional[list] = None, **kwargs: Any) -> None:
         """Initialize a new StringField.
 
@@ -201,7 +202,7 @@ class NumberField(Field):
         max_value: Maximum allowed value
     """
 
-    def __init__(self, min_value: Optional[Union[int, float]] = None, 
+    def __init__(self, min_value: Optional[Union[int, float]] = None,
                  max_value: Optional[Union[int, float]] = None, **kwargs: Any) -> None:
         """Initialize a new NumberField.
 
@@ -1551,7 +1552,9 @@ class RecordIDField(Field):
         """
         value = super().validate(value)
         if value is not None:
-            if isinstance(value, str):
+            if isinstance(value, RecordID):
+                return str(value)
+            elif isinstance(value, str):
                 # Check if it's in the format "table:id"
                 if ':' not in value:
                     raise ValueError(f"Invalid record ID format for field '{self.name}', expected 'table:id'")

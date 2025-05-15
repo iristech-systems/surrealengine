@@ -2,7 +2,7 @@ import json
 import datetime
 from typing import Any, Dict, List, Optional, Type, Union, ClassVar
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
-from .fields import Field
+from .fields import Field, RecordIDField
 from .connection import ConnectionRegistry, SurrealEngineAsyncConnection, SurrealEngineSyncConnection
 from surrealdb import RecordID
 from .signals import (
@@ -105,6 +105,7 @@ class Document(metaclass=DocumentMetaclass):
         _meta: Dictionary of metadata for this document class (class attribute)
     """
     objects = QuerySetDescriptor()
+    id = RecordIDField()
 
     def __init__(self, **values: Any) -> None:
         """Initialize a new Document.
@@ -115,6 +116,9 @@ class Document(metaclass=DocumentMetaclass):
         Raises:
             AttributeError: If strict mode is enabled and an unknown field is provided
         """
+        if 'id' not in self._fields:
+            self._fields['id'] = RecordIDField()
+
         # Trigger pre_init signal
         if SIGNAL_SUPPORT:
             pre_init.send(self.__class__, document=self, values=values)
@@ -257,33 +261,38 @@ class Document(metaclass=DocumentMetaclass):
         return result
 
     @classmethod
-    def from_db(cls, data: Any) -> 'Document':
-        """Create instance from database data.
-
-        This method creates a new document instance from data retrieved
-        from the database. It handles conversion of RecordID objects to
-        strings.
+    def from_db(cls, data: Dict[str, Any]) -> 'Document':
+        """Create a document instance from database data.
 
         Args:
-            data: Data from the database
+            data: Dictionary of field values from the database
 
         Returns:
             A new document instance
         """
-        instance = cls()
+        # Create an empty instance without triggering signals
+        instance = cls.__new__(cls)
 
-        # Convert RecordID to string if needed
-        if isinstance(data, dict):
-            processed_data = {}
-            for key, value in data.items():
-                if isinstance(value, RecordID):
-                    processed_data[key] = str(value)
-                else:
-                    processed_data[key] = value
-            instance._data = processed_data
-        else:
-            print(f"Warning: Expected dict, got {type(data)}: {data}")
-            instance._data = {}
+        # Initialize _data and _changed_fields
+        instance._data = {}
+        instance._changed_fields = []
+
+        # Add id field if not present
+        if 'id' not in instance._fields:
+            instance._fields['id'] = RecordIDField()
+
+        # Set default values
+        for field_name, field in instance._fields.items():
+            value = field.default
+            if callable(value):
+                value = value()
+            instance._data[field_name] = value
+
+        # Update with database values
+        for key, value in data.items():
+            if key in instance._fields:
+                field = instance._fields[key]
+                instance._data[key] = field.from_db(value)
 
         return instance
 
@@ -576,7 +585,7 @@ class Document(metaclass=DocumentMetaclass):
         return relation_query_builder
 
     async def fetch_relation(self, relation_name: str, target_document: Optional[Type] = None,
-                            connection: Optional[Any] = None, **filters: Any) -> List[Any]:
+                             connection: Optional[Any] = None, **filters: Any) -> List[Any]:
         """Fetch related documents asynchronously.
 
         This method fetches documents related to this document through
@@ -597,7 +606,7 @@ class Document(metaclass=DocumentMetaclass):
         return await relation_query.get_related(self, target_document, **filters)
 
     def fetch_relation_sync(self, relation_name: str, target_document: Optional[Type] = None,
-                          connection: Optional[Any] = None, **filters: Any) -> List[Any]:
+                            connection: Optional[Any] = None, **filters: Any) -> List[Any]:
         """Fetch related documents synchronously.
 
         This method fetches documents related to this document through
@@ -618,7 +627,7 @@ class Document(metaclass=DocumentMetaclass):
         return relation_query.get_related_sync(self, target_document, **filters)
 
     async def resolve_relation(self, relation_name: str, target_document_class: Optional[Type] = None,
-                                 connection: Optional[Any] = None) -> List[Any]:
+                               connection: Optional[Any] = None) -> List[Any]:
         """Resolve related documents from a relation fetch result asynchronously.
 
         This method resolves related documents from a relation fetch result.
@@ -641,29 +650,30 @@ class Document(metaclass=DocumentMetaclass):
             return []
 
         resolved_documents = []
-        if isinstance(relation_data, dict) and 'related' in relation_data and isinstance(relation_data['related'], list):
-                for related_id in relation_data['related']:
-                    if isinstance(related_id, RecordID):
-                        collection = related_id.table_name
-                        record_id = related_id.id
+        if isinstance(relation_data, dict) and 'related' in relation_data and isinstance(relation_data['related'],
+                                                                                         list):
+            for related_id in relation_data['related']:
+                if isinstance(related_id, RecordID):
+                    collection = related_id.table_name
+                    record_id = related_id.id
 
-                        # Fetch the actual document
-                        try:
-                            result = await connection.client.select(related_id)
-                            if result and isinstance(result, list):
-                                doc = result[0]
-                            else:
-                                doc = result
+                    # Fetch the actual document
+                    try:
+                        result = await connection.client.select(related_id)
+                        if result and isinstance(result, list):
+                            doc = result[0]
+                        else:
+                            doc = result
 
-                            if doc:
-                                resolved_documents.append(doc)
-                        except Exception as e:
-                            print(f"Error resolving document {collection}:{record_id}: {str(e)}")
+                        if doc:
+                            resolved_documents.append(doc)
+                    except Exception as e:
+                        print(f"Error resolving document {collection}:{record_id}: {str(e)}")
 
         return resolved_documents
 
     def resolve_relation_sync(self, relation_name: str, target_document_class: Optional[Type] = None,
-                             connection: Optional[Any] = None) -> List[Any]:
+                              connection: Optional[Any] = None) -> List[Any]:
         """Resolve related documents from a relation fetch result synchronously.
 
         This method resolves related documents from a relation fetch result.
@@ -686,24 +696,25 @@ class Document(metaclass=DocumentMetaclass):
             return []
 
         resolved_documents = []
-        if isinstance(relation_data, dict) and 'related' in relation_data and isinstance(relation_data['related'], list):
-                for related_id in relation_data['related']:
-                    if isinstance(related_id, RecordID):
-                        collection = related_id.table_name
-                        record_id = related_id.id
+        if isinstance(relation_data, dict) and 'related' in relation_data and isinstance(relation_data['related'],
+                                                                                         list):
+            for related_id in relation_data['related']:
+                if isinstance(related_id, RecordID):
+                    collection = related_id.table_name
+                    record_id = related_id.id
 
-                        # Fetch the actual document
-                        try:
-                            result = connection.client.select(related_id)
-                            if result and isinstance(result, list):
-                                doc = result[0]
-                            else:
-                                doc = result
+                    # Fetch the actual document
+                    try:
+                        result = connection.client.select(related_id)
+                        if result and isinstance(result, list):
+                            doc = result[0]
+                        else:
+                            doc = result
 
-                            if doc:
-                                resolved_documents.append(doc)
-                        except Exception as e:
-                            print(f"Error resolving document {collection}:{record_id}: {str(e)}")
+                        if doc:
+                            resolved_documents.append(doc)
+                    except Exception as e:
+                        print(f"Error resolving document {collection}:{record_id}: {str(e)}")
 
         return resolved_documents
 
@@ -728,7 +739,7 @@ class Document(metaclass=DocumentMetaclass):
         return await relation_query.relate(self, target_instance, **attrs)
 
     def relate_to_sync(self, relation_name: str, target_instance: Any,
-                      connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
+                       connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
         """Create a relation to another document synchronously.
 
         This method creates a relation from this document to another document.
@@ -748,7 +759,7 @@ class Document(metaclass=DocumentMetaclass):
         return relation_query.relate_sync(self, target_instance, **attrs)
 
     async def update_relation_to(self, relation_name: str, target_instance: Any,
-                               connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
+                                 connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
         """Update a relation to another document asynchronously.
 
         This method updates a relation from this document to another document.
@@ -768,7 +779,7 @@ class Document(metaclass=DocumentMetaclass):
         return await relation_query.update_relation(self, target_instance, **attrs)
 
     def update_relation_to_sync(self, relation_name: str, target_instance: Any,
-                               connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
+                                connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
         """Update a relation to another document synchronously.
 
         This method updates a relation from this document to another document.
@@ -788,7 +799,7 @@ class Document(metaclass=DocumentMetaclass):
         return relation_query.update_relation_sync(self, target_instance, **attrs)
 
     async def delete_relation_to(self, relation_name: str, target_instance: Optional[Any] = None,
-                               connection: Optional[Any] = None) -> int:
+                                 connection: Optional[Any] = None) -> int:
         """Delete a relation to another document asynchronously.
 
         This method deletes a relation from this document to another document.
@@ -809,7 +820,7 @@ class Document(metaclass=DocumentMetaclass):
         return await relation_query.delete_relation(self, target_instance)
 
     def delete_relation_to_sync(self, relation_name: str, target_instance: Optional[Any] = None,
-                               connection: Optional[Any] = None) -> int:
+                                connection: Optional[Any] = None) -> int:
         """Delete a relation to another document synchronously.
 
         This method deletes a relation from this document to another document.
@@ -830,7 +841,7 @@ class Document(metaclass=DocumentMetaclass):
         return relation_query.delete_relation_sync(self, target_instance)
 
     async def traverse_path(self, path_spec: str, target_document: Optional[Type] = None,
-                             connection: Optional[Any] = None, **filters: Any) -> List[Any]:
+                            connection: Optional[Any] = None, **filters: Any) -> List[Any]:
         """Traverse a path in the graph asynchronously.
 
         This method traverses a path in the graph starting from this document.
@@ -887,7 +898,7 @@ class Document(metaclass=DocumentMetaclass):
             return result[0]
 
     def traverse_path_sync(self, path_spec: str, target_document: Optional[Type] = None,
-                          connection: Optional[Any] = None, **filters: Any) -> List[Any]:
+                           connection: Optional[Any] = None, **filters: Any) -> List[Any]:
         """Traverse a path in the graph synchronously.
 
         This method traverses a path in the graph starting from this document.
@@ -943,51 +954,56 @@ class Document(metaclass=DocumentMetaclass):
             # Return raw path results
             return result[0]
 
-    # @classmethod
-    # async def bulk_create(cls, documents: List[Any], batch_size: int = 1000,
-    #                       validate: bool = True, return_documents: bool = True,
-    #                       connection: Optional[Any] = None) -> Union[List[Any], int]:
-    #     """Create multiple documents in a single operation asynchronously.
-    #
-    #     This method creates multiple documents in a single operation, processing
-    #     them in batches for better performance. It can optionally validate the
-    #     documents and return the created documents.
-    #
-    #     Args:
-    #         documents: List of Document instances to create
-    #         batch_size: Number of documents per batch (default: 1000)
-    #         validate: Whether to validate documents (default: True)
-    #         return_documents: Whether to return created documents (default: True)
-    #         connection: The database connection to use (optional)
-    #
-    #     Returns:
-    #         List of created documents with their IDs set if return_documents=True,
-    #         otherwise returns the count of created documents
-    #     """
-    #     # Trigger pre_bulk_insert signal
-    #     if SIGNAL_SUPPORT:
-    #         pre_bulk_insert.send(cls, documents=documents)
-    #
-    #     if connection is None:
-    #         connection = ConnectionRegistry.get_default_connection(async_mode=True)
-    #
-    #     result = await cls.bulk_create(
-    #         documents,
-    #         batch_size=batch_size,
-    #         validate=validate,
-    #         return_documents=return_documents
-    #     )
-    #
-    #     # Trigger post_bulk_insert signal
-    #     if SIGNAL_SUPPORT:
-    #         post_bulk_insert.send(cls, documents=documents, loaded=return_documents)
-    #
-    #     return result
+    @classmethod
+    async def bulk_create(self, documents: List[Any], batch_size: int = 1000,
+                          validate: bool = True, return_documents: bool = True, connection: Optional[Any] = None) -> \
+    Union[List[Any], int]:
+        """Create multiple documents in batches.
+
+        Args:
+            documents: List of documents to create
+            batch_size: Number of documents per batch
+            validate: Whether to validate documents before creation
+            return_documents: Whether to return created documents
+
+        Returns:
+            List of created documents if return_documents=True, else count of created documents
+        """
+        results = []
+        total_count = 0
+
+        # Process documents in batches
+        for i in range(0, len(documents), batch_size):
+            batch = documents[i:i + batch_size]
+
+            if validate:
+                # Perform validation without using asyncio.gather since validate is not async
+                for doc in batch:
+                    doc.validate()
+
+            # Convert batch to DB representation
+            data = [doc.to_db() for doc in batch]
+
+            # Create the documents in the database
+            collection = batch[0]._get_collection_name()
+            if connection is None:
+                connection = ConnectionRegistry.get_default_connection()
+            created = await connection.client.insert(collection, data)
+
+            if created:
+                if return_documents:
+                    # Convert created records back to documents
+                    for record in created:
+                        doc = self.from_db(record)
+                        results.append(doc)
+                total_count += len(created)
+
+        return results if return_documents else total_count
 
     @classmethod
     def bulk_create_sync(cls, documents: List[Any], batch_size: int = 1000,
-                        validate: bool = True, return_documents: bool = True,
-                        connection: Optional[Any] = None) -> Union[List[Any], int]:
+                         validate: bool = True, return_documents: bool = True,
+                         connection: Optional[Any] = None) -> Union[List[Any], int]:
         """Create multiple documents in a single operation synchronously.
 
         This method creates multiple documents in a single operation, processing
@@ -1066,8 +1082,8 @@ class Document(metaclass=DocumentMetaclass):
 
     @classmethod
     def create_index_sync(cls, index_name: str, fields: List[str], unique: bool = False,
-                         search: bool = False, analyzer: Optional[str] = None,
-                         comment: Optional[str] = None, connection: Optional[Any] = None) -> None:
+                          search: bool = False, analyzer: Optional[str] = None,
+                          comment: Optional[str] = None, connection: Optional[Any] = None) -> None:
         """Create an index on the document's collection synchronously.
 
         Args:
@@ -1197,7 +1213,7 @@ class Document(metaclass=DocumentMetaclass):
             The SurrealDB type as a string
         """
         from .fields import (
-            StringField, IntField, FloatField, BooleanField, 
+            StringField, IntField, FloatField, BooleanField,
             DateTimeField, ListField, DictField, ReferenceField,
             GeometryField, RelationField, DecimalField, DurationField,
             BytesField, RegexField, OptionField, FutureField,
