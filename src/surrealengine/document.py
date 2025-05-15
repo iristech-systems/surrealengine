@@ -5,6 +5,10 @@ from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
 from .fields import Field
 from .connection import ConnectionRegistry, SurrealEngineAsyncConnection, SurrealEngineSyncConnection
 from surrealdb import RecordID
+from .signals import (
+    pre_init, post_init, pre_save, pre_save_post_validation, post_save,
+    pre_delete, post_delete, pre_bulk_insert, post_bulk_insert, SIGNAL_SUPPORT
+)
 
 
 class DocumentMetaclass(type):
@@ -111,6 +115,10 @@ class Document(metaclass=DocumentMetaclass):
         Raises:
             AttributeError: If strict mode is enabled and an unknown field is provided
         """
+        # Trigger pre_init signal
+        if SIGNAL_SUPPORT:
+            pre_init.send(self.__class__, document=self, values=values)
+
         self._data: Dict[str, Any] = {}
         self._changed_fields: List[str] = []
 
@@ -127,6 +135,10 @@ class Document(metaclass=DocumentMetaclass):
                 setattr(self, key, value)
             elif self._meta.get('strict', True):
                 raise AttributeError(f"Unknown field: {key}")
+
+        # Trigger post_init signal
+        if SIGNAL_SUPPORT:
+            post_init.send(self.__class__, document=self)
 
     def __getattr__(self, name: str) -> Any:
         """Get a field value.
@@ -291,16 +303,25 @@ class Document(metaclass=DocumentMetaclass):
         Raises:
             ValidationError: If the document fails validation
         """
+        # Trigger pre_save signal
+        if SIGNAL_SUPPORT:
+            pre_save.send(self.__class__, document=self)
+
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=True)
 
         self.validate()
         data = self.to_db()
 
+        # Trigger pre_save_post_validation signal
+        if SIGNAL_SUPPORT:
+            pre_save_post_validation.send(self.__class__, document=self)
+
+        is_new = not self.id
         if self.id:
             # Update existing document
             result = await connection.client.update(
-                f"{self._get_collection_name()}:{self.id}",
+                f"{self.id}",
                 data
             )
         else:
@@ -324,6 +345,10 @@ class Document(metaclass=DocumentMetaclass):
                 if 'id' in doc_data:
                     self._data['id'] = doc_data['id']
 
+        # Trigger post_save signal
+        if SIGNAL_SUPPORT:
+            post_save.send(self.__class__, document=self, created=is_new)
+
         return self
 
     def save_sync(self, connection: Optional[Any] = None) -> 'Document':
@@ -342,12 +367,21 @@ class Document(metaclass=DocumentMetaclass):
         Raises:
             ValidationError: If the document fails validation
         """
+        # Trigger pre_save signal
+        if SIGNAL_SUPPORT:
+            pre_save.send(self.__class__, document=self)
+
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=False)
 
         self.validate()
         data = self.to_db()
 
+        # Trigger pre_save_post_validation signal
+        if SIGNAL_SUPPORT:
+            pre_save_post_validation.send(self.__class__, document=self)
+
+        is_new = not self.id
         if self.id:
             # Update existing document
             result = connection.client.update(
@@ -375,6 +409,10 @@ class Document(metaclass=DocumentMetaclass):
                 if 'id' in doc_data:
                     self._data['id'] = doc_data['id']
 
+        # Trigger post_save signal
+        if SIGNAL_SUPPORT:
+            post_save.send(self.__class__, document=self, created=is_new)
+
         return self
 
     async def delete(self, connection: Optional[Any] = None) -> bool:
@@ -391,12 +429,21 @@ class Document(metaclass=DocumentMetaclass):
         Raises:
             ValueError: If the document doesn't have an ID
         """
+        # Trigger pre_delete signal
+        if SIGNAL_SUPPORT:
+            pre_delete.send(self.__class__, document=self)
+
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=True)
         if not self.id:
             raise ValueError("Cannot delete a document without an ID")
 
         await connection.client.delete(f"{self.id}")
+
+        # Trigger post_delete signal
+        if SIGNAL_SUPPORT:
+            post_delete.send(self.__class__, document=self)
+
         return True
 
     def delete_sync(self, connection: Optional[Any] = None) -> bool:
@@ -413,12 +460,21 @@ class Document(metaclass=DocumentMetaclass):
         Raises:
             ValueError: If the document doesn't have an ID
         """
+        # Trigger pre_delete signal
+        if SIGNAL_SUPPORT:
+            pre_delete.send(self.__class__, document=self)
+
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=False)
         if not self.id:
             raise ValueError("Cannot delete a document without an ID")
 
         connection.client.delete(f"{self.id}")
+
+        # Trigger post_delete signal
+        if SIGNAL_SUPPORT:
+            post_delete.send(self.__class__, document=self)
+
         return True
 
     async def refresh(self, connection: Optional[Any] = None) -> 'Document':
@@ -440,7 +496,7 @@ class Document(metaclass=DocumentMetaclass):
         if not self.id:
             raise ValueError("Cannot refresh a document without an ID")
 
-        result = await connection.client.select(f"{self._get_collection_name()}:{self.id}")
+        result = await connection.client.select(f"{self.id}")
         if result:
             if isinstance(result, list) and result:
                 doc = result[0]
@@ -474,7 +530,7 @@ class Document(metaclass=DocumentMetaclass):
         if not self.id:
             raise ValueError("Cannot refresh a document without an ID")
 
-        result = connection.client.select(f"{self._get_collection_name()}:{self.id}")
+        result = connection.client.select(f"{self.id}")
         if result:
             if isinstance(result, list) and result:
                 doc = result[0]
@@ -887,35 +943,46 @@ class Document(metaclass=DocumentMetaclass):
             # Return raw path results
             return result[0]
 
-    @classmethod
-    async def bulk_create(cls, documents: List[Any], batch_size: int = 1000,
-                          validate: bool = True, return_documents: bool = True,
-                          connection: Optional[Any] = None) -> Union[List[Any], int]:
-        """Create multiple documents in a single operation asynchronously.
-
-        This method creates multiple documents in a single operation, processing
-        them in batches for better performance. It can optionally validate the
-        documents and return the created documents.
-
-        Args:
-            documents: List of Document instances to create
-            batch_size: Number of documents per batch (default: 1000)
-            validate: Whether to validate documents (default: True)
-            return_documents: Whether to return created documents (default: True)
-            connection: The database connection to use (optional)
-
-        Returns:
-            List of created documents with their IDs set if return_documents=True,
-            otherwise returns the count of created documents
-        """
-        if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
-        return await cls.objects(connection).bulk_create(
-            documents,
-            batch_size=batch_size,
-            validate=validate,
-            return_documents=return_documents
-        )
+    # @classmethod
+    # async def bulk_create(cls, documents: List[Any], batch_size: int = 1000,
+    #                       validate: bool = True, return_documents: bool = True,
+    #                       connection: Optional[Any] = None) -> Union[List[Any], int]:
+    #     """Create multiple documents in a single operation asynchronously.
+    #
+    #     This method creates multiple documents in a single operation, processing
+    #     them in batches for better performance. It can optionally validate the
+    #     documents and return the created documents.
+    #
+    #     Args:
+    #         documents: List of Document instances to create
+    #         batch_size: Number of documents per batch (default: 1000)
+    #         validate: Whether to validate documents (default: True)
+    #         return_documents: Whether to return created documents (default: True)
+    #         connection: The database connection to use (optional)
+    #
+    #     Returns:
+    #         List of created documents with their IDs set if return_documents=True,
+    #         otherwise returns the count of created documents
+    #     """
+    #     # Trigger pre_bulk_insert signal
+    #     if SIGNAL_SUPPORT:
+    #         pre_bulk_insert.send(cls, documents=documents)
+    #
+    #     if connection is None:
+    #         connection = ConnectionRegistry.get_default_connection(async_mode=True)
+    #
+    #     result = await cls.bulk_create(
+    #         documents,
+    #         batch_size=batch_size,
+    #         validate=validate,
+    #         return_documents=return_documents
+    #     )
+    #
+    #     # Trigger post_bulk_insert signal
+    #     if SIGNAL_SUPPORT:
+    #         post_bulk_insert.send(cls, documents=documents, loaded=return_documents)
+    #
+    #     return result
 
     @classmethod
     def bulk_create_sync(cls, documents: List[Any], batch_size: int = 1000,
@@ -938,15 +1005,26 @@ class Document(metaclass=DocumentMetaclass):
             List of created documents with their IDs set if return_documents=True,
             otherwise returns the count of created documents
         """
+        # Trigger pre_bulk_insert signal
+        if SIGNAL_SUPPORT:
+            pre_bulk_insert.send(cls, documents=documents)
+
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=False)
             print(connection)
-        return cls.objects(connection).bulk_create_sync(
+
+        result = cls.objects(connection).bulk_create_sync(
             documents,
             batch_size=batch_size,
             validate=validate,
             return_documents=return_documents
         )
+
+        # Trigger post_bulk_insert signal
+        if SIGNAL_SUPPORT:
+            post_bulk_insert.send(cls, documents=documents, loaded=return_documents)
+
+        return result
 
     @classmethod
     async def create_index(cls, index_name: str, fields: List[str], unique: bool = False,
@@ -1122,7 +1200,7 @@ class Document(metaclass=DocumentMetaclass):
             StringField, IntField, FloatField, BooleanField, 
             DateTimeField, ListField, DictField, ReferenceField,
             GeometryField, RelationField, DecimalField, DurationField,
-            BytesField, RegexField, RangeField, OptionField, FutureField,
+            BytesField, RegexField, OptionField, FutureField,
             UUIDField, TableField, RecordIDField
         )
 

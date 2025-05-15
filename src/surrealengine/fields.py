@@ -5,6 +5,10 @@ from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Pattern, Type, TypeVar, Union, cast
 from surrealdb.data.types.datetime import IsoDateTimeWrapper
 from .exceptions import ValidationError
+from .signals import (
+    pre_validate, post_validate, pre_to_db, post_to_db, 
+    pre_from_db, post_from_db, SIGNAL_SUPPORT
+)
 
 # Type variable for field types
 T = TypeVar('T')
@@ -57,9 +61,20 @@ class Field:
         Raises:
             ValueError: If the value is invalid
         """
+        # Trigger pre_validate signal
+        if SIGNAL_SUPPORT:
+            pre_validate.send(self.__class__, field=self, value=value)
+
         if value is None and self.required:
             raise ValueError(f"Field '{self.name}' is required")
-        return value
+
+        result = value
+
+        # Trigger post_validate signal
+        if SIGNAL_SUPPORT:
+            post_validate.send(self.__class__, field=self, value=result)
+
+        return result
 
     def to_db(self, value: Any) -> Any:
         """Convert Python value to database representation.
@@ -74,7 +89,17 @@ class Field:
         Returns:
             The database representation of the value
         """
-        return value
+        # Trigger pre_to_db signal
+        if SIGNAL_SUPPORT:
+            pre_to_db.send(self.__class__, field=self, value=value)
+
+        result = value
+
+        # Trigger post_to_db signal
+        if SIGNAL_SUPPORT:
+            post_to_db.send(self.__class__, field=self, value=result)
+
+        return result
 
     def from_db(self, value: Any) -> Any:
         """Convert database value to Python representation.
@@ -88,7 +113,17 @@ class Field:
         Returns:
             The Python representation of the value
         """
-        return value
+        # Trigger pre_from_db signal
+        if SIGNAL_SUPPORT:
+            pre_from_db.send(self.__class__, field=self, value=value)
+
+        result = value
+
+        # Trigger post_from_db signal
+        if SIGNAL_SUPPORT:
+            post_from_db.send(self.__class__, field=self, value=result)
+
+        return result
 
 
 class StringField(Field):
@@ -104,7 +139,7 @@ class StringField(Field):
     """
 
     def __init__(self, min_length: Optional[int] = None, max_length: Optional[int] = None, 
-                 regex: Optional[str] = None, **kwargs: Any) -> None:
+                 regex: Optional[str] = None, choices: Optional[list] = None, **kwargs: Any) -> None:
         """Initialize a new StringField.
 
         Args:
@@ -116,6 +151,7 @@ class StringField(Field):
         self.min_length = min_length
         self.max_length = max_length
         self.regex: Optional[Pattern] = re.compile(regex) if regex else None
+        self.choices: Optional[list] = choices
         super().__init__(**kwargs)
 
     def validate(self, value: Any) -> Optional[str]:
@@ -147,6 +183,9 @@ class StringField(Field):
 
             if self.regex and not self.regex.match(value):
                 raise ValueError(f"String value for '{self.name}' does not match pattern")
+
+            if self.choices and value not in self.choices:
+                raise ValueError(f"String value for '{self.name}' is not a valid choice")
 
         return value
 
