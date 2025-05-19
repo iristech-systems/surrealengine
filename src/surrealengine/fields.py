@@ -46,6 +46,7 @@ class Field:
         self.db_field = db_field
         self.owner_document: Optional[Type] = None
         self.define_schema = define_schema
+        self.py_type = Any
 
     def validate(self, value: Any) -> Any:
         """Validate the field value.
@@ -154,6 +155,7 @@ class StringField(Field):
         self.regex: Optional[Pattern] = re.compile(regex) if regex else None
         self.choices: Optional[list] = choices
         super().__init__(**kwargs)
+        self.py_type = str
 
     def validate(self, value: Any) -> Optional[str]:
         """Validate the string value.
@@ -214,6 +216,7 @@ class NumberField(Field):
         self.min_value = min_value
         self.max_value = max_value
         super().__init__(**kwargs)
+        self.py_type = Union[int, float]
 
     def validate(self, value: Any) -> Optional[Union[int, float]]:
         """Validate the numeric value.
@@ -251,6 +254,15 @@ class IntField(NumberField):
     This field type stores integer values and provides validation
     to ensure the value is an integer.
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a new IntField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+        self.py_type = int
 
     def validate(self, value: Any) -> Optional[int]:
         """Validate the integer value.
@@ -294,6 +306,15 @@ class FloatField(NumberField):
     to ensure the value can be converted to a float.
     """
 
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a new FloatField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+        self.py_type = float
+
     def validate(self, value: Any) -> Optional[float]:
         """Validate the float value.
 
@@ -323,6 +344,15 @@ class BooleanField(Field):
     This field type stores boolean values and provides validation
     to ensure the value is a boolean.
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a new BooleanField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+        self.py_type = bool
 
     def validate(self, value: Any) -> Optional[bool]:
         """Validate the boolean value.
@@ -365,6 +395,15 @@ class DateTimeField(Field):
         await event.save()
         ```
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a new DateTimeField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+        self.py_type = datetime.datetime
 
     def validate(self, value: Any) -> Optional[datetime.datetime]:
         """Validate the datetime value.
@@ -467,6 +506,7 @@ class ListField(Field):
         """
         self.field_type = field_type
         super().__init__(**kwargs)
+        self.py_type = list
 
     def validate(self, value: Any) -> Optional[List[Any]]:
         """Validate the list value.
@@ -551,6 +591,7 @@ class DictField(Field):
         """
         self.field_type = field_type
         super().__init__(**kwargs)
+        self.py_type = dict
 
     def validate(self, value: Any) -> Optional[Dict[str, Any]]:
         """Validate the dictionary value.
@@ -633,6 +674,7 @@ class ReferenceField(Field):
         """
         self.document_type = document_type
         super().__init__(**kwargs)
+        self.py_type = Union[Type, str, dict]
 
     def validate(self, value: Any) -> Any:
         """Validate the reference value.
@@ -743,6 +785,7 @@ class GeometryField(Field):
             **kwargs: Additional field options to be passed to the parent Field class.
         """
         super().__init__(required=required, **kwargs)
+        self.py_type = dict
 
     def validate(self, value):
         """Validate geometry data.
@@ -821,6 +864,7 @@ class RelationField(Field):
         """
         self.to_document = to_document
         super().__init__(**kwargs)
+        self.py_type = Union[Type, str, dict]
 
     def validate(self, value: Any) -> Any:
         """Validate the relation value.
@@ -906,6 +950,15 @@ class DecimalField(NumberField):
     This field type stores decimal values with arbitrary precision using Python''s
     Decimal class. It provides validation to ensure the value is a valid decimal."""
 
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a new DecimalField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+        self.py_type = Decimal
+
     def validate(self, value: Any) -> Optional[Decimal]:
         """Validate the decimal value.
 
@@ -969,6 +1022,15 @@ class DurationField(Field):
     This field type stores durations of time and provides validation and
     conversion between Python timedelta objects and SurrealDB duration strings.
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a new DurationField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+        self.py_type = datetime.timedelta
 
     def validate(self, value: Any) -> Optional[datetime.timedelta]:
         """Validate the duration value.
@@ -1089,6 +1151,15 @@ class BytesField(Field):
     conversion between Python bytes objects and SurrealDB bytes format.
     """
 
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a new BytesField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+        self.py_type = bytes
+
     def validate(self, value: Any) -> Optional[bytes]:
         """Validate the bytes value.
 
@@ -1177,6 +1248,15 @@ class RegexField(Field):
     This field type stores regular expressions and provides validation and
     conversion between Python regex pattern objects and SurrealDB regex format.
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a new RegexField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+        self.py_type = Pattern
 
     def validate(self, value: Any) -> Optional[Pattern]:
         """Validate the regex value.
@@ -1288,6 +1368,7 @@ class OptionField(Field):
         """
         self.field_type = field_type
         super().__init__(**kwargs)
+        self.py_type = Any
 
     def validate(self, value: Any) -> Any:
         """Validate the option value.
@@ -1364,6 +1445,7 @@ class FutureField(Field):
         """
         self.computation_expression = computation_expression
         super().__init__(**kwargs)
+        self.py_type = Any
 
     def to_db(self, value: Any) -> str:
         """Convert to SurrealDB future syntax.
@@ -1394,6 +1476,15 @@ class UUIDField(Field):
             api_key = UUIDField()
         ```
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a new UUIDField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+        self.py_type = uuid.UUID
 
     def validate(self, value: Any) -> Optional[uuid.UUID]:
         """Validate the UUID value.
@@ -1475,6 +1566,15 @@ class TableField(Field):
         ```
     """
 
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a new TableField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+        self.py_type = str
+
     def validate(self, value: Any) -> Optional[str]:
         """Validate the table name.
 
@@ -1534,6 +1634,15 @@ class RecordIDField(Field):
             target = RecordIDField()
         ```
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a new RecordIDField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+        self.py_type = str
 
     def validate(self, value: Any) -> Optional[str]:
         """Validate the record ID.

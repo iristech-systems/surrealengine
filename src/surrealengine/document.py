@@ -1,5 +1,6 @@
 import json
 import datetime
+from dataclasses import dataclass, field as dataclass_field, make_dataclass
 from typing import Any, Dict, List, Optional, Type, Union, ClassVar
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
 from .fields import Field, RecordIDField
@@ -1385,3 +1386,47 @@ class Document(metaclass=DocumentMetaclass):
                 except Exception as e:
                     print(field_query)
                     raise e
+
+    @classmethod
+    def to_dataclass(cls):
+        """Convert the document class to a dataclass.
+
+        This method creates a dataclass based on the document's fields.
+        It uses the field names, types, and whether they are required.
+        Required fields have no default value, making them required during initialization.
+        Non-required fields use None as default if they don't define one.
+        A __post_init__ method is added to validate all fields after initialization.
+
+        Returns:
+            A dataclass type based on the document's fields
+        """
+        fields = [('id', Optional[str], dataclass_field(default=None))]
+        # Process fields
+        for field_name, field_obj in cls._fields.items():
+            print(field_name, field_obj.py_type)
+            # Skip id field as it's handled separately
+            if field_name == cls._meta.get('id_field', 'id'):
+                continue
+            # For required fields, don't provide a default value
+            if field_obj.required:
+                fields.insert(0, (field_name, field_obj.py_type))
+            # For fields with a non-callable default, use that default
+            elif field_obj.default is not None and not callable(field_obj.default):
+                fields.append((field_name, field_obj.py_type, dataclass_field(default=field_obj.default)))
+            # For other fields, use None as default
+            else:
+                fields.append((field_name, field_obj.py_type, dataclass_field(default=None)))
+
+        # Define the __post_init__ method to validate fields
+        def post_init(self):
+            """Validate all fields after initialization."""
+            for field_name, field_obj in cls._fields.items():
+                value = getattr(self, field_name, None)
+                field_obj.validate(value)
+
+        # Create the dataclass using make_dataclass
+        return make_dataclass(
+            cls_name=f"{cls.__name__}_Dataclass",
+            fields=fields,
+            namespace={"__post_init__": post_init}
+        )
