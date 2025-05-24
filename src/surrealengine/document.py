@@ -1685,3 +1685,103 @@ class RelationDocument(Document):
         # Apply the in_document filter and any additional filters
         filters = {'in': in_doc, **additional_filters}
         return queryset.filter(**filters)
+
+    async def resolve_out(self, connection=None):
+        """Resolve the out_document field asynchronously.
+
+        This method resolves the out_document field if it's currently just an ID reference.
+        If the out_document is already a document instance, it returns it directly.
+
+        Args:
+            connection: Database connection to use (optional)
+
+        Returns:
+            The resolved out_document instance
+        """
+        # If out_document is already a document instance, return it
+        if isinstance(self.out_document, Document):
+            return self.out_document
+
+        # Get the connection if not provided
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+
+        # If out_document is a string ID, fetch the document
+        if isinstance(self.out_document, str) and ':' in self.out_document:
+            try:
+                # Fetch the document using the ID
+                result = await connection.client.select(self.out_document)
+
+                # Process the result
+                if result:
+                    if isinstance(result, list) and result:
+                        doc = result[0]
+                    else:
+                        doc = result
+
+                    # Create a document instance from the result
+                    # We need to determine the document class from the ID
+                    collection = self.out_document.split(':')[0]
+                    # This assumes there's a way to get document class from collection name
+                    # You might need to adjust this based on your actual implementation
+                    doc_class = Document._get_document_class_for_collection(collection)
+
+                    if doc_class:
+                        # Create and set the document instance
+                        self.out_document = doc_class.from_db(doc)
+                        return self.out_document
+            except Exception as e:
+                print(f"Error resolving out_document {self.out_document}: {str(e)}")
+
+        # Return the current value if resolution failed
+        return self.out_document
+
+    def resolve_out_sync(self, connection=None):
+        """Resolve the out_document field synchronously.
+
+        This method resolves the out_document field if it's currently just an ID reference.
+        If the out_document is already a document instance, it returns it directly.
+
+        Args:
+            connection: Database connection to use (optional)
+
+        Returns:
+            The resolved out_document instance
+        """
+        # If out_document is already a document instance, return it
+        if isinstance(self.out_document, Document):
+            return self.out_document
+
+        # Get the connection if not provided
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+
+        # If out_document is a string ID, fetch the document
+        if isinstance(self.out_document, str) and ':' in self.out_document:
+            try:
+                # Fetch the document using the ID
+                result = connection.client.select(self.out_document)
+
+                # Process the result
+                if result:
+                    if isinstance(result, list) and result:
+                        doc = result[0]
+                    else:
+                        doc = result
+
+                    # Create a document instance from the result
+                    # We need to determine the document class from the ID
+                    collection = self.out_document.split(':')[0]
+                    # This assumes there's a way to get document class from collection name
+                    # You might need to adjust this based on your actual implementation
+                    doc_class = Document._get_document_class_for_collection(collection)
+
+                    if doc_class:
+                        # Create and set the document instance
+                        self.out_document = doc_class.from_db(doc)
+                        return self.out_document
+            except Exception as e:
+                print(f"Error resolving out_document {self.out_document}: {str(e)}")
+
+        # Return the current value if resolution failed
+        return self.out_document
