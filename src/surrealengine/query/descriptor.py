@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
-from src.surrealengine.connection import ConnectionRegistry
+from surrealengine.connection import ConnectionRegistry
 from .base import QuerySet
 
 
