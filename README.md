@@ -10,7 +10,7 @@ SurrealEngine is an Object-Document Mapper (ODM) for SurrealDB, providing a Pyth
 
 ## Installation
 ```bash
-pip install surrealengine
+pip install git+https://github.com/iristech-systems/surrealengine.git
 ```
 
 ## Quick Start
@@ -128,7 +128,35 @@ actor.relate_to_sync('acted_in', movie, role="Forrest Gump")
 movies = actor.resolve_relation_sync('acted_in')
 ```
 
-For more detailed examples of working with relations, see [relationships_example.py](./example_scripts/relationships_example.py) and [relationships.ipynb](./notebooks/relationships.ipynb).
+#### RelationDocument
+
+For more complex relationships with additional attributes, SurrealEngine provides the `RelationDocument` class:
+
+```python
+# Define a RelationDocument class
+class ActedIn(RelationDocument):
+    role = StringField()
+    year = IntField()
+
+    class Meta:
+        collection = "acted_in"
+
+# Create a relation with attributes
+relation = await ActedIn.create_relation(actor, movie, role="Forrest Gump", year=1994)
+
+# Find relations by in_document
+actor_relations = await ActedIn.find_by_in_document(actor)
+for rel in actor_relations:
+    print(f"{rel.in_document.name} played {rel.role} in {rel.out_document.title}")
+
+# Use RelationQuerySet for advanced querying
+acted_in = ActedIn.relates()
+await acted_in().relate(actor, movie, role="Forrest Gump", year=1994)
+```
+
+The `RelationDocument` class provides methods for creating, querying, updating, and deleting relations with additional attributes. It works with the `RelationQuerySet` class to provide a powerful API for working with complex relationships.
+
+For more detailed examples of working with relations, see [relationships_example.py](./example_scripts/relationships_example.py), [relationships.ipynb](./notebooks/relationships.ipynb), and [embedded_relation_example.py](./example_scripts/embedded_relation_example.py).
 
 ### Advanced Querying
 
@@ -149,6 +177,18 @@ results = await Person.objects.filter(age__gt=25).order_by("name", "DESC").all()
 page1 = await Person.objects.filter(age__gt=25).limit(10).all()
 page2 = await Person.objects.filter(age__gt=25).limit(10).start(10).all()
 
+# Group by
+grouped = await Person.objects.group_by("age").all()
+
+# Split results
+split = await Person.objects.split("hobbies").all()
+
+# Fetch related documents
+with_books = await Person.objects.fetch("authored").all()
+
+# Get first result
+first = await Person.objects.filter(age__gt=25).first()
+
 # Synchronous operations
 # Filter with complex conditions
 results = Person.objects.filter_sync(
@@ -156,6 +196,8 @@ results = Person.objects.filter_sync(
     name__contains="Jo"
 ).all_sync()
 ```
+
+The query API is implemented using the `QuerySet` and `QuerySetDescriptor` classes, which provide a fluent interface for building and executing queries. The `QuerySet` class handles the actual query execution, while the `QuerySetDescriptor` provides the interface for building queries.
 
 For more detailed examples of advanced querying, see [basic_crud_example.py](./example_scripts/basic_crud_example.py).
 

@@ -13,7 +13,7 @@ from .connection import (
 # For backward compatibility
 SurrealEngineConnection = SurrealEngineAsyncConnection
 from .schemaless import SurrealEngine
-from .document import Document
+from .document import Document, RelationDocument
 from .exceptions import (
     DoesNotExist,
     MultipleObjectsReturned,
