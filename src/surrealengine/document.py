@@ -1,8 +1,9 @@
 import json
 import datetime
+from dataclasses import dataclass, field as dataclass_field, make_dataclass
 from typing import Any, Dict, List, Optional, Type, Union, ClassVar
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
-from .fields import Field, RecordIDField
+from .fields import Field, RecordIDField, ReferenceField
 from .connection import ConnectionRegistry, SurrealEngineAsyncConnection, SurrealEngineSyncConnection
 from surrealdb import RecordID
 from .signals import (
@@ -228,7 +229,9 @@ class Document(metaclass=DocumentMetaclass):
         """Convert the document to a dictionary.
 
         This method converts the document to a dictionary containing all
-        field values including the document ID.
+        field values including the document ID. It ensures that RecordID
+        objects are properly converted to strings for JSON serialization.
+        It also recursively converts embedded documents to dictionaries.
 
         Returns:
             Dictionary of field values including ID
@@ -236,10 +239,37 @@ class Document(metaclass=DocumentMetaclass):
         # Start with the ID if it exists
         result = {}
         if self.id is not None:
-            result['id'] = self.id
+            # Convert RecordID to string if needed
+            result['id'] = str(self.id) if isinstance(self.id, RecordID) else self.id
 
-        # Add all other fields
-        result.update({k: v for k, v in self._data.items() if k in self._fields})
+        # Add all other fields with proper conversion
+        for k, v in self._data.items():
+            if k in self._fields:
+                # Convert RecordID objects to strings
+                if isinstance(v, RecordID):
+                    result[k] = str(v)
+                # Handle embedded documents by recursively calling to_dict()
+                elif hasattr(v, 'to_dict') and callable(v.to_dict):
+                    result[k] = v.to_dict()
+                # Handle lists that might contain RecordIDs or embedded documents
+                elif isinstance(v, list):
+                    result[k] = [
+                        item.to_dict() if hasattr(item, 'to_dict') and callable(item.to_dict)
+                        else str(item) if isinstance(item, RecordID)
+                        else item
+                        for item in v
+                    ]
+                # Handle dicts that might contain RecordIDs or embedded documents
+                elif isinstance(v, dict):
+                    result[k] = {
+                        key: val.to_dict() if hasattr(val, 'to_dict') and callable(val.to_dict)
+                        else str(val) if isinstance(val, RecordID)
+                        else val
+                        for key, val in v.items()
+                    }
+                else:
+                    result[k] = v
+
         return result
 
     def to_db(self) -> Dict[str, Any]:
@@ -261,11 +291,11 @@ class Document(metaclass=DocumentMetaclass):
         return result
 
     @classmethod
-    def from_db(cls, data: Dict[str, Any]) -> 'Document':
+    def from_db(cls, data: Any) -> 'Document':
         """Create a document instance from database data.
 
         Args:
-            data: Dictionary of field values from the database
+            data: Data from the database (dictionary, string, RecordID, etc.)
 
         Returns:
             A new document instance
@@ -288,11 +318,29 @@ class Document(metaclass=DocumentMetaclass):
                 value = value()
             instance._data[field_name] = value
 
-        # Update with database values
-        for key, value in data.items():
-            if key in instance._fields:
-                field = instance._fields[key]
-                instance._data[key] = field.from_db(value)
+        # If data is a dictionary, update with database values
+        if isinstance(data, dict):
+            # First, handle fields with db_field mapping
+            for field_name, field in instance._fields.items():
+                db_field = field.db_field or field_name
+                if db_field in data:
+                    instance._data[field_name] = field.from_db(data[db_field])
+
+            # Then, handle fields without db_field mapping (for backward compatibility)
+            for key, value in data.items():
+                if key in instance._fields:
+                    field = instance._fields[key]
+                    instance._data[key] = field.from_db(value)
+        # If data is a RecordID or string, set it as the ID
+        elif isinstance(data, (RecordID, str)):
+            instance._data['id'] = data
+        # For other types, try to convert to string and set as ID
+        else:
+            try:
+                instance._data['id'] = str(data)
+            except (TypeError, ValueError):
+                # If conversion fails, just use the data as is
+                pass
 
         return instance
 
@@ -349,10 +397,17 @@ class Document(metaclass=DocumentMetaclass):
 
             # Update the instance's _data with the returned document
             if isinstance(doc_data, dict):
+                # First update the raw data
                 self._data.update(doc_data)
+
                 # Make sure to capture the ID if it's a new document
                 if 'id' in doc_data:
                     self._data['id'] = doc_data['id']
+
+                # Then properly convert each field using its from_db method
+                for field_name, field in self._fields.items():
+                    if field_name in doc_data:
+                        self._data[field_name] = field.from_db(doc_data[field_name])
 
         # Trigger post_save signal
         if SIGNAL_SUPPORT:
@@ -413,10 +468,17 @@ class Document(metaclass=DocumentMetaclass):
 
             # Update the instance's _data with the returned document
             if isinstance(doc_data, dict):
+                # First update the raw data
                 self._data.update(doc_data)
+
                 # Make sure to capture the ID if it's a new document
                 if 'id' in doc_data:
                     self._data['id'] = doc_data['id']
+
+                # Then properly convert each field using its from_db method
+                for field_name, field in self._fields.items():
+                    if field_name in doc_data:
+                        self._data[field_name] = field.from_db(doc_data[field_name])
 
         # Trigger post_save signal
         if SIGNAL_SUPPORT:
@@ -585,7 +647,8 @@ class Document(metaclass=DocumentMetaclass):
         return relation_query_builder
 
     async def fetch_relation(self, relation_name: str, target_document: Optional[Type] = None,
-                             connection: Optional[Any] = None, **filters: Any) -> List[Any]:
+                             relation_document: Optional[Type] = None, connection: Optional[Any] = None,
+                             **filters: Any) -> List[Any]:
         """Fetch related documents asynchronously.
 
         This method fetches documents related to this document through
@@ -594,19 +657,27 @@ class Document(metaclass=DocumentMetaclass):
         Args:
             relation_name: Name of the relation
             target_document: The document class of the target documents (optional)
+            relation_document: The document class representing the relation (optional)
             connection: The database connection to use (optional)
             **filters: Filters to apply to the related documents
 
         Returns:
-            List of related documents or relation records
+            List of related documents, relation documents, or relation records
         """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
-        return await relation_query.get_related(self, target_document, **filters)
+        result = await relation_query.get_related(self, target_document, **filters)
+
+        # If relation_document is specified, convert the relation records to RelationDocument instances
+        if relation_document and not target_document:
+            return [relation_document.from_db(record) for record in result]
+
+        return result
 
     def fetch_relation_sync(self, relation_name: str, target_document: Optional[Type] = None,
-                            connection: Optional[Any] = None, **filters: Any) -> List[Any]:
+                            relation_document: Optional[Type] = None, connection: Optional[Any] = None,
+                            **filters: Any) -> List[Any]:
         """Fetch related documents synchronously.
 
         This method fetches documents related to this document through
@@ -615,19 +686,26 @@ class Document(metaclass=DocumentMetaclass):
         Args:
             relation_name: Name of the relation
             target_document: The document class of the target documents (optional)
+            relation_document: The document class representing the relation (optional)
             connection: The database connection to use (optional)
             **filters: Filters to apply to the related documents
 
         Returns:
-            List of related documents or relation records
+            List of related documents, relation documents, or relation records
         """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=False)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
-        return relation_query.get_related_sync(self, target_document, **filters)
+        result = relation_query.get_related_sync(self, target_document, **filters)
+
+        # If relation_document is specified, convert the relation records to RelationDocument instances
+        if relation_document and not target_document:
+            return [relation_document.from_db(record) for record in result]
+
+        return result
 
     async def resolve_relation(self, relation_name: str, target_document_class: Optional[Type] = None,
-                               connection: Optional[Any] = None) -> List[Any]:
+                               relation_document: Optional[Type] = None, connection: Optional[Any] = None) -> List[Any]:
         """Resolve related documents from a relation fetch result asynchronously.
 
         This method resolves related documents from a relation fetch result.
@@ -636,6 +714,7 @@ class Document(metaclass=DocumentMetaclass):
         Args:
             relation_name: Name of the relation to resolve
             target_document_class: Class of the target document (optional)
+            relation_document: The document class representing the relation (optional)
             connection: Database connection to use (optional)
 
         Returns:
@@ -644,8 +723,12 @@ class Document(metaclass=DocumentMetaclass):
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=True)
 
+        # If relation_document is specified, convert the relation records to RelationDocument instances
+        if relation_document and not target_document_class:
+            return await self.fetch_relation(relation_name, relation_document=relation_document, connection=connection)
+
         # First fetch the relation data
-        relation_data = await self.fetch_relation(relation_name)
+        relation_data = await self.fetch_relation(relation_name, connection=connection)
         if not relation_data:
             return []
 
@@ -673,7 +756,7 @@ class Document(metaclass=DocumentMetaclass):
         return resolved_documents
 
     def resolve_relation_sync(self, relation_name: str, target_document_class: Optional[Type] = None,
-                              connection: Optional[Any] = None) -> List[Any]:
+                              relation_document: Optional[Type] = None, connection: Optional[Any] = None) -> List[Any]:
         """Resolve related documents from a relation fetch result synchronously.
 
         This method resolves related documents from a relation fetch result.
@@ -682,6 +765,7 @@ class Document(metaclass=DocumentMetaclass):
         Args:
             relation_name: Name of the relation to resolve
             target_document_class: Class of the target document (optional)
+            relation_document: The document class representing the relation (optional)
             connection: Database connection to use (optional)
 
         Returns:
@@ -690,8 +774,12 @@ class Document(metaclass=DocumentMetaclass):
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=False)
 
+        # If relation_document is specified, convert the relation records to RelationDocument instances
+        if relation_document and not target_document_class:
+            return self.fetch_relation_sync(relation_name, relation_document=relation_document, connection=connection)
+
         # First fetch the relation data
-        relation_data = self.fetch_relation_sync(relation_name)
+        relation_data = self.fetch_relation_sync(relation_name, connection=connection)
         if not relation_data:
             return []
 
@@ -957,7 +1045,7 @@ class Document(metaclass=DocumentMetaclass):
     @classmethod
     async def bulk_create(self, documents: List[Any], batch_size: int = 1000,
                           validate: bool = True, return_documents: bool = True, connection: Optional[Any] = None) -> \
-    Union[List[Any], int]:
+            Union[List[Any], int]:
         """Create multiple documents in batches.
 
         Args:
@@ -1255,15 +1343,6 @@ class Document(metaclass=DocumentMetaclass):
             return "bytes"
         elif isinstance(field, RegexField):
             return "regex"
-        elif isinstance(field, RangeField):
-            if field.value_type:
-                if field.value_type == int:
-                    return "range<int>"
-                elif field.value_type == float:
-                    return "range<float>"
-                elif field.value_type == datetime.datetime:
-                    return "range<datetime>"
-            return "range"
         elif isinstance(field, OptionField):
             if field.field_type:
                 inner_type = cls._get_field_type_for_surreal(field.field_type)
@@ -1385,3 +1464,224 @@ class Document(metaclass=DocumentMetaclass):
                 except Exception as e:
                     print(field_query)
                     raise e
+
+    @classmethod
+    def to_dataclass(cls):
+        """Convert the document class to a dataclass.
+
+        This method creates a dataclass based on the document's fields.
+        It uses the field names, types, and whether they are required.
+        Required fields have no default value, making them required during initialization.
+        Non-required fields use None as default if they don't define one.
+        A __post_init__ method is added to validate all fields after initialization.
+
+        Returns:
+            A dataclass type based on the document's fields
+        """
+        fields = [('id', Optional[str], dataclass_field(default=None))]
+        # Process fields
+        for field_name, field_obj in cls._fields.items():
+            print(field_name, field_obj.py_type)
+            # Skip id field as it's handled separately
+            if field_name == cls._meta.get('id_field', 'id'):
+                continue
+            # For required fields, don't provide a default value
+            if field_obj.required:
+                fields.insert(0, (field_name, field_obj.py_type))
+            # For fields with a non-callable default, use that default
+            elif field_obj.default is not None and not callable(field_obj.default):
+                fields.append((field_name, field_obj.py_type, dataclass_field(default=field_obj.default)))
+            # For other fields, use None as default
+            else:
+                fields.append((field_name, field_obj.py_type, dataclass_field(default=None)))
+
+        # Define the __post_init__ method to validate fields
+        def post_init(self):
+            """Validate all fields after initialization."""
+            for field_name, field_obj in cls._fields.items():
+                value = getattr(self, field_name, None)
+                field_obj.validate(value)
+
+        # Create the dataclass using make_dataclass
+        return make_dataclass(
+            cls_name=f"{cls.__name__}_Dataclass",
+            fields=fields,
+            namespace={"__post_init__": post_init}
+        )
+
+class RelationDocument(Document):
+    """A Document that represents a relationship between two documents.
+
+    RelationDocuments should be used to model relationships with additional attributes.
+    They can be used with Document.relates(), Document.fetch_relation(), and Document.resolve_relation().
+    """
+
+    class Meta:
+        """Meta options for RelationDocument."""
+        abstract = True
+
+    in_document = ReferenceField(Document, required=True, db_field="in")
+    out_document = ReferenceField(Document, required=True, db_field="out")
+
+    @classmethod
+    def get_relation_name(cls) -> str:
+        """Get the name of the relation.
+
+        By default, this is the lowercase name of the class.
+        Override this method to customize the relation name.
+
+        Returns:
+            The name of the relation
+        """
+        return cls._meta.get('collection')
+
+    @classmethod
+    def relates(cls, from_document: Optional[Type] = None, to_document: Optional[Type] = None) -> callable:
+        """Get a RelationQuerySet for this relation.
+
+        This method returns a function that creates a RelationQuerySet for
+        this relation. The function can be called with an optional connection parameter.
+
+        Args:
+            from_document: The document class the relation is from (optional)
+            to_document: The document class the relation is to (optional)
+
+        Returns:
+            Function that creates a RelationQuerySet
+        """
+        relation_name = cls.get_relation_name()
+
+        def relation_query_builder(connection: Optional[Any] = None) -> 'RelationQuerySet':
+            """Create a RelationQuerySet for this relation.
+
+            Args:
+                connection: The database connection to use (optional)
+
+            Returns:
+                A RelationQuerySet for the relation
+            """
+            if connection is None:
+                connection = ConnectionRegistry.get_default_connection()
+            return RelationQuerySet(from_document or Document, connection, relation=relation_name)
+
+        return relation_query_builder
+
+    @classmethod
+    async def create_relation(cls, from_instance: Any, to_instance: Any, **attrs: Any) -> 'RelationDocument':
+        """Create a relation between two instances asynchronously.
+
+        This method creates a relation between two document instances and
+        returns a RelationDocument instance representing the relationship.
+
+        Args:
+            from_instance: The instance to create the relation from
+            to_instance: The instance to create the relation to
+            **attrs: Attributes to set on the relation
+
+        Returns:
+            A RelationDocument instance representing the relationship
+
+        Raises:
+            ValueError: If either instance is not saved
+        """
+        if not from_instance.id:
+            raise ValueError(f"Cannot create relation from unsaved {from_instance.__class__.__name__}")
+
+        if not to_instance.id:
+            raise ValueError(f"Cannot create relation to unsaved {to_instance.__class__.__name__}")
+
+        # Create the relation using Document.relate_to
+        relation = await from_instance.relate_to(cls.get_relation_name(), to_instance, **attrs)
+
+        # Create a RelationDocument instance from the relation data
+        relation_doc = cls(
+            in_document=from_instance,
+            out_document=to_instance,
+            **attrs
+        )
+
+        # Set the ID from the relation
+        if relation and 'id' in relation:
+            relation_doc.id = relation['id']
+
+        return relation_doc
+
+    @classmethod
+    def create_relation_sync(cls, from_instance: Any, to_instance: Any, **attrs: Any) -> 'RelationDocument':
+        """Create a relation between two instances synchronously.
+
+        This method creates a relation between two document instances and
+        returns a RelationDocument instance representing the relationship.
+
+        Args:
+            from_instance: The instance to create the relation from
+            to_instance: The instance to create the relation to
+            **attrs: Attributes to set on the relation
+
+        Returns:
+            A RelationDocument instance representing the relationship
+
+        Raises:
+            ValueError: If either instance is not saved
+        """
+        if not from_instance.id:
+            raise ValueError(f"Cannot create relation from unsaved {from_instance.__class__.__name__}")
+
+        if not to_instance.id:
+            raise ValueError(f"Cannot create relation to unsaved {to_instance.__class__.__name__}")
+
+        # Create the relation using Document.relate_to_sync
+        relation = from_instance.relate_to_sync(cls.get_relation_name(), to_instance, **attrs)
+
+        # Create a RelationDocument instance from the relation data
+        relation_doc = cls(
+            in_document=from_instance,
+            out_document=to_instance,
+            **attrs
+        )
+
+        # Set the ID from the relation
+        if relation and 'id' in relation:
+            relation_doc.id = relation['id']
+
+        return relation_doc
+
+    @classmethod
+    def find_by_in_document(cls, in_doc, **additional_filters):
+        """
+        Query RelationDocument by in_document field.
+
+        Args:
+            in_doc: The document instance or ID to filter by
+            **additional_filters: Additional filters to apply
+
+        Returns:
+            QuerySet filtered by in_document
+        """
+        # Get the default connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(cls, connection)
+
+        # Apply the in_document filter and any additional filters
+        filters = {'in': in_doc, **additional_filters}
+        return queryset.filter(**filters)
+
+    @classmethod
+    def find_by_in_document_sync(cls, in_doc, **additional_filters):
+        """
+        Query RelationDocument by in_document field synchronously.
+
+        Args:
+            in_doc: The document instance or ID to filter by
+            **additional_filters: Additional filters to apply
+
+        Returns:
+            QuerySet filtered by in_document
+        """
+        # Get the default connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(cls, connection)
+
+        # Apply the in_document filter and any additional filters
+        filters = {'in': in_doc, **additional_filters}
+        return queryset.filter(**filters)
