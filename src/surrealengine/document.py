@@ -1509,6 +1509,46 @@ class Document(metaclass=DocumentMetaclass):
             namespace={"__post_init__": post_init}
         )
 
+    @classmethod
+    def _get_document_class_for_collection(cls, collection_name: str) -> Optional[Type['Document']]:
+        """Get the document class for a collection name.
+
+        This method looks up the document class for a given collection name
+        in the document registry. If no class is found, it returns None.
+
+        Args:
+            collection_name: The name of the collection
+
+        Returns:
+            The document class for the collection, or None if not found
+        """
+        # Initialize the document registry if it doesn't exist
+        if not hasattr(cls, '_document_registry'):
+            cls._document_registry = {}
+
+            # Populate the registry with all existing document classes
+            def register_subclasses(doc_class):
+                for subclass in doc_class.__subclasses__():
+                    if hasattr(subclass, '_meta') and not subclass._meta.get('abstract', False):
+                        collection = subclass._meta.get('collection')
+                        if collection:
+                            cls._document_registry[collection] = subclass
+                    register_subclasses(subclass)
+
+            # Start with Document subclasses
+            register_subclasses(cls)
+
+        # Handle RecordID objects
+        if isinstance(collection_name, RecordID):
+            collection_name = collection_name.table_name
+
+        # Handle string IDs in the format "collection:id"
+        elif isinstance(collection_name, str) and ':' in collection_name:
+            collection_name = collection_name.split(':', 1)[0]
+
+        # Look up the document class in the registry
+        return cls._document_registry.get(collection_name)
+
 class RelationDocument(Document):
     """A Document that represents a relationship between two documents.
 
@@ -1721,7 +1761,7 @@ class RelationDocument(Document):
 
                     # Create a document instance from the result
                     # We need to determine the document class from the ID
-                    collection = self.out_document.split(':')[0]
+                    collection = str(self.out_document).split(':')[0]
                     # This assumes there's a way to get document class from collection name
                     # You might need to adjust this based on your actual implementation
                     doc_class = Document._get_document_class_for_collection(collection)
