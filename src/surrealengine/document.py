@@ -1733,6 +1733,29 @@ class RelationDocument(Document):
             except Exception as e:
                 print(f"Error resolving out_document {self.out_document}: {str(e)}")
 
+        elif isinstance(self.out_document, RecordID):
+            try:
+                result = await connection.client.select(self.out_document)
+                if result:
+                    if isinstance(result, list) and result:
+                        doc = result[0]
+                    else:
+                        doc = result
+
+                    # Create a document instance from the result
+                    # We need to determine the document class from the ID
+                    collection = str(self.out_document).split(':')[0]
+                    # This assumes there's a way to get document class from collection name
+                    # You might need to adjust this based on your actual implementation
+                    doc_class = Document._get_document_class_for_collection(collection)
+
+                    if doc_class:
+                        # Create and set the document instance
+                        self.out_document = doc_class.from_db(doc)
+                        return self.out_document
+            except Exception as e:
+                print(f"Error resolving out_document {self.out_document}: {str(e)}")
+
         # Return the current value if resolution failed
         return self.out_document
 
@@ -1772,6 +1795,29 @@ class RelationDocument(Document):
                     # Create a document instance from the result
                     # We need to determine the document class from the ID
                     collection = self.out_document.split(':')[0]
+                    # This assumes there's a way to get document class from collection name
+                    # You might need to adjust this based on your actual implementation
+                    doc_class = Document._get_document_class_for_collection(collection)
+
+                    if doc_class:
+                        # Create and set the document instance
+                        self.out_document = doc_class.from_db(doc)
+                        return self.out_document
+            except Exception as e:
+                print(f"Error resolving out_document {self.out_document}: {str(e)}")
+
+        elif isinstance(self.out_document, RecordID):
+            try:
+                result = connection.client.select(self.out_document)
+                if result:
+                    if isinstance(result, list) and result:
+                        doc = result[0]
+                    else:
+                        doc = result
+
+                    # Create a document instance from the result
+                    # We need to determine the document class from the ID
+                    collection = str(self.out_document).split(':')[0]
                     # This assumes there's a way to get document class from collection name
                     # You might need to adjust this based on your actual implementation
                     doc_class = Document._get_document_class_for_collection(collection)
