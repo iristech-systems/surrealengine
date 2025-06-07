@@ -2,6 +2,7 @@ import json
 from typing import Any, Dict, List, Optional, Tuple, Union, Type, cast
 from .exceptions import MultipleObjectsReturned, DoesNotExist
 from surrealdb import RecordID
+from .pagination import PaginationResult
 
 # Import these at runtime to avoid circular imports
 def _get_connection_classes():
@@ -543,3 +544,72 @@ class BaseQuerySet:
             Awaitable that resolves to the query results
         """
         return self.all().__await__()
+
+    def page(self, number: int, size: int) -> 'BaseQuerySet':
+        """Set pagination parameters using page number and size.
+
+        This method calculates the appropriate LIMIT and START values
+        based on the page number and size, providing a more convenient
+        way to paginate results.
+
+        Args:
+            number: Page number (1-based, first page is 1)
+            size: Number of items per page
+
+        Returns:
+            The query set instance for method chaining
+        """
+        if number < 1:
+            raise ValueError("Page number must be 1 or greater")
+        if size < 1:
+            raise ValueError("Page size must be 1 or greater")
+
+        self.limit_value = size
+        self.start_value = (number - 1) * size
+        return self
+
+    async def paginate(self, page: int, per_page: int) -> PaginationResult:
+        """Get a page of results with pagination metadata asynchronously.
+
+        This method gets a page of results along with metadata about the
+        pagination, such as the total number of items, the number of pages,
+        and whether there are next or previous pages.
+
+        Args:
+            page: The page number (1-based)
+            per_page: The number of items per page
+
+        Returns:
+            A PaginationResult containing the items and pagination metadata
+        """
+        # Get the total count
+        total = await self.count()
+
+        # Get the items for the current page
+        items = await self.page(page, per_page).all()
+
+        # Return a PaginationResult
+        return PaginationResult(items, page, per_page, total)
+
+    def paginate_sync(self, page: int, per_page: int) -> PaginationResult:
+        """Get a page of results with pagination metadata synchronously.
+
+        This method gets a page of results along with metadata about the
+        pagination, such as the total number of items, the number of pages,
+        and whether there are next or previous pages.
+
+        Args:
+            page: The page number (1-based)
+            per_page: The number of items per page
+
+        Returns:
+            A PaginationResult containing the items and pagination metadata
+        """
+        # Get the total count
+        total = self.count_sync()
+
+        # Get the items for the current page
+        items = self.page(page, per_page).all_sync()
+
+        # Return a PaginationResult
+        return PaginationResult(items, page, per_page, total)

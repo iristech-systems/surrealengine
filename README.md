@@ -9,8 +9,30 @@ SurrealEngine is an Object-Document Mapper (ODM) for SurrealDB, providing a Pyth
 - surrealdb >= 1.0.3
 
 ## Installation
+
+### Basic Installation
 ```bash
 pip install git+https://github.com/iristech-systems/surrealengine.git
+```
+
+### Optional Dependencies
+
+SurrealEngine has optional dependencies that can be installed based on your needs:
+
+- **signals**: Adds support for signals (using blinker) to enable event-driven programming
+- **jupyter**: Adds support for Jupyter notebooks for interactive development and documentation
+
+To install with optional dependencies:
+
+```bash
+# Install with signals support
+pip install git+https://github.com/iristech-systems/surrealengine.git#egg=surrealengine[signals]
+
+# Install with Jupyter support
+pip install git+https://github.com/iristech-systems/surrealengine.git#egg=surrealengine[jupyter]
+
+# Install with all optional dependencies
+pip install git+https://github.com/iristech-systems/surrealengine.git#egg=surrealengine[all]
 ```
 
 ## Quick Start
@@ -174,8 +196,21 @@ results = await Person.objects.filter(
 results = await Person.objects.filter(age__gt=25).order_by("name", "DESC").all()
 
 # Pagination
+# Basic pagination with limit and start
 page1 = await Person.objects.filter(age__gt=25).limit(10).all()
 page2 = await Person.objects.filter(age__gt=25).limit(10).start(10).all()
+
+# Enhanced pagination with page method and metadata
+paginated = await Person.objects.paginate(page=1, per_page=10)
+print(f"Page 1 of {paginated.pages}, showing {len(paginated.items)} of {paginated.total} items")
+print(f"Has next page: {paginated.has_next}, Has previous page: {paginated.has_prev}")
+
+# Iterate through paginated results
+for person in paginated:
+    print(person.name)
+
+# Get second page
+page2 = await Person.objects.paginate(page=2, per_page=10)
 
 # Group by
 grouped = await Person.objects.group_by("age").all()
@@ -245,6 +280,7 @@ For more detailed examples of schemaless operations, see [basic_crud_example.py]
 ### Collection Types
 - `ListField`: For arrays, can specify the field type for items
 - `DictField`: For nested objects, can specify the field type for values
+- `JSONField`: For storing JSON data with validation
 
 ### Reference Types
 - `ReferenceField`: For document references
@@ -257,6 +293,11 @@ For more detailed examples of schemaless operations, see [basic_crud_example.py]
 - `RangeField`: For range values (min-max pairs)
 - `OptionField`: For optional values (similar to Rust's Option type)
 - `FutureField`: For future/promise values and computed fields
+- `EmailField`: For storing email addresses with validation
+- `URLField`: For storing URLs with validation
+- `IPAddressField`: For storing IP addresses with validation (IPv4/IPv6)
+- `SlugField`: For storing URL slugs with validation
+- `ChoiceField`: For storing values from a predefined set of choices
 
 ## When to Use Sync vs. Async
 
@@ -327,6 +368,36 @@ class Product(Document):
 For more detailed examples of schema management, see [schema_management_example.py](./example_scripts/schema_management_example.py), [hybrid_schema_example.py](./example_scripts/hybrid_schema_example.py), and [schema_management.ipynb](./notebooks/schema_management.ipynb).
 
 For hybrid schemas, see [hybrid_schemas.ipynb](./notebooks/hybrid_schemas.ipynb).
+
+## Logging
+
+SurrealEngine includes a built-in logging system that provides a centralized way to log messages at different levels. The logging system is based on Python's standard logging module but provides a simpler interface.
+
+```python
+from surrealengine.logging import logger
+
+# Set the log level
+logger.set_level(10)  # DEBUG level (10)
+
+# Log messages at different levels
+logger.debug("Debug message")
+logger.info("Info message")
+logger.warning("Warning message")
+logger.error("Error message")
+logger.critical("Critical message")
+
+# Add a file handler to log to a file
+logger.add_file_handler("app.log")
+```
+
+The logging system supports the following log levels:
+- DEBUG (10): Detailed information, typically useful only when diagnosing problems
+- INFO (20): Confirmation that things are working as expected
+- WARNING (30): An indication that something unexpected happened, or may happen in the near future
+- ERROR (40): Due to a more serious problem, the software has not been able to perform some function
+- CRITICAL (50): A serious error, indicating that the program itself may be unable to continue running
+
+For more examples of using the logging system, see [test_new_features.py](./example_scripts/test_new_features.py).
 
 ## Features in Development
 

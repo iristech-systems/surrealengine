@@ -10,6 +10,7 @@ from .signals import (
     pre_validate, post_validate, pre_to_db, post_to_db,
     pre_from_db, post_from_db, SIGNAL_SUPPORT
 )
+import json
 
 # Type variable for field types
 T = TypeVar('T')
@@ -1733,4 +1734,296 @@ class SetField(ListField):
                 if db_item not in deduplicated:
                     deduplicated.append(db_item)
             return deduplicated
+        return value
+
+
+class EmailField(StringField):
+    """Field for storing email addresses with validation.
+
+    This field type stores email addresses and validates them against a regex pattern.
+
+    Example:
+        class User(Document):
+            email = EmailField(required=True)
+    """
+
+    EMAIL_REGEX = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize an EmailField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(regex=self.EMAIL_REGEX.pattern, **kwargs)
+
+    def validate(self, value: Any) -> Optional[str]:
+        """Validate that the value is a valid email address.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated email address
+
+        Raises:
+            ValidationError: If the value is not a valid email address
+        """
+        if value is None and not self.required:
+            return None
+
+        if value is not None and not isinstance(value, str):
+            raise ValidationError(f"EmailField '{self.name}' only accepts string values")
+
+        return super().validate(value)
+
+
+class URLField(StringField):
+    """Field for storing URLs with validation.
+
+    This field type stores URLs and validates them against a regex pattern.
+
+    Example:
+        class Website(Document):
+            url = URLField(required=True)
+    """
+
+    # Simpler URL regex pattern that should match most common URLs
+    URL_REGEX = re.compile(
+        r'^(https?|ftp)://'  # scheme
+        r'([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?'  # domain
+        r'(/[a-zA-Z0-9._~:/?#[\]@!$&\'()*+,;=%-]*)?$',  # path
+        re.IGNORECASE
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a URLField."""
+        # Pass the pattern string directly
+        super().__init__(regex=self.URL_REGEX.pattern, **kwargs)
+
+    def validate(self, value: Any) -> Optional[str]:
+        """Validate that the value is a valid URL.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated URL
+
+        Raises:
+            ValidationError: If the value is not a valid URL
+        """
+        if value is None and not self.required:
+            return None
+
+        if value is not None and not isinstance(value, str):
+            raise ValidationError(f"URLField '{self.name}' only accepts string values")
+
+        return super().validate(value)
+
+
+class JSONField(Field):
+    """Field for storing JSON data.
+
+    This field type stores JSON data and validates that it can be serialized to JSON.
+
+    Example:
+        class Config(Document):
+            settings = JSONField()
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a JSONField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+
+    def validate(self, value: Any) -> Any:
+        """Validate that the value is valid JSON.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated value
+
+        Raises:
+            ValidationError: If the value cannot be serialized to JSON
+        """
+        value = super().validate(value)
+
+        if value is not None:
+            try:
+                json.dumps(value)
+            except (TypeError, ValueError):
+                raise ValidationError(f"Value for field '{self.name}' cannot be serialized to JSON")
+
+        return value
+
+    def to_db(self, value: Any) -> Any:
+        """Convert the value to a database-friendly format.
+
+        Args:
+            value: The value to convert
+
+        Returns:
+            The converted value
+        """
+        if value is None:
+            return None
+
+        return value  # SurrealDB handles JSON natively
+
+    def from_db(self, value: Any) -> Any:
+        """Convert the value from a database format.
+
+        Args:
+            value: The value to convert
+
+        Returns:
+            The converted value
+        """
+        return value  # SurrealDB returns JSON as Python objects
+
+
+class IPAddressField(StringField):
+    """Field for storing IP addresses with validation.
+
+    This field type stores IP addresses and validates them against regex patterns
+    for IPv4 and/or IPv6 addresses.
+
+    Example:
+        class Server(Document):
+            ip = IPAddressField(version="ipv4")
+    """
+
+    IPV4_REGEX = re.compile(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$')
+    IPV6_REGEX = re.compile(r'^([0-9a-f]{1,4}:){7}[0-9a-f]{1,4}$', re.IGNORECASE)
+
+    def __init__(self, version: str = 'both', **kwargs: Any) -> None:
+        """Initialize an IPAddressField.
+
+        Args:
+            version: IP version to validate ('ipv4', 'ipv6', or 'both')
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        self.version = version.lower()
+        if self.version not in ('ipv4', 'ipv6', 'both'):
+            raise ValueError("version must be 'ipv4', 'ipv6', or 'both'")
+        super().__init__(**kwargs)
+
+    def validate(self, value: Any) -> Optional[str]:
+        """Validate that the value is a valid IP address.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated IP address
+
+        Raises:
+            ValidationError: If the value is not a valid IP address
+        """
+        if value is None and not self.required:
+            return None
+
+        if value is not None and not isinstance(value, str):
+            raise ValidationError(f"IPAddressField '{self.name}' only accepts string values")
+
+        if value is not None:
+            if self.version in ('ipv4', 'both') and self.IPV4_REGEX.match(value):
+                # Validate each octet is between 0 and 255
+                octets = value.split('.')
+                if all(0 <= int(octet) <= 255 for octet in octets):
+                    return value
+
+            if self.version in ('ipv6', 'both') and self.IPV6_REGEX.match(value):
+                return value
+
+            raise ValidationError(f"'{value}' is not a valid IP address for field '{self.name}'")
+
+        return value
+
+
+class SlugField(StringField):
+    """Field for storing URL slugs with validation.
+
+    This field type stores URL slugs and validates them against a regex pattern.
+
+    Example:
+        class Article(Document):
+            slug = SlugField(required=True)
+    """
+
+    SLUG_REGEX = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a SlugField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(regex=self.SLUG_REGEX.pattern, **kwargs)
+
+    def validate(self, value: Any) -> Optional[str]:
+        """Validate that the value is a valid slug.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated slug
+
+        Raises:
+            ValidationError: If the value is not a valid slug
+        """
+        if value is None and not self.required:
+            return None
+
+        if value is not None and not isinstance(value, str):
+            raise ValidationError(f"SlugField '{self.name}' only accepts string values")
+
+        return super().validate(value)
+
+
+class ChoiceField(Field):
+    """Field for storing values from a predefined set of choices.
+
+    This field type stores values from a predefined set of choices and validates
+    that the value is one of the allowed choices.
+
+    Example:
+        class Product(Document):
+            status = ChoiceField(choices=["active", "inactive", "discontinued"])
+    """
+
+    def __init__(self, choices: List[Any], **kwargs: Any) -> None:
+        """Initialize a ChoiceField.
+
+        Args:
+            choices: List of valid choices
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        self.choices = choices
+        super().__init__(**kwargs)
+
+    def validate(self, value: Any) -> Any:
+        """Validate that the value is one of the predefined choices.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated value
+
+        Raises:
+            ValidationError: If the value is not one of the predefined choices
+        """
+        value = super().validate(value)
+
+        if value is not None and value not in self.choices:
+            raise ValidationError(f"'{value}' is not a valid choice for field '{self.name}'. Valid choices are: {self.choices}")
+
         return value

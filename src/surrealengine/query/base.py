@@ -1,6 +1,6 @@
-from surrealengine.base_query import BaseQuerySet
+from ..base_query import BaseQuerySet
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
-from surrealengine.exceptions import MultipleObjectsReturned, DoesNotExist
+from ..exceptions import MultipleObjectsReturned, DoesNotExist
 import json
 import asyncio
 

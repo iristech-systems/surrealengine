@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
-from surrealengine.connection import ConnectionRegistry
+from ..connection import ConnectionRegistry
 from .base import QuerySet
+from ..pagination import PaginationResult
 
 
 class QuerySetDescriptor:
@@ -38,13 +39,18 @@ class QuerySetDescriptor:
         self.connection = None
         return self
 
-    async def __call__(self, **kwargs: Any) -> List[Any]:
+    async def __call__(self, limit: Optional[int] = None, start: Optional[int] = None,
+                       page: Optional[tuple] = None, **kwargs: Any) -> List[Any]:
         """Allow direct filtering through call syntax asynchronously.
 
         This method allows calling the descriptor directly with filters
-        to query the document class.
+        to query the document class. It supports pagination through limit and start parameters
+        or the page parameter.
 
         Args:
+            limit: Maximum number of results to return (for pagination)
+            start: Number of results to skip (for pagination)
+            page: Tuple of (page_number, page_size) for pagination
             **kwargs: Field names and values to filter by
 
         Returns:
@@ -53,16 +59,33 @@ class QuerySetDescriptor:
         # Get the default async connection
         connection = ConnectionRegistry.get_default_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
-        # Apply filters and return results
-        return await queryset.filter(**kwargs).all()
+        # Apply filters and pagination
+        queryset = queryset.filter(**kwargs)
 
-    def call_sync(self, **kwargs: Any) -> List[Any]:
+        if page is not None:
+            page_number, page_size = page
+            queryset = queryset.page(page_number, page_size)
+        else:
+            if limit is not None:
+                queryset = queryset.limit(limit)
+            if start is not None:
+                queryset = queryset.start(start)
+
+        # Return results
+        return await queryset.all()
+
+    def call_sync(self, limit: Optional[int] = None, start: Optional[int] = None,
+                  page: Optional[tuple] = None, **kwargs: Any) -> List[Any]:
         """Allow direct filtering through call syntax synchronously.
 
         This method allows calling the descriptor directly with filters
-        to query the document class.
+        to query the document class. It supports pagination through limit and start parameters
+        or the page parameter.
 
         Args:
+            limit: Maximum number of results to return (for pagination)
+            start: Number of results to skip (for pagination)
+            page: Tuple of (page_number, page_size) for pagination
             **kwargs: Field names and values to filter by
 
         Returns:
@@ -71,8 +94,20 @@ class QuerySetDescriptor:
         # Get the default sync connection
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
-        # Apply filters and return results
-        return queryset.filter(**kwargs).all_sync()
+        # Apply filters and pagination
+        queryset = queryset.filter(**kwargs)
+
+        if page is not None:
+            page_number, page_size = page
+            queryset = queryset.page(page_number, page_size)
+        else:
+            if limit is not None:
+                queryset = queryset.limit(limit)
+            if start is not None:
+                queryset = queryset.start(start)
+
+        # Return results
+        return queryset.all_sync()
 
     async def get(self, **kwargs: Any) -> Any:
         """Allow direct get operation asynchronously.
@@ -355,3 +390,73 @@ class QuerySetDescriptor:
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.first_sync()
+
+    def page(self, number: int, size: int) -> QuerySet:
+        """Set pagination parameters using page number and size.
+
+        Args:
+            number: Page number (1-based, first page is 1)
+            size: Number of items per page
+
+        Returns:
+            A QuerySet with pagination applied
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.page(number, size)
+
+    def page_sync(self, number: int, size: int) -> QuerySet:
+        """Set pagination parameters using page number and size using the default sync connection.
+
+        Args:
+            number: Page number (1-based, first page is 1)
+            size: Number of items per page
+
+        Returns:
+            A QuerySet with pagination applied
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.page(number, size)
+
+    async def paginate(self, page: int, per_page: int) -> 'PaginationResult':
+        """Get a page of results with pagination metadata asynchronously.
+
+        This method gets a page of results along with metadata about the
+        pagination, such as the total number of items, the number of pages,
+        and whether there are next or previous pages.
+
+        Args:
+            page: The page number (1-based)
+            per_page: The number of items per page
+
+        Returns:
+            A PaginationResult containing the items and pagination metadata
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        # Return the paginated results
+        return await queryset.paginate(page, per_page)
+
+    def paginate_sync(self, page: int, per_page: int) -> 'PaginationResult':
+        """Get a page of results with pagination metadata synchronously.
+
+        This method gets a page of results along with metadata about the
+        pagination, such as the total number of items, the number of pages,
+        and whether there are next or previous pages.
+
+        Args:
+            page: The page number (1-based)
+            per_page: The number of items per page
+
+        Returns:
+            A PaginationResult containing the items and pagination metadata
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        # Return the paginated results
+        return queryset.paginate_sync(page, per_page)

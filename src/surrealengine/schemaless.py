@@ -918,21 +918,40 @@ class SchemalessTable:
         """
         return SchemalessQuerySet(self.name, self.connection)
 
-    async def __call__(self, **kwargs: Any) -> List[Any]:
+    async def __call__(self, limit: Optional[int] = None, start: Optional[int] = None,
+                       page: Optional[tuple] = None, **kwargs: Any) -> List[Any]:
         """Query the table with filters asynchronously.
 
         This method allows calling the table instance directly with filters
-        to query the table. It returns the results as SimpleNamespace objects
+        to query the table. It supports pagination through limit and start parameters
+        or the page parameter. It returns the results as SimpleNamespace objects
         if they aren't already Document instances.
 
         Args:
+            limit: Maximum number of results to return (for pagination)
+            start: Number of results to skip (for pagination)
+            page: Tuple of (page_number, page_size) for pagination
             **kwargs: Field names and values to filter by
 
         Returns:
             List of results, either document instances or SimpleNamespace objects
         """
         queryset = SchemalessQuerySet(self.name, self.connection)
-        results = await queryset.filter(**kwargs).all()
+        # Apply filters
+        queryset = queryset.filter(**kwargs)
+
+        # Apply pagination
+        if page is not None:
+            page_number, page_size = page
+            queryset = queryset.page(page_number, page_size)
+        else:
+            if limit is not None:
+                queryset = queryset.limit(limit)
+            if start is not None:
+                queryset = queryset.start(start)
+
+        # Execute query
+        results = await queryset.all()
 
         # Convert results to SimpleNamespace objects if they aren't already Document instances
         if results and not hasattr(results[0], '_data'):  # Check if it's not a Document instance
@@ -942,21 +961,40 @@ class SchemalessTable:
 
         return results
 
-    def call_sync(self, **kwargs: Any) -> List[Any]:
+    def call_sync(self, limit: Optional[int] = None, start: Optional[int] = None,
+                  page: Optional[tuple] = None, **kwargs: Any) -> List[Any]:
         """Query the table with filters synchronously.
 
         This method allows calling the table synchronously with filters
-        to query the table. It returns the results as SimpleNamespace objects
+        to query the table. It supports pagination through limit and start parameters
+        or the page parameter. It returns the results as SimpleNamespace objects
         if they aren't already Document instances.
 
         Args:
+            limit: Maximum number of results to return (for pagination)
+            start: Number of results to skip (for pagination)
+            page: Tuple of (page_number, page_size) for pagination
             **kwargs: Field names and values to filter by
 
         Returns:
             List of results, either document instances or SimpleNamespace objects
         """
         queryset = SchemalessQuerySet(self.name, self.connection)
-        results = queryset.filter(**kwargs).all_sync()
+        # Apply filters
+        queryset = queryset.filter(**kwargs)
+
+        # Apply pagination
+        if page is not None:
+            page_number, page_size = page
+            queryset = queryset.page(page_number, page_size)
+        else:
+            if limit is not None:
+                queryset = queryset.limit(limit)
+            if start is not None:
+                queryset = queryset.start(start)
+
+        # Execute query
+        results = queryset.all_sync()
 
         # Convert results to SimpleNamespace objects if they aren't already Document instances
         if results and not hasattr(results[0], '_data'):  # Check if it's not a Document instance
