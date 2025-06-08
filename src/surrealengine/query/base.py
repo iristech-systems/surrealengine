@@ -1,6 +1,7 @@
 from ..base_query import BaseQuerySet
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
 from ..exceptions import MultipleObjectsReturned, DoesNotExist
+from ..fields import ReferenceField
 import json
 import asyncio
 
@@ -27,6 +28,109 @@ class QuerySet(BaseQuerySet):
         super().__init__(connection)
         self.document_class = document_class
 
+    async def join(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
+        """Perform a JOIN-like operation on a reference field.
+
+        This method performs a JOIN-like operation on a reference field by retrieving
+        all documents and then resolving the references using the Document.get method.
+
+        Args:
+            field_name: The name of the reference field to join on
+            target_fields: Optional list of fields to select from the target document
+            dereference: Whether to dereference references in the joined documents (default: True)
+            dereference_depth: Maximum depth of reference resolution (default: 1)
+
+        Returns:
+            List of documents with joined data
+
+        Raises:
+            ValueError: If the field is not a ReferenceField
+        """
+        # Ensure field_name is a ReferenceField
+        field = self.document_class._fields.get(field_name)
+        if not field or not isinstance(field, ReferenceField):
+            raise ValueError(f"{field_name} is not a ReferenceField")
+
+        # Get all documents
+        documents = await self.filter().all()
+        if not documents:
+            return []
+
+        # Get the target document class
+        target_document_class = field.document_type
+
+        # Manually resolve references for each document
+        for doc in documents:
+            # Resolve the reference
+            if getattr(doc, field_name, None):
+                ref_value = getattr(doc, field_name)
+                ref_id = None
+
+                # Extract the ID from the reference
+                if isinstance(ref_value, str) and ':' in ref_value:
+                    ref_id = ref_value
+                elif hasattr(ref_value, 'id'):
+                    ref_id = ref_value.id
+
+                # If we have an ID, resolve the reference
+                if ref_id:
+                    referenced_doc = await target_document_class.get(id=ref_id, dereference=dereference, dereference_depth=dereference_depth)
+                    setattr(doc, field_name, referenced_doc)
+
+        return documents
+
+    def join_sync(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
+        """Perform a JOIN-like operation on a reference field synchronously.
+
+        This method performs a JOIN-like operation on a reference field by using
+        SurrealDB's graph traversal capabilities. It retrieves the referenced documents
+        and replaces the reference IDs with the actual documents.
+
+        Args:
+            field_name: The name of the reference field to join on
+            target_fields: Optional list of fields to select from the target document
+            dereference: Whether to dereference references in the joined documents (default: True)
+            dereference_depth: Maximum depth of reference resolution (default: 1)
+
+        Returns:
+            List of documents with joined data
+
+        Raises:
+            ValueError: If the field is not a ReferenceField
+        """
+        # Ensure field_name is a ReferenceField
+        field = self.document_class._fields.get(field_name)
+        if not field or not isinstance(field, ReferenceField):
+            raise ValueError(f"{field_name} is not a ReferenceField")
+
+        # Get all documents
+        documents = self.filter().all_sync()
+        if not documents:
+            return []
+
+        # Get the target document class
+        target_document_class = field.document_type
+
+        # Manually resolve references for each document
+        for doc in documents:
+            # Resolve the reference
+            if getattr(doc, field_name, None):
+                ref_value = getattr(doc, field_name)
+                ref_id = None
+
+                # Extract the ID from the reference
+                if isinstance(ref_value, str) and ':' in ref_value:
+                    ref_id = ref_value
+                elif hasattr(ref_value, 'id'):
+                    ref_id = ref_value.id
+
+                # If we have an ID, resolve the reference
+                if ref_id:
+                    referenced_doc = target_document_class.get_sync(id=ref_id, dereference=dereference, dereference_depth=dereference_depth)
+                    setattr(doc, field_name, referenced_doc)
+
+        return documents
+
     def _build_query(self) -> str:
         """Build the query string.
 
@@ -50,11 +154,14 @@ class QuerySet(BaseQuerySet):
 
         return query
 
-    async def all(self) -> List[Any]:
+    async def all(self, dereference: bool = False) -> List[Any]:
         """Execute the query and return all results asynchronously.
 
         This method builds and executes the query, then converts the results
         to instances of the document class.
+
+        Args:
+            dereference: Whether to dereference references (default: False)
 
         Returns:
             List of document instances
@@ -66,14 +173,17 @@ class QuerySet(BaseQuerySet):
             return []
 
         # Create one instance per result document
-        processed_results = [self.document_class.from_db(doc) for doc in results]
+        processed_results = [self.document_class.from_db(doc, dereference=dereference) for doc in results]
         return processed_results
 
-    def all_sync(self) -> List[Any]:
+    def all_sync(self, dereference: bool = False) -> List[Any]:
         """Execute the query and return all results synchronously.
 
         This method builds and executes the query, then converts the results
         to instances of the document class.
+
+        Args:
+            dereference: Whether to dereference references (default: False)
 
         Returns:
             List of document instances
@@ -85,7 +195,7 @@ class QuerySet(BaseQuerySet):
             return []
 
         # Create one instance per result document
-        processed_results = [self.document_class.from_db(doc) for doc in results]
+        processed_results = [self.document_class.from_db(doc, dereference=dereference) for doc in results]
         return processed_results
 
     async def count(self) -> int:
@@ -132,12 +242,13 @@ class QuerySet(BaseQuerySet):
 
         return len(result)
 
-    async def get(self, **kwargs: Any) -> Any:
+    async def get(self, dereference: bool = False, **kwargs: Any) -> Any:
         """Get a single document matching the query asynchronously.
 
         This method applies filters and ensures that exactly one document is returned.
 
         Args:
+            dereference: Whether to dereference references (default: False)
             **kwargs: Field names and values to filter by
 
         Returns:
@@ -149,7 +260,7 @@ class QuerySet(BaseQuerySet):
         """
         self.filter(**kwargs)
         self.limit_value = 2  # Get 2 to check for multiple
-        results = await self.all()
+        results = await self.all(dereference=dereference)
 
         if not results:
             raise DoesNotExist(f"{self.document_class.__name__} matching query does not exist.")
@@ -158,12 +269,13 @@ class QuerySet(BaseQuerySet):
 
         return results[0]
 
-    def get_sync(self, **kwargs: Any) -> Any:
+    def get_sync(self, dereference: bool = False, **kwargs: Any) -> Any:
         """Get a single document matching the query synchronously.
 
         This method applies filters and ensures that exactly one document is returned.
 
         Args:
+            dereference: Whether to dereference references (default: False)
             **kwargs: Field names and values to filter by
 
         Returns:
@@ -175,7 +287,7 @@ class QuerySet(BaseQuerySet):
         """
         self.filter(**kwargs)
         self.limit_value = 2  # Get 2 to check for multiple
-        results = self.all_sync()
+        results = self.all_sync(dereference=dereference)
 
         if not results:
             raise DoesNotExist(f"{self.document_class.__name__} matching query does not exist.")

@@ -490,3 +490,51 @@ class QuerySetDescriptor:
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.aggregate()
+
+    async def join(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
+        """Perform a JOIN-like operation on a reference field.
+
+        This method performs a JOIN-like operation on a reference field by using
+        SurrealDB's graph traversal capabilities. It retrieves the referenced documents
+        and replaces the reference IDs with the actual documents.
+
+        Args:
+            field_name: The name of the reference field to join on
+            target_fields: Optional list of fields to select from the target document
+            dereference: Whether to dereference references in the joined documents (default: True)
+            dereference_depth: Maximum depth of reference resolution (default: 1)
+
+        Returns:
+            List of documents with joined data
+
+        Raises:
+            ValueError: If the field is not a ReferenceField
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return await queryset.join(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
+
+    def join_sync(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
+        """Perform a JOIN-like operation on a reference field synchronously.
+
+        This method performs a JOIN-like operation on a reference field by using
+        SurrealDB's graph traversal capabilities. It retrieves the referenced documents
+        and replaces the reference IDs with the actual documents.
+
+        Args:
+            field_name: The name of the reference field to join on
+            target_fields: Optional list of fields to select from the target document
+            dereference: Whether to dereference references in the joined documents (default: True)
+            dereference_depth: Maximum depth of reference resolution (default: 1)
+
+        Returns:
+            List of documents with joined data
+
+        Raises:
+            ValueError: If the field is not a ReferenceField
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.join_sync(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)

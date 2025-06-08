@@ -24,18 +24,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added support for multi-field indexes with the `index_with` parameter
 - Added aggregation pipelines with the `AggregationPipeline` class for complex data transformations
 - Added additional aggregation functions: Median, StdDev, Variance, Percentile, Distinct, GroupConcat
+- Added automatic reference resolution with `Document.get(dereference=True)` and `Document.resolve_references()` methods
+- Added JOIN-like operations with `QuerySet.join()` method for efficient retrieval of referenced documents
+- Enhanced RelationField with `get_related_documents()` method for bidirectional relation navigation
 
 ### Changed
 - Updated README.md with instructions for installing optional dependencies
 - Improved pagination ergonomics with the `page(number, size)` method
 - Marked "Implement schema registration with SurrealDB" as completed in tasks.md
 - Removed JSONField and replaced it with DictField for better functionality and consistency
+- Refactored fields.py into a directory structure with separate modules for better organization and maintainability
 
 ### Fixed
 - Fixed pagination support to work with all query methods, not just filter()
 - Enhanced ReferenceField to properly handle RecordID objects
 - Fixed DictField nested field access in queries using double underscore syntax (e.g., `settings__theme="dark"`)
 - Added support for nested fields in DictFields when using schemafull tables
+- Fixed IPAddressField to properly handle the 'version' parameter for backward compatibility
+- Fixed issue with docstring comments in create_table method causing parsing errors
+- Removed debug print statements and commented-out code for cleaner codebase
 
 ## [0.1.0] - 2023-05-12
 

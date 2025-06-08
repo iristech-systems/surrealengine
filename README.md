@@ -180,6 +180,67 @@ The `RelationDocument` class provides methods for creating, querying, updating, 
 
 For more detailed examples of working with relations, see [relationships_example.py](./example_scripts/relationships_example.py), [relationships.ipynb](./notebooks/relationships.ipynb), and [embedded_relation_example.py](./example_scripts/embedded_relation_example.py).
 
+### Working with References and Dereferencing
+
+SurrealEngine provides powerful features for working with references between documents and automatically resolving (dereferencing) those references:
+
+```python
+# Define document classes with references
+class User(Document):
+    name = StringField(required=True)
+    email = StringField(required=True)
+
+class Post(Document):
+    title = StringField(required=True)
+    content = StringField()
+    author = ReferenceField(User)  # Reference to User document
+
+class Comment(Document):
+    content = StringField(required=True)
+    post = ReferenceField(Post)    # Reference to Post document
+    author = ReferenceField(User)  # Reference to User document
+
+# Create documents with references
+user = await User(name="Alice", email="alice@example.com").save()
+post = await Post(title="Hello World", content="My first post", author=user).save()
+comment = await Comment(content="Great post!", post=post, author=user).save()
+
+# Automatic reference resolution with dereference parameter
+# Get a comment with references resolved to depth 2
+comment = await Comment.get(id=comment.id, dereference=True, dereference_depth=2)
+
+# Access referenced documents directly
+print(comment.content)                # Output: "Great post!"
+print(comment.author.name)            # Output: "Alice"
+print(comment.post.title)             # Output: "Hello World"
+print(comment.post.author.name)       # Output: "Alice"
+
+# Manual reference resolution
+comment = await Comment.get(id=comment.id)  # References not resolved
+await comment.resolve_references(depth=2)   # Manually resolve references
+
+# JOIN-like operations for efficient retrieval of referenced documents
+# Get all comments with their authors joined
+comments = await Comment.objects.join("author", dereference=True, dereference_depth=2)
+for comment in comments:
+    print(f"Comment: {comment.content}, Author: {comment.author.name}")
+
+# Synchronous operations
+# Get a comment with references resolved
+comment = Comment.get_sync(id=comment.id, dereference=True)
+
+# Manually resolve references synchronously
+comment = Comment.get_sync(id=comment.id)  # References not resolved
+comment.resolve_references_sync(depth=2)   # Manually resolve references
+
+# JOIN-like operations synchronously
+comments = Comment.objects.join_sync("author", dereference=True)
+```
+
+The dereferencing functionality makes it easy to work with complex document relationships without writing multiple queries. The `dereference` parameter controls whether references should be automatically resolved, and the `dereference_depth` parameter controls how deep the resolution should go.
+
+For more examples of working with references and dereferencing, see [test_reference_resolution.py](./example_scripts/test_reference_resolution.py).
+
 ### Advanced Querying
 
 SurrealEngine provides a powerful query API for filtering, ordering, and paginating results:

@@ -292,11 +292,12 @@ class Document(metaclass=DocumentMetaclass):
         return result
 
     @classmethod
-    def from_db(cls, data: Any) -> 'Document':
+    def from_db(cls, data: Any, dereference: bool = False) -> 'Document':
         """Create a document instance from database data.
 
         Args:
             data: Data from the database (dictionary, string, RecordID, etc.)
+            dereference: Whether to dereference references (default: False)
 
         Returns:
             A new document instance
@@ -325,13 +326,21 @@ class Document(metaclass=DocumentMetaclass):
             for field_name, field in instance._fields.items():
                 db_field = field.db_field or field_name
                 if db_field in data:
-                    instance._data[field_name] = field.from_db(data[db_field])
+                    # Pass the dereference parameter to from_db if the field supports it
+                    if hasattr(field, 'from_db') and 'dereference' in field.from_db.__code__.co_varnames:
+                        instance._data[field_name] = field.from_db(data[db_field], dereference=dereference)
+                    else:
+                        instance._data[field_name] = field.from_db(data[db_field])
 
             # Then, handle fields without db_field mapping (for backward compatibility)
             for key, value in data.items():
                 if key in instance._fields:
                     field = instance._fields[key]
-                    instance._data[key] = field.from_db(value)
+                    # Pass the dereference parameter to from_db if the field supports it
+                    if hasattr(field, 'from_db') and 'dereference' in field.from_db.__code__.co_varnames:
+                        instance._data[key] = field.from_db(value, dereference=dereference)
+                    else:
+                        instance._data[key] = field.from_db(value)
         # If data is a RecordID or string, set it as the ID
         elif isinstance(data, (RecordID, str)):
             instance._data['id'] = data
@@ -344,6 +353,138 @@ class Document(metaclass=DocumentMetaclass):
                 pass
 
         return instance
+
+    async def resolve_references(self, depth: int = 1) -> 'Document':
+        """Resolve all references in this document.
+
+        This method iterates through all fields of the document, finds ReferenceField
+        instances, and resolves the references by fetching the referenced documents.
+
+        Args:
+            depth: Maximum depth of reference resolution (default: 1)
+
+        Returns:
+            The document instance with resolved references
+        """
+        if depth <= 0:
+            return self
+
+        for field_name, field in self._fields.items():
+            if isinstance(field, ReferenceField) and getattr(self, field_name):
+                # Get the reference ID
+                ref_id = getattr(self, field_name)
+
+                # Handle string references
+                if isinstance(ref_id, str) and ':' in ref_id:
+                    # Resolve the reference with dereference=True to automatically dereference first-level references
+                    referenced_doc = await field.document_type.get(id=ref_id, dereference=True)
+                    if referenced_doc and depth > 1:
+                        # Recursively resolve deeper references in the referenced document
+                        await referenced_doc.resolve_references(depth=depth-1)
+                    setattr(self, field_name, referenced_doc)
+
+                # Handle RecordID objects
+                elif isinstance(ref_id, RecordID):
+                    # Convert RecordID to string
+                    ref_id_str = str(ref_id)
+                    # Resolve the reference with dereference=True to automatically dereference first-level references
+                    referenced_doc = await field.document_type.get(id=ref_id_str, dereference=True)
+                    if referenced_doc and depth > 1:
+                        # Recursively resolve deeper references in the referenced document
+                        await referenced_doc.resolve_references(depth=depth-1)
+                    setattr(self, field_name, referenced_doc)
+
+        return self
+
+    def resolve_references_sync(self, depth: int = 1) -> 'Document':
+        """Resolve all references in this document synchronously.
+
+        This method iterates through all fields of the document, finds ReferenceField
+        instances, and resolves the references by fetching the referenced documents.
+
+        Args:
+            depth: Maximum depth of reference resolution (default: 1)
+
+        Returns:
+            The document instance with resolved references
+        """
+        if depth <= 0:
+            return self
+
+        for field_name, field in self._fields.items():
+            if isinstance(field, ReferenceField) and getattr(self, field_name):
+                # Get the reference ID
+                ref_id = getattr(self, field_name)
+
+                # Handle string references
+                if isinstance(ref_id, str) and ':' in ref_id:
+                    # Resolve the reference with dereference=True to automatically dereference first-level references
+                    referenced_doc = field.document_type.get_sync(id=ref_id, dereference=True)
+                    if referenced_doc and depth > 1:
+                        # Recursively resolve deeper references in the referenced document
+                        referenced_doc.resolve_references_sync(depth=depth-1)
+                    setattr(self, field_name, referenced_doc)
+
+                # Handle RecordID objects
+                elif isinstance(ref_id, RecordID):
+                    # Convert RecordID to string
+                    ref_id_str = str(ref_id)
+                    # Resolve the reference with dereference=True to automatically dereference first-level references
+                    referenced_doc = field.document_type.get_sync(id=ref_id_str, dereference=True)
+                    if referenced_doc and depth > 1:
+                        # Recursively resolve deeper references in the referenced document
+                        referenced_doc.resolve_references_sync(depth=depth-1)
+                    setattr(self, field_name, referenced_doc)
+
+        return self
+
+    @classmethod
+    async def get(cls, id: Any, dereference: bool = False, dereference_depth: int = 1, **kwargs: Any) -> 'Document':
+        """Get a document by ID with optional dereferencing.
+
+        This method retrieves a document by ID and optionally resolves references.
+
+        Args:
+            id: The ID of the document to retrieve
+            dereference: Whether to resolve references (default: False)
+            dereference_depth: Maximum depth of reference resolution (default: 1)
+            **kwargs: Additional arguments to pass to the get method
+
+        Returns:
+            The document instance with optionally resolved references
+        """
+        # Pass dereference to QuerySet.get to automatically dereference first-level references
+        document = await cls.objects.get(dereference=dereference, id=id, **kwargs)
+
+        # If dereference_depth > 1, we need to resolve deeper references
+        if dereference and dereference_depth > 1 and document:
+            await document.resolve_references(depth=dereference_depth)
+
+        return document
+
+    @classmethod
+    def get_sync(cls, id: Any, dereference: bool = False, dereference_depth: int = 1, **kwargs: Any) -> 'Document':
+        """Get a document by ID with optional dereferencing synchronously.
+
+        This method retrieves a document by ID and optionally resolves references.
+
+        Args:
+            id: The ID of the document to retrieve
+            dereference: Whether to resolve references (default: False)
+            dereference_depth: Maximum depth of reference resolution (default: 1)
+            **kwargs: Additional arguments to pass to the get method
+
+        Returns:
+            The document instance with optionally resolved references
+        """
+        # Pass dereference to QuerySet.get_sync to automatically dereference first-level references
+        document = cls.objects.get_sync(dereference=dereference, id=id, **kwargs)
+
+        # If dereference_depth > 1, we need to resolve deeper references
+        if dereference and dereference_depth > 1 and document:
+            document.resolve_references_sync(depth=dereference_depth)
+
+        return document
 
     async def save(self, connection: Optional[Any] = None) -> 'Document':
         """Save the document to the database asynchronously.
@@ -1594,12 +1735,6 @@ class Document(metaclass=DocumentMetaclass):
                 if field.required:
                     field_query += " ASSERT $value != NONE"
 
-                # Add comment if available
-                if hasattr(field, '__doc__') and field.__doc__:
-                    # Clean up docstring and escape single quotes
-                    doc = field.__doc__.strip().replace("'", "''")
-                    if doc:
-                        field_query += f" COMMENT '{doc}'"
 
                 await connection.client.query(field_query)
 
@@ -1649,11 +1784,7 @@ class Document(metaclass=DocumentMetaclass):
             doc = doc.replace("'", "''")
             if doc:
                 query += f" COMMENT '{doc}'"
-        try:
-            connection.client.query(query)
-        except Exception as e:
-            print(query)
-            raise e
+        connection.client.query(query)
 
         # Create fields if schemafull or if field is marked with define_schema=True
         for field_name, field in cls._fields.items():
@@ -1678,21 +1809,13 @@ class Document(metaclass=DocumentMetaclass):
                     if doc:
                         field_query += f" COMMENT '{doc}'"
 
-                try:
-                    connection.client.query(field_query)
-                except Exception as e:
-                    print(field_query)
-                    raise e
+                connection.client.query(field_query)
 
                 # Handle nested fields for DictField
                 if isinstance(field, DictField) and schemafull:
                     if field.db_field == 'settings':
                         nested_field_query = f"DEFINE FIELD {field.db_field}.theme ON {collection_name} TYPE string"
-                        try:
-                            connection.client.query(nested_field_query)
-                        except Exception as e:
-                            print(nested_field_query)
-                            raise e
+                        connection.client.query(nested_field_query)
 
     @classmethod
     def to_dataclass(cls):
@@ -1710,7 +1833,6 @@ class Document(metaclass=DocumentMetaclass):
         fields = [('id', Optional[str], dataclass_field(default=None))]
         # Process fields
         for field_name, field_obj in cls._fields.items():
-            print(field_name, field_obj.py_type)
             # Skip id field as it's handled separately
             if field_name == cls._meta.get('id_field', 'id'):
                 continue
