@@ -32,7 +32,8 @@ class Field:
     """
 
     def __init__(self, required: bool = False, default: Any = None, db_field: Optional[str] = None,
-                 define_schema: bool = False) -> None:
+                 define_schema: bool = False, indexed: bool = False, unique: bool = False, 
+                 search: bool = False, analyzer: Optional[str] = None, index_with: Optional[List[str]] = None) -> None:
         """Initialize a new Field.
 
         Args:
@@ -40,6 +41,11 @@ class Field:
             default: Default value for the field
             db_field: Name of the field in the database (defaults to the field name)
             define_schema: Whether to define this field in the schema (even for SCHEMALESS tables)
+            indexed: Whether the field should be indexed
+            unique: Whether the index should enforce uniqueness
+            search: Whether the index is a search index
+            analyzer: Analyzer to use for search indexes
+            index_with: List of other field names to include in the index
         """
         self.required = required
         self.default = default
@@ -47,6 +53,11 @@ class Field:
         self.db_field = db_field
         self.owner_document: Optional[Type] = None
         self.define_schema = define_schema
+        self.indexed = indexed
+        self.unique = unique
+        self.search = search
+        self.analyzer = analyzer
+        self.index_with = index_with
         self.py_type = Any
 
     def validate(self, value: Any) -> Any:
@@ -487,6 +498,45 @@ class DateTimeField(Field):
         return value
 
 
+class TimeSeriesField(DateTimeField):
+    """Field for time series data.
+
+    This field type extends DateTimeField and adds support for time series data.
+    It can be used to store timestamps for time series data and supports
+    additional metadata for time series operations.
+
+    Example:
+        class SensorReading(Document):
+            timestamp = TimeSeriesField(index=True)
+            value = FloatField()
+
+            class Meta:
+                time_series = True
+                time_field = "timestamp"
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a new TimeSeriesField.
+
+        Args:
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        super().__init__(**kwargs)
+
+    def validate(self, value: Any) -> Optional[datetime.datetime]:
+        """Validate the timestamp value.
+
+        This method checks if the value is a valid timestamp for time series data.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated timestamp value
+        """
+        return super().validate(value)
+
+
 class ListField(Field):
     """List field type.
 
@@ -617,10 +667,11 @@ class DictField(Field):
 
             if self.field_type:
                 for key, item in value.items():
-                    try:
-                        value[key] = self.field_type.validate(item)
-                    except (TypeError, ValueError) as e:
-                        raise ValueError(f"Error validating key '{key}' in dict field '{self.name}': {str(e)}")
+                    if isinstance(self.field_type, Field):
+                        try:
+                            value[key] = self.field_type.validate(item)
+                        except (TypeError, ValueError) as e:
+                            raise ValueError(f"Error validating key '{key}' in dict field '{self.name}': {str(e)}")
         return value
 
     def to_db(self, value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -635,7 +686,7 @@ class DictField(Field):
         Returns:
             The database representation of the dictionary
         """
-        if value is not None and self.field_type:
+        if value is not None and self.field_type and isinstance(self.field_type, Field):
             return {key: self.field_type.to_db(item) for key, item in value.items()}
         return value
 
@@ -651,7 +702,7 @@ class DictField(Field):
         Returns:
             The Python representation of the dictionary
         """
-        if value is not None and self.field_type:
+        if value is not None and self.field_type and isinstance(self.field_type, Field):
             return {key: self.field_type.from_db(item) for key, item in value.items()}
         return value
 
@@ -681,7 +732,7 @@ class ReferenceField(Field):
         """Validate the reference value.
 
         This method checks if the value is a valid reference to another document.
-        It accepts a document instance, an ID string, or a dictionary with an ID.
+        It accepts a document instance, an ID string, a dictionary with an ID, or a RecordID object.
 
         Args:
             value: The value to validate
@@ -695,9 +746,9 @@ class ReferenceField(Field):
         """
         value = super().validate(value)
         if value is not None:
-            if not isinstance(value, (self.document_type, str, dict)):
+            if not isinstance(value, (self.document_type, str, dict, RecordID)):
                 raise TypeError(
-                    f"Expected {self.document_type.__name__}, id string, or record dict for field '{self.name}', got {type(value)}")
+                    f"Expected {self.document_type.__name__}, id string, record dict, or RecordID for field '{self.name}', got {type(value)}")
 
             if isinstance(value, self.document_type) and value.id is None:
                 raise ValueError(f"Cannot reference an unsaved {self.document_type.__name__} document")
@@ -708,7 +759,7 @@ class ReferenceField(Field):
         """Convert Python reference to database representation.
 
         This method converts a Python reference (document instance, ID string,
-        or dictionary with an ID) to a database representation.
+        dictionary with an ID, or RecordID object) to a database representation.
 
         Args:
             value: The Python reference to convert
@@ -725,6 +776,10 @@ class ReferenceField(Field):
         # If it's already a record ID string
         if isinstance(value, str):
             return value
+
+        # If it's a RecordID object
+        if isinstance(value, RecordID):
+            return str(value)
 
         # If it's a document instance
         if isinstance(value, self.document_type):
@@ -1720,8 +1775,39 @@ class SetField(ListField):
     """Set field type.
 
     This field type stores sets of unique values and provides validation and
-    conversion for the items in the set.
+    conversion for the items in the set. Values are automatically deduplicated.
+
+    Example:
+        class User(Document):
+            tags = SetField(StringField())
     """
+
+    def validate(self, value: Any) -> Optional[List[Any]]:
+        """Validate the list value and ensure uniqueness.
+
+        This method checks if the value is a valid list and validates each
+        item in the list using the field_type if provided. It also ensures
+        that all items in the list are unique.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated and deduplicated list value
+        """
+        value = super().validate(value)
+        if value is not None:
+            # Deduplicate values during validation
+            deduplicated = []
+            seen = set()
+            for item in value:
+                # Use a string representation for comparison to handle non-hashable types
+                item_str = str(item)
+                if item_str not in seen:
+                    seen.add(item_str)
+                    deduplicated.append(item)
+            return deduplicated
+        return value
 
     def to_db(self, value: Optional[List[Any]]) -> Optional[List[Any]]:
         """Convert Python list to database representation with deduplication.
@@ -1735,6 +1821,260 @@ class SetField(ListField):
                     deduplicated.append(db_item)
             return deduplicated
         return value
+
+
+class LiteralField(Field):
+    """Field for union/enum-like values.
+
+    Allows a field to accept multiple different types or specific values,
+    similar to a union or enum type in other languages.
+
+    Example:
+        class Product(Document):
+            status = LiteralField(["active", "discontinued", "out_of_stock"])
+            id_or_name = LiteralField([IntField(), StringField()])
+    """
+
+    def __init__(self, allowed_values: List[Any], **kwargs: Any) -> None:
+        """Initialize a new LiteralField.
+
+        Args:
+            allowed_values: List of allowed values or field types
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        self.allowed_values = allowed_values
+        self.allowed_fields = [v for v in allowed_values if isinstance(v, Field)]
+        self.allowed_literals = [v for v in allowed_values if not isinstance(v, Field)]
+        super().__init__(**kwargs)
+        self.py_type = Union[tuple(f.py_type for f in self.allowed_fields)] if self.allowed_fields else Any
+
+    def validate(self, value: Any) -> Any:
+        """Validate that the value is one of the allowed values or types.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated value
+
+        Raises:
+            ValidationError: If the value is not one of the allowed values or types
+        """
+        value = super().validate(value)
+
+        if value is None:
+            return None
+
+        # Check if the value is one of the allowed literals
+        if value in self.allowed_literals:
+            return value
+
+        # Try to validate with each allowed field type
+        for field in self.allowed_fields:
+            try:
+                return field.validate(value)
+            except (TypeError, ValueError):
+                continue
+
+        # If we get here, the value is not valid
+        if self.allowed_literals:
+            literals_str = ", ".join(repr(v) for v in self.allowed_literals)
+            error_msg = f"Value for field '{self.name}' must be one of: {literals_str}"
+            if self.allowed_fields:
+                field_types = ", ".join(f.__class__.__name__ for f in self.allowed_fields)
+                error_msg += f" or a valid value for one of these types: {field_types}"
+        else:
+            field_types = ", ".join(f.__class__.__name__ for f in self.allowed_fields)
+            error_msg = f"Value for field '{self.name}' must be a valid value for one of these types: {field_types}"
+
+        raise ValidationError(error_msg)
+
+    def to_db(self, value: Any) -> Any:
+        """Convert Python value to database representation.
+
+        Args:
+            value: The Python value to convert
+
+        Returns:
+            The database representation of the value
+        """
+        if value is None:
+            return None
+
+        # If the value is one of the allowed literals, return it as is
+        if value in self.allowed_literals:
+            return value
+
+        # Try to convert with each allowed field type
+        for field in self.allowed_fields:
+            try:
+                field.validate(value)  # Validate first to ensure it's the right type
+                return field.to_db(value)
+            except (TypeError, ValueError):
+                continue
+
+        # If we get here, the value should have been caught by validate()
+        return value
+
+    def from_db(self, value: Any) -> Any:
+        """Convert database value to Python representation.
+
+        Args:
+            value: The database value to convert
+
+        Returns:
+            The Python representation of the value
+        """
+        if value is None:
+            return None
+
+        # If the value is one of the allowed literals, return it as is
+        if value in self.allowed_literals:
+            return value
+
+        # Try to convert with each allowed field type
+        for field in self.allowed_fields:
+            try:
+                # We can't validate here because we don't know the DB representation
+                # Just try to convert and see if it works
+                return field.from_db(value)
+            except (TypeError, ValueError):
+                continue
+
+        # If we get here, just return the value as is
+        return value
+
+
+class RangeField(Field):
+    """Field for storing ranges of values.
+
+    This field type stores ranges of values with minimum and maximum bounds.
+    It supports various types for the bounds, such as numbers, strings, and dates.
+
+    Example:
+        class PriceRange(Document):
+            price_range = RangeField(min_type=FloatField(), max_type=FloatField())
+            age_range = RangeField(min_type=IntField(), max_type=IntField())
+    """
+
+    def __init__(self, min_type: Field, max_type: Field = None, **kwargs: Any) -> None:
+        """Initialize a new RangeField.
+
+        Args:
+            min_type: The field type for the minimum value
+            max_type: The field type for the maximum value (defaults to same as min_type)
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        self.min_type = min_type
+        self.max_type = max_type if max_type is not None else min_type
+        super().__init__(**kwargs)
+        self.py_type = Dict[str, Any]
+
+    def validate(self, value: Any) -> Optional[Dict[str, Any]]:
+        """Validate the range value.
+
+        This method checks if the value is a valid range with minimum and maximum
+        values that can be validated by the respective field types.
+
+        Args:
+            value: The value to validate
+
+        Returns:
+            The validated range value
+
+        Raises:
+            ValidationError: If the value is not a valid range
+        """
+        value = super().validate(value)
+
+        if value is None:
+            return None
+
+        if not isinstance(value, dict):
+            raise ValidationError(f"Expected dict for field '{self.name}', got {type(value)}")
+
+        # Ensure the range has min and max keys
+        if 'min' not in value and 'max' not in value:
+            raise ValidationError(f"Range field '{self.name}' must have at least one of 'min' or 'max' keys")
+
+        # Validate min value if present
+        if 'min' in value:
+            try:
+                value['min'] = self.min_type.validate(value['min'])
+            except (TypeError, ValueError) as e:
+                raise ValidationError(f"Invalid minimum value for field '{self.name}': {str(e)}")
+
+        # Validate max value if present
+        if 'max' in value:
+            try:
+                value['max'] = self.max_type.validate(value['max'])
+            except (TypeError, ValueError) as e:
+                raise ValidationError(f"Invalid maximum value for field '{self.name}': {str(e)}")
+
+        # Ensure min <= max if both are present
+        if 'min' in value and 'max' in value:
+            min_val = value['min']
+            max_val = value['max']
+
+            # Skip comparison if either value is None
+            if min_val is not None and max_val is not None:
+                # Try to compare the values
+                try:
+                    if min_val > max_val:
+                        raise ValidationError(f"Minimum value ({min_val}) cannot be greater than maximum value ({max_val}) for field '{self.name}'")
+                except TypeError:
+                    # If values can't be compared, just skip the check
+                    pass
+
+        return value
+
+    def to_db(self, value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Convert Python range to database representation.
+
+        Args:
+            value: The Python range to convert
+
+        Returns:
+            The database representation of the range
+        """
+        if value is None:
+            return None
+
+        result = {}
+
+        # Convert min value if present
+        if 'min' in value and value['min'] is not None:
+            result['min'] = self.min_type.to_db(value['min'])
+
+        # Convert max value if present
+        if 'max' in value and value['max'] is not None:
+            result['max'] = self.max_type.to_db(value['max'])
+
+        return result
+
+    def from_db(self, value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Convert database range to Python representation.
+
+        Args:
+            value: The database range to convert
+
+        Returns:
+            The Python representation of the range
+        """
+        if value is None:
+            return None
+
+        result = {}
+
+        # Convert min value if present
+        if 'min' in value and value['min'] is not None:
+            result['min'] = self.min_type.from_db(value['min'])
+
+        # Convert max value if present
+        if 'max' in value and value['max'] is not None:
+            result['max'] = self.max_type.from_db(value['max'])
+
+        return result
 
 
 class EmailField(StringField):
@@ -1822,70 +2162,6 @@ class URLField(StringField):
         return super().validate(value)
 
 
-class JSONField(Field):
-    """Field for storing JSON data.
-
-    This field type stores JSON data and validates that it can be serialized to JSON.
-
-    Example:
-        class Config(Document):
-            settings = JSONField()
-    """
-
-    def __init__(self, **kwargs: Any) -> None:
-        """Initialize a JSONField.
-
-        Args:
-            **kwargs: Additional arguments to pass to the parent class
-        """
-        super().__init__(**kwargs)
-
-    def validate(self, value: Any) -> Any:
-        """Validate that the value is valid JSON.
-
-        Args:
-            value: The value to validate
-
-        Returns:
-            The validated value
-
-        Raises:
-            ValidationError: If the value cannot be serialized to JSON
-        """
-        value = super().validate(value)
-
-        if value is not None:
-            try:
-                json.dumps(value)
-            except (TypeError, ValueError):
-                raise ValidationError(f"Value for field '{self.name}' cannot be serialized to JSON")
-
-        return value
-
-    def to_db(self, value: Any) -> Any:
-        """Convert the value to a database-friendly format.
-
-        Args:
-            value: The value to convert
-
-        Returns:
-            The converted value
-        """
-        if value is None:
-            return None
-
-        return value  # SurrealDB handles JSON natively
-
-    def from_db(self, value: Any) -> Any:
-        """Convert the value from a database format.
-
-        Args:
-            value: The value to convert
-
-        Returns:
-            The converted value
-        """
-        return value  # SurrealDB returns JSON as Python objects
 
 
 class IPAddressField(StringField):

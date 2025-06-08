@@ -192,6 +192,12 @@ results = await Person.objects.filter(
     name__contains="Jo"
 ).all()
 
+# Filter with nested fields in DictField
+users_with_dark_theme = await User.objects.filter(
+    settings__theme="dark",
+    settings__notifications=True
+).all()
+
 # Order results
 results = await Person.objects.filter(age__gt=25).order_by("name", "DESC").all()
 
@@ -279,8 +285,21 @@ For more detailed examples of schemaless operations, see [basic_crud_example.py]
 
 ### Collection Types
 - `ListField`: For arrays, can specify the field type for items
-- `DictField`: For nested objects, can specify the field type for values
-- `JSONField`: For storing JSON data with validation
+- `DictField`: For nested objects, can specify the field type for values. Supports nested field access in queries using double underscore syntax (e.g., `settings__theme="dark"`)
+
+```python
+# Example of using DictField with nested fields
+class User(Document):
+    name = StringField(required=True)
+    settings = DictField()  # Can store nested data like {"theme": "dark", "notifications": True}
+
+# Create a user with nested settings
+user = User(name="John", settings={"theme": "dark", "notifications": True})
+await user.save()
+
+# Query users with a specific theme using double underscore syntax
+dark_theme_users = await User.objects.filter(settings__theme="dark").all()
+```
 
 ### Reference Types
 - `ReferenceField`: For document references
@@ -363,6 +382,17 @@ class Product(Document):
     name = StringField(required=True, define_schema=True)  # Will be in schema
     price = FloatField(define_schema=True)                # Will be in schema
     description = StringField()                           # Won't be in schema
+
+# Using DictField with nested fields in a SCHEMAFULL table
+class User(Document):
+    name = StringField(required=True)
+    settings = DictField()  # Will automatically define nested fields for common keys like 'theme'
+
+# Create the table with schema support for nested fields
+await User.create_table(schemafull=True)
+
+# Now you can query nested fields using double underscore syntax
+dark_theme_users = await User.objects.filter(settings__theme="dark").all()
 ```
 
 For more detailed examples of schema management, see [schema_management_example.py](./example_scripts/schema_management_example.py), [hybrid_schema_example.py](./example_scripts/hybrid_schema_example.py), and [schema_management.ipynb](./notebooks/schema_management.ipynb).

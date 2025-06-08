@@ -460,3 +460,33 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         # Return the paginated results
         return queryset.paginate_sync(page, per_page)
+
+    def aggregate(self):
+        """Create an aggregation pipeline from this query.
+
+        This method returns an AggregationPipeline instance that can be used
+        to build and execute complex aggregation queries with multiple stages.
+
+        Returns:
+            An AggregationPipeline instance for building and executing
+            aggregation queries.
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.aggregate()
+
+    def aggregate_sync(self):
+        """Create an aggregation pipeline from this query using the default sync connection.
+
+        This method returns an AggregationPipeline instance that can be used
+        to build and execute complex aggregation queries with multiple stages.
+
+        Returns:
+            An AggregationPipeline instance for building and executing
+            aggregation queries.
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.aggregate()

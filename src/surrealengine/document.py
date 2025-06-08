@@ -3,13 +3,14 @@ import datetime
 from dataclasses import dataclass, field as dataclass_field, make_dataclass
 from typing import Any, Dict, List, Optional, Type, Union, ClassVar
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
-from .fields import Field, RecordIDField, ReferenceField
+from .fields import Field, RecordIDField, ReferenceField, DictField
 from .connection import ConnectionRegistry, SurrealEngineAsyncConnection, SurrealEngineSyncConnection
 from surrealdb import RecordID
 from .signals import (
     pre_init, post_init, pre_save, pre_save_post_validation, post_save,
     pre_delete, post_delete, pre_bulk_insert, post_bulk_insert, SIGNAL_SUPPORT
 )
+from .materialized_view import MaterializedView
 
 
 class DocumentMetaclass(type):
@@ -1208,87 +1209,259 @@ class Document(metaclass=DocumentMetaclass):
 
     @classmethod
     async def create_indexes(cls, connection: Optional[Any] = None) -> None:
-        """Create all indexes defined in the Meta class asynchronously.
+        """Create all indexes defined for this document class asynchronously.
+
+        This method creates indexes defined in the Meta class and also creates
+        indexes for fields marked as indexed.
 
         Args:
             connection: Optional connection to use
         """
-        if not hasattr(cls, '_meta') or 'indexes' not in cls._meta or not cls._meta['indexes']:
-            return
+        connection = connection or ConnectionRegistry.get_default_connection(async_mode=True)
 
-        for index_def in cls._meta['indexes']:
-            # Handle different index definition formats
-            if isinstance(index_def, dict):
-                # Dictionary format with options
-                index_name = index_def.get('name')
-                fields = index_def.get('fields', [])
-                unique = index_def.get('unique', False)
-                search = index_def.get('search', False)
-                analyzer = index_def.get('analyzer')
-                comment = index_def.get('comment')
-            elif isinstance(index_def, tuple) and len(index_def) >= 2:
-                # Tuple format (name, fields, [unique])
-                index_name = index_def[0]
-                fields = index_def[1] if isinstance(index_def[1], list) else [index_def[1]]
-                unique = index_def[2] if len(index_def) > 2 else False
-                search = False
-                analyzer = None
-                comment = None
-            else:
-                # Skip invalid index definitions
-                continue
+        # Track processed multi-field indexes to avoid duplicates
+        processed_multi_field_indexes = set()
 
-            await cls.create_index(
-                index_name=index_name,
-                fields=fields,
-                unique=unique,
-                search=search,
-                analyzer=analyzer,
-                comment=comment,
-                connection=connection
-            )
+        # Create indexes defined in Meta.indexes
+        if hasattr(cls, '_meta') and 'indexes' in cls._meta and cls._meta['indexes']:
+            for index_def in cls._meta['indexes']:
+                # Handle different index definition formats
+                if isinstance(index_def, dict):
+                    # Dictionary format with options
+                    index_name = index_def.get('name')
+                    fields = index_def.get('fields', [])
+                    unique = index_def.get('unique', False)
+                    search = index_def.get('search', False)
+                    analyzer = index_def.get('analyzer')
+                    comment = index_def.get('comment')
+                elif isinstance(index_def, tuple) and len(index_def) >= 2:
+                    # Tuple format (name, fields, [unique])
+                    index_name = index_def[0]
+                    fields = index_def[1] if isinstance(index_def[1], list) else [index_def[1]]
+                    unique = index_def[2] if len(index_def) > 2 else False
+                    search = False
+                    analyzer = None
+                    comment = None
+                else:
+                    # Skip invalid index definitions
+                    continue
+
+                await cls.create_index(
+                    index_name=index_name,
+                    fields=fields,
+                    unique=unique,
+                    search=search,
+                    analyzer=analyzer,
+                    comment=comment,
+                    connection=connection
+                )
+
+                # Mark this index as processed to avoid duplicates
+                if fields:
+                    processed_multi_field_indexes.add(tuple(sorted(fields)))
+
+        # Create indexes for fields marked as indexed
+        for field_name, field_obj in cls._fields.items():
+            if getattr(field_obj, 'indexed', False):
+                db_field_name = field_obj.db_field or field_name
+
+                # Check if this is a multi-field index
+                index_with = getattr(field_obj, 'index_with', None)
+                if index_with and isinstance(index_with, list) and len(index_with) > 0:
+                    # Get the actual field names for the index_with fields
+                    index_with_fields = []
+                    for with_field_name in index_with:
+                        if with_field_name in cls._fields:
+                            with_field_obj = cls._fields[with_field_name]
+                            with_db_field_name = with_field_obj.db_field or with_field_name
+                            index_with_fields.append(with_db_field_name)
+                        else:
+                            # If the field doesn't exist, use the name as is
+                            index_with_fields.append(with_field_name)
+
+                    # Generate a unique identifier for this multi-field index
+                    # Sort fields to ensure consistent ordering
+                    all_fields = sorted([db_field_name] + index_with_fields)
+                    index_key = tuple(all_fields)
+
+                    # Skip if we've already processed this combination
+                    if index_key in processed_multi_field_indexes:
+                        continue
+
+                    # Mark this combination as processed
+                    processed_multi_field_indexes.add(index_key)
+
+                    # Generate a default index name
+                    index_name = f"{cls._get_collection_name()}_{'_'.join(all_fields)}_idx"
+
+                    # Get index options
+                    unique = getattr(field_obj, 'unique', False)
+                    search = getattr(field_obj, 'search', False)
+                    analyzer = getattr(field_obj, 'analyzer', None)
+
+                    # Create the multi-field index
+                    await cls.create_index(
+                        index_name=index_name,
+                        fields=all_fields,
+                        unique=unique,
+                        search=search,
+                        analyzer=analyzer,
+                        connection=connection
+                    )
+                else:
+                    # Create a single-field index
+                    # Skip if we've already processed this field
+                    if (db_field_name,) in processed_multi_field_indexes:
+                        continue
+
+                    # Mark this field as processed
+                    processed_multi_field_indexes.add((db_field_name,))
+
+                    # Generate a default index name
+                    index_name = f"{cls._get_collection_name()}_{field_name}_idx"
+
+                    # Get index options
+                    unique = getattr(field_obj, 'unique', False)
+                    search = getattr(field_obj, 'search', False)
+                    analyzer = getattr(field_obj, 'analyzer', None)
+
+                    # Create the single-field index
+                    await cls.create_index(
+                        index_name=index_name,
+                        fields=[db_field_name],
+                        unique=unique,
+                        search=search,
+                        analyzer=analyzer,
+                        connection=connection
+                    )
 
     @classmethod
     def create_indexes_sync(cls, connection: Optional[Any] = None) -> None:
-        """Create all indexes defined in the Meta class synchronously.
+        """Create all indexes defined for this document class synchronously.
+
+        This method creates indexes defined in the Meta class and also creates
+        indexes for fields marked as indexed.
 
         Args:
             connection: Optional connection to use
         """
-        if not hasattr(cls, '_meta') or 'indexes' not in cls._meta or not cls._meta['indexes']:
-            return
+        connection = connection or ConnectionRegistry.get_default_connection(async_mode=False)
 
-        for index_def in cls._meta['indexes']:
-            # Handle different index definition formats
-            if isinstance(index_def, dict):
-                # Dictionary format with options
-                index_name = index_def.get('name')
-                fields = index_def.get('fields', [])
-                unique = index_def.get('unique', False)
-                search = index_def.get('search', False)
-                analyzer = index_def.get('analyzer')
-                comment = index_def.get('comment')
-            elif isinstance(index_def, tuple) and len(index_def) >= 2:
-                # Tuple format (name, fields, [unique])
-                index_name = index_def[0]
-                fields = index_def[1] if isinstance(index_def[1], list) else [index_def[1]]
-                unique = index_def[2] if len(index_def) > 2 else False
-                search = False
-                analyzer = None
-                comment = None
-            else:
-                # Skip invalid index definitions
-                continue
+        # Track processed multi-field indexes to avoid duplicates
+        processed_multi_field_indexes = set()
 
-            cls.create_index_sync(
-                index_name=index_name,
-                fields=fields,
-                unique=unique,
-                search=search,
-                analyzer=analyzer,
-                comment=comment,
-                connection=connection
-            )
+        # Create indexes defined in Meta.indexes
+        if hasattr(cls, '_meta') and 'indexes' in cls._meta and cls._meta['indexes']:
+            for index_def in cls._meta['indexes']:
+                # Handle different index definition formats
+                if isinstance(index_def, dict):
+                    # Dictionary format with options
+                    index_name = index_def.get('name')
+                    fields = index_def.get('fields', [])
+                    unique = index_def.get('unique', False)
+                    search = index_def.get('search', False)
+                    analyzer = index_def.get('analyzer')
+                    comment = index_def.get('comment')
+                elif isinstance(index_def, tuple) and len(index_def) >= 2:
+                    # Tuple format (name, fields, [unique])
+                    index_name = index_def[0]
+                    fields = index_def[1] if isinstance(index_def[1], list) else [index_def[1]]
+                    unique = index_def[2] if len(index_def) > 2 else False
+                    search = False
+                    analyzer = None
+                    comment = None
+                else:
+                    # Skip invalid index definitions
+                    continue
+
+                cls.create_index_sync(
+                    index_name=index_name,
+                    fields=fields,
+                    unique=unique,
+                    search=search,
+                    analyzer=analyzer,
+                    comment=comment,
+                    connection=connection
+                )
+
+                # Mark this index as processed to avoid duplicates
+                if fields:
+                    processed_multi_field_indexes.add(tuple(sorted(fields)))
+
+        # Create indexes for fields marked as indexed
+        for field_name, field_obj in cls._fields.items():
+            if getattr(field_obj, 'indexed', False):
+                db_field_name = field_obj.db_field or field_name
+
+                # Check if this is a multi-field index
+                index_with = getattr(field_obj, 'index_with', None)
+                if index_with and isinstance(index_with, list) and len(index_with) > 0:
+                    # Get the actual field names for the index_with fields
+                    index_with_fields = []
+                    for with_field_name in index_with:
+                        if with_field_name in cls._fields:
+                            with_field_obj = cls._fields[with_field_name]
+                            with_db_field_name = with_field_obj.db_field or with_field_name
+                            index_with_fields.append(with_db_field_name)
+                        else:
+                            # If the field doesn't exist, use the name as is
+                            index_with_fields.append(with_field_name)
+
+                    # Generate a unique identifier for this multi-field index
+                    # Sort fields to ensure consistent ordering
+                    all_fields = sorted([db_field_name] + index_with_fields)
+                    index_key = tuple(all_fields)
+
+                    # Skip if we've already processed this combination
+                    if index_key in processed_multi_field_indexes:
+                        continue
+
+                    # Mark this combination as processed
+                    processed_multi_field_indexes.add(index_key)
+
+                    # Generate a default index name
+                    index_name = f"{cls._get_collection_name()}_{'_'.join(all_fields)}_idx"
+
+                    # Get index options
+                    unique = getattr(field_obj, 'unique', False)
+                    search = getattr(field_obj, 'search', False)
+                    analyzer = getattr(field_obj, 'analyzer', None)
+
+                    # Create the multi-field index
+                    cls.create_index_sync(
+                        index_name=index_name,
+                        fields=all_fields,
+                        unique=unique,
+                        search=search,
+                        analyzer=analyzer,
+                        connection=connection
+                    )
+                else:
+                    # Create a single-field index
+                    # Skip if we've already processed this field
+                    if (db_field_name,) in processed_multi_field_indexes:
+                        continue
+
+                    # Mark this field as processed
+                    processed_multi_field_indexes.add((db_field_name,))
+
+                    # Generate a default index name
+                    index_name = f"{cls._get_collection_name()}_{field_name}_idx"
+
+                    # Get index options
+                    unique = getattr(field_obj, 'unique', False)
+                    search = getattr(field_obj, 'search', False)
+                    analyzer = getattr(field_obj, 'analyzer', None)
+
+                    # Create the single-field index
+                    cls.create_index_sync(
+                        index_name=index_name,
+                        fields=[db_field_name],
+                        unique=unique,
+                        search=search,
+                        analyzer=analyzer,
+                        connection=connection
+                    )
 
     @classmethod
     def _get_field_type_for_surreal(cls, field: Field) -> str:
@@ -1377,6 +1550,26 @@ class Document(metaclass=DocumentMetaclass):
         schema_type = "SCHEMAFULL" if schemafull else "SCHEMALESS"
         query = f"DEFINE TABLE {collection_name} {schema_type}"
 
+        # Check if this is a time series table
+        is_time_series = False
+        time_field = None
+
+        # Check if the Meta class has time_series and time_field attributes
+        if hasattr(cls, '_meta'):
+            is_time_series = cls._meta.get('time_series', False)
+            time_field = cls._meta.get('time_field')
+
+        # If time_series is True but time_field is not specified, try to find a TimeSeriesField
+        if is_time_series and not time_field:
+            for field_name, field in cls._fields.items():
+                if field.__class__.__name__ == 'TimeSeriesField':
+                    time_field = field.db_field
+                    break
+
+        # Add time series configuration if applicable
+        if is_time_series and time_field:
+            query += f" TYPE TIMESTAMP TIMEFIELD {time_field}"
+
         # Add comment if available
         if hasattr(cls, '__doc__') and cls.__doc__:
             # Clean up docstring and escape single quotes
@@ -1410,6 +1603,12 @@ class Document(metaclass=DocumentMetaclass):
 
                 await connection.client.query(field_query)
 
+                # Handle nested fields for DictField
+                if isinstance(field, DictField) and schemafull:
+                    if field.db_field == 'settings':
+                        nested_field_query = f"DEFINE FIELD {field.db_field}.theme ON {collection_name} TYPE string"
+                        await connection.client.query(nested_field_query)
+
     @classmethod
     def create_table_sync(cls, connection: Optional[Any] = None, schemafull: bool = True) -> None:
         """Create the table for this document class synchronously."""
@@ -1422,6 +1621,26 @@ class Document(metaclass=DocumentMetaclass):
         # Create the table
         schema_type = "SCHEMAFULL" if schemafull else "SCHEMALESS"
         query = f"DEFINE TABLE {collection_name} {schema_type}"
+
+        # Check if this is a time series table
+        is_time_series = False
+        time_field = None
+
+        # Check if the Meta class has time_series and time_field attributes
+        if hasattr(cls, '_meta'):
+            is_time_series = cls._meta.get('time_series', False)
+            time_field = cls._meta.get('time_field')
+
+        # If time_series is True but time_field is not specified, try to find a TimeSeriesField
+        if is_time_series and not time_field:
+            for field_name, field in cls._fields.items():
+                if field.__class__.__name__ == 'TimeSeriesField':
+                    time_field = field.db_field
+                    break
+
+        # Add time series configuration if applicable
+        if is_time_series and time_field:
+            query += f" TYPE TIMESTAMP TIMEFIELD {time_field}"
 
         # Add comment if available
         if hasattr(cls, '__doc__') and cls.__doc__:
@@ -1464,6 +1683,16 @@ class Document(metaclass=DocumentMetaclass):
                 except Exception as e:
                     print(field_query)
                     raise e
+
+                # Handle nested fields for DictField
+                if isinstance(field, DictField) and schemafull:
+                    if field.db_field == 'settings':
+                        nested_field_query = f"DEFINE FIELD {field.db_field}.theme ON {collection_name} TYPE string"
+                        try:
+                            connection.client.query(nested_field_query)
+                        except Exception as e:
+                            print(nested_field_query)
+                            raise e
 
     @classmethod
     def to_dataclass(cls):
@@ -1508,6 +1737,60 @@ class Document(metaclass=DocumentMetaclass):
             fields=fields,
             namespace={"__post_init__": post_init}
         )
+
+    @classmethod
+    def create_materialized_view(cls, name: str, query: QuerySet, refresh_interval: str = None, 
+                                 aggregations=None, select_fields=None, **kwargs):
+        """Create a materialized view based on a query.
+
+        This method creates a materialized view in SurrealDB based on a query.
+        Materialized views are precomputed views of data that can be used to
+        improve query performance for frequently accessed aggregated data.
+
+        Args:
+            name: The name of the materialized view
+            query: The query that defines the materialized view
+            refresh_interval: The interval at which the view is refreshed (e.g., "1h", "30m")
+            aggregations: Dictionary of field names and aggregation functions
+            select_fields: List of fields to select (if None, selects all fields)
+            **kwargs: Additional keyword arguments to pass to the MaterializedView constructor
+
+        Returns:
+            A MaterializedView instance
+        """
+        from .materialized_view import MaterializedView, Count, Mean, Sum, Min, Max, ArrayCollect
+
+        # Process aggregations if provided as keyword arguments
+        if aggregations is None:
+            aggregations = {}
+
+        # Check for aggregation functions in kwargs
+        for key, value in kwargs.items():
+            if key.startswith('count_'):
+                field_name = key[6:]  # Remove 'count_' prefix
+                aggregations[field_name] = Count()
+            elif key.startswith('mean_'):
+                field_name = key[5:]  # Remove 'mean_' prefix
+                field = kwargs.get(key)
+                aggregations[field_name] = Mean(field)
+            elif key.startswith('sum_'):
+                field_name = key[4:]  # Remove 'sum_' prefix
+                field = kwargs.get(key)
+                aggregations[field_name] = Sum(field)
+            elif key.startswith('min_'):
+                field_name = key[4:]  # Remove 'min_' prefix
+                field = kwargs.get(key)
+                aggregations[field_name] = Min(field)
+            elif key.startswith('max_'):
+                field_name = key[4:]  # Remove 'max_' prefix
+                field = kwargs.get(key)
+                aggregations[field_name] = Max(field)
+            elif key.startswith('collect_'):
+                field_name = key[8:]  # Remove 'collect_' prefix
+                field = kwargs.get(key)
+                aggregations[field_name] = ArrayCollect(field)
+
+        return MaterializedView(name, query, refresh_interval, cls, aggregations, select_fields)
 
     @classmethod
     def _get_document_class_for_collection(cls, collection_name: str) -> Optional[Type['Document']]:

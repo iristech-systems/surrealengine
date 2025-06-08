@@ -127,6 +127,17 @@ class BaseQuerySet:
                 elif op == 'regex':
                     self.query_parts.append((f"string::matches({field}, r'{v}')", '=', True))
                 else:
+                    # Handle nested field access for DictFields
+                    document_class = getattr(self, 'document_class', None)
+                    if document_class and hasattr(document_class, '_fields'):
+                        if field in document_class._fields:
+                            from .fields import DictField
+                            if isinstance(document_class._fields[field], DictField):
+                                nested_field = f"{field}.{op}"
+                                self.query_parts.append((nested_field, '=', v))
+                                continue
+
+                    # If we get here, it's an unknown operator
                     raise ValueError(f"Unknown operator: {op}")
             else:
                 # Simple equality
@@ -212,6 +223,7 @@ class BaseQuerySet:
         """
         self.fetch_fields.extend(fields)
         return self
+
 
     def with_index(self, index: str) -> 'BaseQuerySet':
         """Use the specified index for the query.
@@ -613,3 +625,59 @@ class BaseQuerySet:
 
         # Return a PaginationResult
         return PaginationResult(items, page, per_page, total)
+
+    def get_raw_query(self) -> str:
+        """Get the raw query string without executing it.
+
+        This method builds and returns the query string without executing it.
+        It can be used to get the raw query for manual execution or debugging.
+
+        Returns:
+            The raw query string
+        """
+        return self._build_query()
+
+    def aggregate(self):
+        """Create an aggregation pipeline from this query.
+
+        This method returns an AggregationPipeline instance that can be used
+        to build and execute complex aggregation queries with multiple stages.
+
+        Returns:
+            An AggregationPipeline instance for building and executing
+            aggregation queries.
+        """
+        from .aggregation import AggregationPipeline
+        return AggregationPipeline(self)
+
+    def _clone(self) -> 'BaseQuerySet':
+        """Create a new instance of the queryset with the same parameters.
+
+        This method creates a new instance of the same class as the current
+        instance and copies all the relevant attributes.
+
+        Returns:
+            A new queryset instance with the same parameters
+        """
+        # Create a new instance of the same class
+        if hasattr(self, 'document_class'):
+            # For QuerySet subclass
+            clone = self.__class__(self.document_class, self.connection)
+        elif hasattr(self, 'table_name'):
+            # For SchemalessQuerySet subclass
+            clone = self.__class__(self.table_name, self.connection)
+        else:
+            # For BaseQuerySet or other subclasses
+            clone = self.__class__(self.connection)
+
+        # Copy all the query parameters
+        clone.query_parts = self.query_parts.copy()
+        clone.limit_value = self.limit_value
+        clone.start_value = self.start_value
+        clone.order_by_value = self.order_by_value
+        clone.group_by_fields = self.group_by_fields.copy()
+        clone.split_fields = self.split_fields.copy()
+        clone.fetch_fields = self.fetch_fields.copy()
+        clone.with_index = self.with_index
+
+        return clone
