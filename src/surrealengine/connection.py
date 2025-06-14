@@ -147,6 +147,10 @@ class SyncConnectionPool(ConnectionPoolBase):
     It handles connection creation, validation, and reuse, and provides methods
     for acquiring and releasing connections.
 
+    The connections returned by this pool are wrapped in SurrealEngineSyncConnection
+    objects, which can be used with the Document class and other SurrealEngine
+    functionality that expects a SurrealEngineSyncConnection.
+
     Attributes:
         pool: Queue of available connections
         in_use: Set of connections currently in use
@@ -193,79 +197,77 @@ class SyncConnectionPool(ConnectionPoolBase):
 
         # Initialize the pool
         self.pool: Queue = Queue(maxsize=self.pool_size)
-        self.in_use: Dict[Any, float] = {}  # Connection -> timestamp when borrowed
+        self.in_use: Dict['SurrealEngineSyncConnection', float] = {}  # Connection -> timestamp when borrowed
         self.lock = Lock()
         self.closed = False
 
-    def create_connection(self) -> Any:
+    def create_connection(self) -> 'SurrealEngineSyncConnection':
         """Create a new connection.
 
         Returns:
-            A new connection
+            A new connection wrapped in SurrealEngineSyncConnection
 
         Raises:
             Exception: If the connection cannot be created
         """
         try:
-            # Create the client directly
-            client = surrealdb.Surreal(self.url)
+            # Create a SurrealEngineSyncConnection
+            connection = SurrealEngineSyncConnection(
+                url=self.url,
+                namespace=self.namespace,
+                database=self.database,
+                username=self.username,
+                password=self.password
+            )
 
-            # Set connect timeout
-            # Note: The surrealdb Python client doesn't support connect timeout directly,
-            # so we're not setting it here. In a real implementation, you might use
-            # a socket timeout or similar mechanism.
-
-            # Sign in if credentials are provided
-            if self.username and self.password:
-                client.signin({"username": self.username, "password": self.password})
-
-            # Use namespace and database
-            if self.namespace and self.database:
-                client.use(self.namespace, self.database)
+            # Connect to the database
+            connection.connect()
 
             self.created_connections += 1
             logger.debug(f"Created new connection (total created: {self.created_connections})")
 
-            return client
+            return connection
         except Exception as e:
             logger.error(f"Failed to create connection: {str(e)}")
             raise
 
-    def validate_connection(self, connection: Any) -> bool:
+    def validate_connection(self, connection: 'SurrealEngineSyncConnection') -> bool:
         """Validate a connection.
 
         Args:
-            connection: The connection to validate
+            connection: The connection to validate (SurrealEngineSyncConnection)
 
         Returns:
             True if the connection is valid, False otherwise
         """
         try:
             # Execute a simple query to check if the connection is valid
-            connection.query("SELECT 1 FROM information_schema.tables LIMIT 1")
-            return True
+            if connection.client:
+                connection.client.query("SELECT 1 FROM information_schema.tables LIMIT 1")
+                return True
+            return False
         except Exception as e:
             logger.warning(f"Connection validation failed: {str(e)}")
             return False
 
-    def close_connection(self, connection: Any) -> None:
+    def close_connection(self, connection: 'SurrealEngineSyncConnection') -> None:
         """Close a connection.
 
         Args:
-            connection: The connection to close
+            connection: The connection to close (SurrealEngineSyncConnection)
         """
         try:
-            connection.close()
+            connection.disconnect()
             self.discarded_connections += 1
             logger.debug(f"Closed connection (total discarded: {self.discarded_connections})")
         except Exception as e:
             logger.warning(f"Failed to close connection: {str(e)}")
 
-    def get_connection(self) -> Any:
+    def get_connection(self) -> 'SurrealEngineSyncConnection':
         """Get a connection from the pool.
 
         Returns:
-            A connection from the pool
+            A SurrealEngineSyncConnection from the pool
 
         Raises:
             RuntimeError: If the pool is closed
@@ -309,11 +311,11 @@ class SyncConnectionPool(ConnectionPoolBase):
 
         return connection
 
-    def return_connection(self, connection: Any) -> None:
+    def return_connection(self, connection: 'SurrealEngineSyncConnection') -> None:
         """Return a connection to the pool.
 
         Args:
-            connection: The connection to return
+            connection: The connection to return (SurrealEngineSyncConnection)
         """
         if self.closed:
             # Pool is closed, just close the connection
@@ -377,6 +379,10 @@ class AsyncConnectionPool(ConnectionPoolBase):
     It handles connection creation, validation, and reuse, and provides methods
     for acquiring and releasing connections.
 
+    The connections returned by this pool are wrapped in SurrealEngineAsyncConnection
+    objects, which can be used with the Document class and other SurrealEngine
+    functionality that expects a SurrealEngineAsyncConnection.
+
     Attributes:
         pool: List of available connections
         in_use: Dictionary of connections currently in use and their timestamps
@@ -422,81 +428,79 @@ class AsyncConnectionPool(ConnectionPoolBase):
         )
 
         # Initialize the pool
-        self.pool: List[Any] = []
-        self.in_use: Dict[Any, float] = {}  # Connection -> timestamp when borrowed
+        self.pool: List['SurrealEngineAsyncConnection'] = []
+        self.in_use: Dict['SurrealEngineAsyncConnection', float] = {}  # Connection -> timestamp when borrowed
         self.lock = asyncio.Lock()
         self.closed = False
         self.connection_waiters: List[asyncio.Future] = []
 
-    async def create_connection(self) -> Any:
+    async def create_connection(self) -> 'SurrealEngineAsyncConnection':
         """Create a new connection.
 
         Returns:
-            A new connection
+            A new connection wrapped in SurrealEngineAsyncConnection
 
         Raises:
             Exception: If the connection cannot be created
         """
         try:
-            # Create the client directly
-            client = surrealdb.AsyncSurreal(self.url)
+            # Create a SurrealEngineAsyncConnection
+            connection = SurrealEngineAsyncConnection(
+                url=self.url,
+                namespace=self.namespace,
+                database=self.database,
+                username=self.username,
+                password=self.password
+            )
 
-            # Set connect timeout
-            # Note: The surrealdb Python client doesn't support connect timeout directly,
-            # so we're not setting it here. In a real implementation, you might use
-            # a socket timeout or similar mechanism.
-
-            # Sign in if credentials are provided
-            if self.username and self.password:
-                await client.signin({"username": self.username, "password": self.password})
-
-            # Use namespace and database
-            if self.namespace and self.database:
-                await client.use(self.namespace, self.database)
+            # Connect to the database
+            await connection.connect()
 
             self.created_connections += 1
             logger.debug(f"Created new async connection (total created: {self.created_connections})")
 
-            return client
+            return connection
         except Exception as e:
             logger.error(f"Failed to create async connection: {str(e)}")
             raise
 
-    async def validate_connection(self, connection: Any) -> bool:
+    async def validate_connection(self, connection: 'SurrealEngineAsyncConnection') -> bool:
         """Validate a connection.
 
         Args:
-            connection: The connection to validate
+            connection: The connection to validate (SurrealEngineAsyncConnection)
 
         Returns:
             True if the connection is valid, False otherwise
         """
         try:
             # Execute a simple query to check if the connection is valid
-            await connection.query("SELECT 1 FROM information_schema.tables LIMIT 1")
-            return True
+            if connection.client:
+                await connection.client.query("SELECT 1 FROM information_schema.tables LIMIT 1")
+                return True
+            return False
         except Exception as e:
             logger.warning(f"Async connection validation failed: {str(e)}")
             return False
 
-    async def close_connection(self, connection: Any) -> None:
+    async def close_connection(self, connection: 'SurrealEngineAsyncConnection') -> None:
         """Close a connection.
 
         Args:
-            connection: The connection to close
+            connection: The connection to close (SurrealEngineAsyncConnection)
         """
         try:
-            await connection.close()
+            await connection.disconnect()
             self.discarded_connections += 1
             logger.debug(f"Closed async connection (total discarded: {self.discarded_connections})")
         except Exception as e:
             logger.warning(f"Failed to close async connection: {str(e)}")
 
-    async def get_connection(self) -> Any:
+    async def get_connection(self) -> 'SurrealEngineAsyncConnection':
         """Get a connection from the pool.
 
         Returns:
-            A connection from the pool
+            A SurrealEngineAsyncConnection from the pool
 
         Raises:
             RuntimeError: If the pool is closed
@@ -562,11 +566,11 @@ class AsyncConnectionPool(ConnectionPoolBase):
 
             return connection
 
-    async def return_connection(self, connection: Any) -> None:
+    async def return_connection(self, connection: 'SurrealEngineAsyncConnection') -> None:
         """Return a connection to the pool.
 
         Args:
-            connection: The connection to return
+            connection: The connection to return (SurrealEngineAsyncConnection)
         """
         if self.closed:
             # Pool is closed, just close the connection
