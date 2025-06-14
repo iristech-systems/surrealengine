@@ -60,6 +60,140 @@ sync_db = SurrealEngine(sync_conn)
 > **Note**: For backward compatibility, `SurrealEngineConnection` is an alias for `SurrealEngineAsyncConnection`.
 
 For more detailed examples, see [sync_api_example.py](./example_scripts/sync_api_example.py) and [sync_api.ipynb](./notebooks/sync_api.ipynb).
+
+### Advanced Connection Management
+
+SurrealEngine provides advanced connection management features for improved performance, reliability, and flexibility.
+
+#### Connection String Parsing
+
+You can use connection strings to simplify connection configuration:
+
+```python
+from surrealengine import SurrealEngineSyncConnection
+from surrealengine.connection import parse_connection_string
+
+# Parse a connection string with connection parameters
+connection_string = "surrealdb://root:root@localhost:8000/test/test?pool_size=5&retry_limit=3"
+config = parse_connection_string(connection_string)
+
+# Create a connection using the parsed config
+conn = SurrealEngineSyncConnection(
+    url=config["url"],
+    namespace=config["namespace"],
+    database=config["database"],
+    username=config["username"],
+    password=config["password"]
+)
+```
+
+Connection strings support various parameters for configuring connection pooling, timeouts, retries, and more. The "surrealdb://" scheme is automatically mapped to "ws://" for compatibility with the SurrealDB client.
+
+#### Connection Pooling
+
+Connection pooling improves performance by reusing connections instead of creating new ones for each operation:
+
+```python
+from surrealengine.connection import SyncConnectionPool, AsyncConnectionPool
+
+# Create a synchronous connection pool
+sync_pool = SyncConnectionPool(
+    url="ws://localhost:8000",
+    namespace="test",
+    database="test",
+    username="root",
+    password="root",
+    pool_size=10,                # Maximum number of connections in the pool
+    max_idle_time=60,            # Maximum time a connection can be idle before being closed
+    connect_timeout=5,           # Timeout for establishing a connection
+    operation_timeout=30,        # Timeout for operations
+    validate_on_borrow=True      # Validate connections when borrowing from the pool
+)
+
+# Get a connection from the pool
+conn = sync_pool.get_connection()
+
+# Use the connection
+result = conn.client.query("SELECT * FROM user LIMIT 1")
+
+# Return the connection to the pool
+sync_pool.return_connection(conn)
+
+# Close the pool when done
+sync_pool.close()
+
+# Asynchronous connection pool works similarly
+async_pool = AsyncConnectionPool(
+    url="ws://localhost:8000",
+    namespace="test",
+    database="test",
+    username="root",
+    password="root",
+    pool_size=10
+)
+
+# Get a connection from the pool
+conn = await async_pool.get_connection()
+
+# Use the connection
+result = await conn.client.query("SELECT * FROM user LIMIT 1")
+
+# Return the connection to the pool
+await async_pool.return_connection(conn)
+
+# Close the pool when done
+await async_pool.close()
+```
+
+#### Retry Strategy
+
+The retry strategy allows operations to be automatically retried with exponential backoff when they fail:
+
+```python
+from surrealengine.connection import RetryStrategy
+
+# Create a retry strategy
+retry = RetryStrategy(
+    retry_limit=3,       # Maximum number of retries
+    retry_delay=1.0,     # Initial delay in seconds between retries
+    retry_backoff=2.0    # Backoff multiplier for retry delay
+)
+
+# Execute an operation with retry
+try:
+    result = retry.execute_with_retry(lambda: conn.client.query("SELECT * FROM user"))
+except Exception as e:
+    print(f"Operation failed after retries: {str(e)}")
+
+# For async operations
+try:
+    result = await retry.execute_with_retry_async(lambda: conn.client.query("SELECT * FROM user"))
+except Exception as e:
+    print(f"Async operation failed after retries: {str(e)}")
+```
+
+#### Automatic Reconnection
+
+SurrealEngine supports automatic reconnection when a connection is lost, with event notifications and operation queuing:
+
+```python
+from surrealengine.connection import ConnectionEvent, ConnectionEventListener
+
+# Create a connection event listener
+class MyConnectionListener(ConnectionEventListener):
+    def on_event(self, event_type, connection, **kwargs):
+        if event_type == ConnectionEvent.RECONNECTING:
+            print("Connection lost, attempting to reconnect...")
+        elif event_type == ConnectionEvent.RECONNECTED:
+            print("Connection reestablished!")
+
+# Register the listener with a connection
+listener = MyConnectionListener()
+conn.add_listener(listener)
+```
+
+For a complete example of the connection management features, see [connection_management_example.py](./example_scripts/connection_management_example.py).
+
 ### Basic Document Model
 
 Document models are defined the same way for both sync and async operations:
@@ -497,6 +631,8 @@ For more examples of using the logging system, see [test_new_features.py](./exam
 - Query optimization
 - Expanded transaction support
 - Enhanced schema validation
+- Connection health checks and monitoring
+- Connection middleware support
 
 ## Contributing
 

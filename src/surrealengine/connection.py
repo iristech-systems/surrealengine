@@ -1,7 +1,1151 @@
 import surrealdb
-from typing import Dict, Optional, Any, Type, Union, Protocol, runtime_checkable
+import time
+import logging
+import re
+import urllib.parse
+from typing import Dict, Optional, Any, Type, Union, Protocol, runtime_checkable, List, Tuple, Callable
 from abc import ABC, abstractmethod
+from queue import Queue, Empty
+from threading import Lock, Event
+import asyncio
 from .schemaless import SurrealEngine
+
+# Set up logging
+logger = logging.getLogger(__name__)
+
+class ConnectionPoolBase(ABC):
+    """Base class for connection pools.
+
+    This abstract class defines the common interface and functionality for
+    both synchronous and asynchronous connection pools.
+
+    Attributes:
+        url: The URL of the SurrealDB server
+        namespace: The namespace to use
+        database: The database to use
+        username: The username for authentication
+        password: The password for authentication
+        pool_size: Maximum number of connections in the pool
+        max_idle_time: Maximum time in seconds a connection can be idle before being closed
+        connect_timeout: Timeout in seconds for establishing a connection
+        operation_timeout: Timeout in seconds for operations
+        retry_limit: Maximum number of retries for failed operations
+        retry_delay: Initial delay in seconds between retries
+        retry_backoff: Backoff multiplier for retry delay
+        validate_on_borrow: Whether to validate connections when borrowing from the pool
+    """
+
+    def __init__(self, 
+                 url: str, 
+                 namespace: Optional[str] = None, 
+                 database: Optional[str] = None, 
+                 username: Optional[str] = None, 
+                 password: Optional[str] = None, 
+                 pool_size: int = 10, 
+                 max_idle_time: int = 60, 
+                 connect_timeout: int = 30, 
+                 operation_timeout: int = 30, 
+                 retry_limit: int = 3, 
+                 retry_delay: float = 1.0, 
+                 retry_backoff: float = 2.0, 
+                 validate_on_borrow: bool = True) -> None:
+        """Initialize a new ConnectionPoolBase.
+
+        Args:
+            url: The URL of the SurrealDB server
+            namespace: The namespace to use
+            database: The database to use
+            username: The username for authentication
+            password: The password for authentication
+            pool_size: Maximum number of connections in the pool
+            max_idle_time: Maximum time in seconds a connection can be idle before being closed
+            connect_timeout: Timeout in seconds for establishing a connection
+            operation_timeout: Timeout in seconds for operations
+            retry_limit: Maximum number of retries for failed operations
+            retry_delay: Initial delay in seconds between retries
+            retry_backoff: Backoff multiplier for retry delay
+            validate_on_borrow: Whether to validate connections when borrowing from the pool
+        """
+        self.url = url
+        self.namespace = namespace
+        self.database = database
+        self.username = username
+        self.password = password
+        self.pool_size = max(1, pool_size)
+        self.max_idle_time = max(0, max_idle_time)
+        self.connect_timeout = max(1, connect_timeout)
+        self.operation_timeout = max(1, operation_timeout)
+        self.retry_limit = max(0, retry_limit)
+        self.retry_delay = max(0.1, retry_delay)
+        self.retry_backoff = max(1.0, retry_backoff)
+        self.validate_on_borrow = validate_on_borrow
+
+        # Initialize pool statistics
+        self.created_connections = 0
+        self.borrowed_connections = 0
+        self.returned_connections = 0
+        self.discarded_connections = 0
+
+    @abstractmethod
+    def create_connection(self) -> Any:
+        """Create a new connection.
+
+        Returns:
+            A new connection
+        """
+        pass
+
+    @abstractmethod
+    def validate_connection(self, connection: Any) -> bool:
+        """Validate a connection.
+
+        Args:
+            connection: The connection to validate
+
+        Returns:
+            True if the connection is valid, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    def close_connection(self, connection: Any) -> None:
+        """Close a connection.
+
+        Args:
+            connection: The connection to close
+        """
+        pass
+
+    @abstractmethod
+    def get_connection(self) -> Any:
+        """Get a connection from the pool.
+
+        Returns:
+            A connection from the pool
+        """
+        pass
+
+    @abstractmethod
+    def return_connection(self, connection: Any) -> None:
+        """Return a connection to the pool.
+
+        Args:
+            connection: The connection to return
+        """
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        """Close the pool and all connections."""
+        pass
+
+
+class SyncConnectionPool(ConnectionPoolBase):
+    """Synchronous connection pool for SurrealDB.
+
+    This class manages a pool of synchronous connections to a SurrealDB database.
+    It handles connection creation, validation, and reuse, and provides methods
+    for acquiring and releasing connections.
+
+    Attributes:
+        pool: Queue of available connections
+        in_use: Set of connections currently in use
+        lock: Lock for thread-safe operations
+        closed: Whether the pool is closed
+    """
+
+    def __init__(self, 
+                 url: str, 
+                 namespace: Optional[str] = None, 
+                 database: Optional[str] = None, 
+                 username: Optional[str] = None, 
+                 password: Optional[str] = None, 
+                 pool_size: int = 10, 
+                 max_idle_time: int = 60, 
+                 connect_timeout: int = 30, 
+                 operation_timeout: int = 30, 
+                 retry_limit: int = 3, 
+                 retry_delay: float = 1.0, 
+                 retry_backoff: float = 2.0, 
+                 validate_on_borrow: bool = True) -> None:
+        """Initialize a new SyncConnectionPool.
+
+        Args:
+            url: The URL of the SurrealDB server
+            namespace: The namespace to use
+            database: The database to use
+            username: The username for authentication
+            password: The password for authentication
+            pool_size: Maximum number of connections in the pool
+            max_idle_time: Maximum time in seconds a connection can be idle before being closed
+            connect_timeout: Timeout in seconds for establishing a connection
+            operation_timeout: Timeout in seconds for operations
+            retry_limit: Maximum number of retries for failed operations
+            retry_delay: Initial delay in seconds between retries
+            retry_backoff: Backoff multiplier for retry delay
+            validate_on_borrow: Whether to validate connections when borrowing from the pool
+        """
+        super().__init__(
+            url, namespace, database, username, password, 
+            pool_size, max_idle_time, connect_timeout, operation_timeout, 
+            retry_limit, retry_delay, retry_backoff, validate_on_borrow
+        )
+
+        # Initialize the pool
+        self.pool: Queue = Queue(maxsize=self.pool_size)
+        self.in_use: Dict[Any, float] = {}  # Connection -> timestamp when borrowed
+        self.lock = Lock()
+        self.closed = False
+
+    def create_connection(self) -> Any:
+        """Create a new connection.
+
+        Returns:
+            A new connection
+
+        Raises:
+            Exception: If the connection cannot be created
+        """
+        try:
+            # Create the client directly
+            client = surrealdb.Surreal(self.url)
+
+            # Set connect timeout
+            # Note: The surrealdb Python client doesn't support connect timeout directly,
+            # so we're not setting it here. In a real implementation, you might use
+            # a socket timeout or similar mechanism.
+
+            # Sign in if credentials are provided
+            if self.username and self.password:
+                client.signin({"username": self.username, "password": self.password})
+
+            # Use namespace and database
+            if self.namespace and self.database:
+                client.use(self.namespace, self.database)
+
+            self.created_connections += 1
+            logger.debug(f"Created new connection (total created: {self.created_connections})")
+
+            return client
+        except Exception as e:
+            logger.error(f"Failed to create connection: {str(e)}")
+            raise
+
+    def validate_connection(self, connection: Any) -> bool:
+        """Validate a connection.
+
+        Args:
+            connection: The connection to validate
+
+        Returns:
+            True if the connection is valid, False otherwise
+        """
+        try:
+            # Execute a simple query to check if the connection is valid
+            connection.query("SELECT 1 FROM information_schema.tables LIMIT 1")
+            return True
+        except Exception as e:
+            logger.warning(f"Connection validation failed: {str(e)}")
+            return False
+
+    def close_connection(self, connection: Any) -> None:
+        """Close a connection.
+
+        Args:
+            connection: The connection to close
+        """
+        try:
+            connection.close()
+            self.discarded_connections += 1
+            logger.debug(f"Closed connection (total discarded: {self.discarded_connections})")
+        except Exception as e:
+            logger.warning(f"Failed to close connection: {str(e)}")
+
+    def get_connection(self) -> Any:
+        """Get a connection from the pool.
+
+        Returns:
+            A connection from the pool
+
+        Raises:
+            RuntimeError: If the pool is closed
+            Exception: If a connection cannot be obtained
+        """
+        if self.closed:
+            raise RuntimeError("Connection pool is closed")
+
+        # Try to get a connection from the pool
+        try:
+            connection = self.pool.get(block=False)
+
+            # Validate the connection if needed
+            if self.validate_on_borrow and not self.validate_connection(connection):
+                # Connection is invalid, close it and create a new one
+                self.close_connection(connection)
+                connection = self.create_connection()
+        except Empty:
+            # Pool is empty, create a new connection if we haven't reached the limit
+            with self.lock:
+                if len(self.in_use) < self.pool_size:
+                    connection = self.create_connection()
+                else:
+                    # Wait for a connection to become available
+                    try:
+                        connection = self.pool.get(timeout=self.connect_timeout)
+
+                        # Validate the connection if needed
+                        if self.validate_on_borrow and not self.validate_connection(connection):
+                            # Connection is invalid, close it and create a new one
+                            self.close_connection(connection)
+                            connection = self.create_connection()
+                    except Empty:
+                        raise RuntimeError("Timeout waiting for a connection")
+
+        # Mark the connection as in use
+        with self.lock:
+            self.in_use[connection] = time.time()
+            self.borrowed_connections += 1
+            logger.debug(f"Borrowed connection (total borrowed: {self.borrowed_connections})")
+
+        return connection
+
+    def return_connection(self, connection: Any) -> None:
+        """Return a connection to the pool.
+
+        Args:
+            connection: The connection to return
+        """
+        if self.closed:
+            # Pool is closed, just close the connection
+            self.close_connection(connection)
+            return
+
+        # Remove the connection from the in-use set
+        with self.lock:
+            if connection in self.in_use:
+                del self.in_use[connection]
+                self.returned_connections += 1
+                logger.debug(f"Returned connection (total returned: {self.returned_connections})")
+            else:
+                # Connection wasn't borrowed from this pool
+                logger.warning("Attempted to return a connection that wasn't borrowed from this pool")
+                return
+
+        # Check if the connection is still valid
+        if self.validate_on_borrow and not self.validate_connection(connection):
+            # Connection is invalid, close it
+            self.close_connection(connection)
+            return
+
+        # Return the connection to the pool
+        try:
+            self.pool.put(connection, block=False)
+        except Exception:
+            # Pool is full, close the connection
+            self.close_connection(connection)
+
+    def close(self) -> None:
+        """Close the pool and all connections."""
+        if self.closed:
+            return
+
+        self.closed = True
+
+        # Close all connections in the pool
+        while not self.pool.empty():
+            try:
+                connection = self.pool.get(block=False)
+                self.close_connection(connection)
+            except Empty:
+                break
+
+        # Close all in-use connections
+        with self.lock:
+            for connection in list(self.in_use.keys()):
+                self.close_connection(connection)
+            self.in_use.clear()
+
+        logger.info(f"Connection pool closed. Stats: created={self.created_connections}, "
+                   f"borrowed={self.borrowed_connections}, returned={self.returned_connections}, "
+                   f"discarded={self.discarded_connections}")
+
+
+class AsyncConnectionPool(ConnectionPoolBase):
+    """Asynchronous connection pool for SurrealDB.
+
+    This class manages a pool of asynchronous connections to a SurrealDB database.
+    It handles connection creation, validation, and reuse, and provides methods
+    for acquiring and releasing connections.
+
+    Attributes:
+        pool: List of available connections
+        in_use: Dictionary of connections currently in use and their timestamps
+        lock: Asyncio lock for thread-safe operations
+        closed: Whether the pool is closed
+    """
+
+    def __init__(self, 
+                 url: str, 
+                 namespace: Optional[str] = None, 
+                 database: Optional[str] = None, 
+                 username: Optional[str] = None, 
+                 password: Optional[str] = None, 
+                 pool_size: int = 10, 
+                 max_idle_time: int = 60, 
+                 connect_timeout: int = 30, 
+                 operation_timeout: int = 30, 
+                 retry_limit: int = 3, 
+                 retry_delay: float = 1.0, 
+                 retry_backoff: float = 2.0, 
+                 validate_on_borrow: bool = True) -> None:
+        """Initialize a new AsyncConnectionPool.
+
+        Args:
+            url: The URL of the SurrealDB server
+            namespace: The namespace to use
+            database: The database to use
+            username: The username for authentication
+            password: The password for authentication
+            pool_size: Maximum number of connections in the pool
+            max_idle_time: Maximum time in seconds a connection can be idle before being closed
+            connect_timeout: Timeout in seconds for establishing a connection
+            operation_timeout: Timeout in seconds for operations
+            retry_limit: Maximum number of retries for failed operations
+            retry_delay: Initial delay in seconds between retries
+            retry_backoff: Backoff multiplier for retry delay
+            validate_on_borrow: Whether to validate connections when borrowing from the pool
+        """
+        super().__init__(
+            url, namespace, database, username, password, 
+            pool_size, max_idle_time, connect_timeout, operation_timeout, 
+            retry_limit, retry_delay, retry_backoff, validate_on_borrow
+        )
+
+        # Initialize the pool
+        self.pool: List[Any] = []
+        self.in_use: Dict[Any, float] = {}  # Connection -> timestamp when borrowed
+        self.lock = asyncio.Lock()
+        self.closed = False
+        self.connection_waiters: List[asyncio.Future] = []
+
+    async def create_connection(self) -> Any:
+        """Create a new connection.
+
+        Returns:
+            A new connection
+
+        Raises:
+            Exception: If the connection cannot be created
+        """
+        try:
+            # Create the client directly
+            client = surrealdb.AsyncSurreal(self.url)
+
+            # Set connect timeout
+            # Note: The surrealdb Python client doesn't support connect timeout directly,
+            # so we're not setting it here. In a real implementation, you might use
+            # a socket timeout or similar mechanism.
+
+            # Sign in if credentials are provided
+            if self.username and self.password:
+                await client.signin({"username": self.username, "password": self.password})
+
+            # Use namespace and database
+            if self.namespace and self.database:
+                await client.use(self.namespace, self.database)
+
+            self.created_connections += 1
+            logger.debug(f"Created new async connection (total created: {self.created_connections})")
+
+            return client
+        except Exception as e:
+            logger.error(f"Failed to create async connection: {str(e)}")
+            raise
+
+    async def validate_connection(self, connection: Any) -> bool:
+        """Validate a connection.
+
+        Args:
+            connection: The connection to validate
+
+        Returns:
+            True if the connection is valid, False otherwise
+        """
+        try:
+            # Execute a simple query to check if the connection is valid
+            await connection.query("SELECT 1 FROM information_schema.tables LIMIT 1")
+            return True
+        except Exception as e:
+            logger.warning(f"Async connection validation failed: {str(e)}")
+            return False
+
+    async def close_connection(self, connection: Any) -> None:
+        """Close a connection.
+
+        Args:
+            connection: The connection to close
+        """
+        try:
+            await connection.close()
+            self.discarded_connections += 1
+            logger.debug(f"Closed async connection (total discarded: {self.discarded_connections})")
+        except Exception as e:
+            logger.warning(f"Failed to close async connection: {str(e)}")
+
+    async def get_connection(self) -> Any:
+        """Get a connection from the pool.
+
+        Returns:
+            A connection from the pool
+
+        Raises:
+            RuntimeError: If the pool is closed
+            Exception: If a connection cannot be obtained
+        """
+        if self.closed:
+            raise RuntimeError("Async connection pool is closed")
+
+        async with self.lock:
+            # Try to get a connection from the pool
+            if self.pool:
+                connection = self.pool.pop()
+
+                # Validate the connection if needed
+                if self.validate_on_borrow:
+                    is_valid = await self.validate_connection(connection)
+                    if not is_valid:
+                        # Connection is invalid, close it and create a new one
+                        await self.close_connection(connection)
+                        connection = await self.create_connection()
+            elif len(self.in_use) < self.pool_size:
+                # Pool is empty but we haven't reached the limit, create a new connection
+                connection = await self.create_connection()
+            else:
+                # We've reached the pool size limit, wait for a connection to be returned
+                waiter = asyncio.get_event_loop().create_future()
+                self.connection_waiters.append(waiter)
+
+                # Release the lock while waiting
+                self.lock.release()
+                try:
+                    # Wait for a connection with timeout
+                    connection = await asyncio.wait_for(waiter, timeout=self.connect_timeout)
+
+                    # Validate the connection if needed
+                    if self.validate_on_borrow:
+                        is_valid = await self.validate_connection(connection)
+                        if not is_valid:
+                            # Connection is invalid, close it and create a new one
+                            await self.close_connection(connection)
+                            async with self.lock:
+                                connection = await self.create_connection()
+                except asyncio.TimeoutError:
+                    # Remove the waiter from the list
+                    async with self.lock:
+                        if waiter in self.connection_waiters:
+                            self.connection_waiters.remove(waiter)
+                    raise RuntimeError("Timeout waiting for an async connection")
+                except Exception:
+                    # Remove the waiter from the list
+                    async with self.lock:
+                        if waiter in self.connection_waiters:
+                            self.connection_waiters.remove(waiter)
+                    raise
+                finally:
+                    # Re-acquire the lock
+                    await self.lock.acquire()
+
+            # Mark the connection as in use
+            self.in_use[connection] = time.time()
+            self.borrowed_connections += 1
+            logger.debug(f"Borrowed async connection (total borrowed: {self.borrowed_connections})")
+
+            return connection
+
+    async def return_connection(self, connection: Any) -> None:
+        """Return a connection to the pool.
+
+        Args:
+            connection: The connection to return
+        """
+        if self.closed:
+            # Pool is closed, just close the connection
+            await self.close_connection(connection)
+            return
+
+        async with self.lock:
+            # Remove the connection from the in-use set
+            if connection in self.in_use:
+                del self.in_use[connection]
+                self.returned_connections += 1
+                logger.debug(f"Returned async connection (total returned: {self.returned_connections})")
+            else:
+                # Connection wasn't borrowed from this pool
+                logger.warning("Attempted to return an async connection that wasn't borrowed from this pool")
+                return
+
+            # Check if there are waiters
+            if self.connection_waiters:
+                # Give the connection to the first waiter
+                waiter = self.connection_waiters.pop(0)
+                if not waiter.done():
+                    waiter.set_result(connection)
+                    return
+
+            # Check if the connection is still valid
+            if self.validate_on_borrow:
+                is_valid = await self.validate_connection(connection)
+                if not is_valid:
+                    # Connection is invalid, close it
+                    await self.close_connection(connection)
+                    return
+
+            # Return the connection to the pool
+            if len(self.pool) < self.pool_size:
+                self.pool.append(connection)
+            else:
+                # Pool is full, close the connection
+                await self.close_connection(connection)
+
+    async def close(self) -> None:
+        """Close the pool and all connections."""
+        if self.closed:
+            return
+
+        async with self.lock:
+            self.closed = True
+
+            # Cancel all waiters
+            for waiter in self.connection_waiters:
+                if not waiter.done():
+                    waiter.set_exception(RuntimeError("Async connection pool is closed"))
+            self.connection_waiters.clear()
+
+            # Close all connections in the pool
+            for connection in self.pool:
+                await self.close_connection(connection)
+            self.pool.clear()
+
+            # Close all in-use connections
+            for connection in list(self.in_use.keys()):
+                await self.close_connection(connection)
+            self.in_use.clear()
+
+            logger.info(f"Async connection pool closed. Stats: created={self.created_connections}, "
+                       f"borrowed={self.borrowed_connections}, returned={self.returned_connections}, "
+                       f"discarded={self.discarded_connections}")
+
+
+class ConnectionEvent:
+    """Event types for connection events.
+
+    This class defines the event types that can be emitted by connections.
+    """
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    RECONNECTING = "reconnecting"
+    RECONNECTED = "reconnected"
+    CONNECTION_FAILED = "connection_failed"
+    RECONNECTION_FAILED = "reconnection_failed"
+    CONNECTION_CLOSED = "connection_closed"
+
+
+class ConnectionEventListener:
+    """Listener for connection events.
+
+    This class defines the interface for connection event listeners.
+    """
+
+    def on_event(self, event_type: str, connection: Any, **kwargs) -> None:
+        """Handle a connection event.
+
+        Args:
+            event_type: The type of event
+            connection: The connection that emitted the event
+            **kwargs: Additional event data
+        """
+        pass
+
+
+class ConnectionEventEmitter:
+    """Emitter for connection events.
+
+    This class provides methods for registering listeners and emitting events.
+
+    Attributes:
+        listeners: List of registered event listeners
+    """
+
+    def __init__(self) -> None:
+        """Initialize a new ConnectionEventEmitter."""
+        self.listeners: List[ConnectionEventListener] = []
+
+    def add_listener(self, listener: ConnectionEventListener) -> None:
+        """Add a listener for connection events.
+
+        Args:
+            listener: The listener to add
+        """
+        if listener not in self.listeners:
+            self.listeners.append(listener)
+
+    def remove_listener(self, listener: ConnectionEventListener) -> None:
+        """Remove a listener for connection events.
+
+        Args:
+            listener: The listener to remove
+        """
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+
+    def emit_event(self, event_type: str, connection: Any, **kwargs) -> None:
+        """Emit a connection event.
+
+        Args:
+            event_type: The type of event
+            connection: The connection that emitted the event
+            **kwargs: Additional event data
+        """
+        for listener in self.listeners:
+            try:
+                listener.on_event(event_type, connection, **kwargs)
+            except Exception as e:
+                logger.warning(f"Error in connection event listener: {str(e)}")
+
+
+class OperationQueue:
+    """Queue for operations during reconnection.
+
+    This class manages a queue of operations that are waiting for a connection
+    to be reestablished. Once the connection is restored, the operations are
+    executed in the order they were queued.
+
+    Attributes:
+        sync_operations: Queue of synchronous operations
+        async_operations: Queue of asynchronous operations
+        is_reconnecting: Whether the connection is currently reconnecting
+        reconnection_event: Event that is set when reconnection is complete
+        async_reconnection_event: Asyncio event that is set when reconnection is complete
+    """
+
+    def __init__(self) -> None:
+        """Initialize a new OperationQueue."""
+        self.sync_operations: List[Tuple[Callable, List, Dict]] = []
+        self.async_operations: List[Tuple[Callable, List, Dict]] = []
+        self.is_reconnecting = False
+        self.reconnection_event = Event()
+        self.async_reconnection_event = asyncio.Event()
+
+    def start_reconnection(self) -> None:
+        """Start the reconnection process.
+
+        This method marks the connection as reconnecting and clears the
+        reconnection events.
+        """
+        self.is_reconnecting = True
+        self.reconnection_event.clear()
+        self.async_reconnection_event.clear()
+
+    def end_reconnection(self) -> None:
+        """End the reconnection process.
+
+        This method marks the connection as no longer reconnecting and sets
+        the reconnection events.
+        """
+        self.is_reconnecting = False
+        self.reconnection_event.set()
+        self.async_reconnection_event.set()
+
+    def queue_operation(self, operation: Callable, args: List = None, kwargs: Dict = None) -> None:
+        """Queue a synchronous operation.
+
+        Args:
+            operation: The operation to queue
+            args: The positional arguments for the operation
+            kwargs: The keyword arguments for the operation
+        """
+        if args is None:
+            args = []
+        if kwargs is None:
+            kwargs = {}
+
+        self.sync_operations.append((operation, args, kwargs))
+
+    def queue_async_operation(self, operation: Callable, args: List = None, kwargs: Dict = None) -> None:
+        """Queue an asynchronous operation.
+
+        Args:
+            operation: The operation to queue
+            args: The positional arguments for the operation
+            kwargs: The keyword arguments for the operation
+        """
+        if args is None:
+            args = []
+        if kwargs is None:
+            kwargs = {}
+
+        self.async_operations.append((operation, args, kwargs))
+
+    def execute_queued_operations(self) -> None:
+        """Execute all queued synchronous operations."""
+        operations = self.sync_operations
+        self.sync_operations = []
+
+        for operation, args, kwargs in operations:
+            try:
+                operation(*args, **kwargs)
+            except Exception as e:
+                logger.error(f"Error executing queued operation: {str(e)}")
+
+    async def execute_queued_async_operations(self) -> None:
+        """Execute all queued asynchronous operations."""
+        operations = self.async_operations
+        self.async_operations = []
+
+        for operation, args, kwargs in operations:
+            try:
+                await operation(*args, **kwargs)
+            except Exception as e:
+                logger.error(f"Error executing queued async operation: {str(e)}")
+
+    def wait_for_reconnection(self, timeout: Optional[float] = None) -> bool:
+        """Wait for reconnection to complete.
+
+        Args:
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if reconnection completed, False if timed out
+        """
+        if not self.is_reconnecting:
+            return True
+
+        return self.reconnection_event.wait(timeout)
+
+    async def wait_for_async_reconnection(self, timeout: Optional[float] = None) -> bool:
+        """Wait for reconnection to complete asynchronously.
+
+        Args:
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if reconnection completed, False if timed out
+        """
+        if not self.is_reconnecting:
+            return True
+
+        try:
+            if timeout is not None:
+                await asyncio.wait_for(self.async_reconnection_event.wait(), timeout)
+            else:
+                await self.async_reconnection_event.wait()
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+
+class ReconnectionStrategy:
+    """Strategy for reconnecting to the database.
+
+    This class provides methods for reconnecting to the database with
+    configurable retry limits and backoff strategies.
+
+    Attributes:
+        max_attempts: Maximum number of reconnection attempts
+        initial_delay: Initial delay in seconds between reconnection attempts
+        max_delay: Maximum delay in seconds between reconnection attempts
+        backoff_factor: Backoff multiplier for reconnection delay
+    """
+
+    def __init__(self, max_attempts: int = 10, initial_delay: float = 1.0, 
+                 max_delay: float = 60.0, backoff_factor: float = 2.0) -> None:
+        """Initialize a new ReconnectionStrategy.
+
+        Args:
+            max_attempts: Maximum number of reconnection attempts
+            initial_delay: Initial delay in seconds between reconnection attempts
+            max_delay: Maximum delay in seconds between reconnection attempts
+            backoff_factor: Backoff multiplier for reconnection delay
+        """
+        self.max_attempts = max(1, max_attempts)
+        self.initial_delay = max(0.1, initial_delay)
+        self.max_delay = max(self.initial_delay, max_delay)
+        self.backoff_factor = max(1.0, backoff_factor)
+
+    def get_delay(self, attempt: int) -> float:
+        """Get the delay for a reconnection attempt.
+
+        Args:
+            attempt: The reconnection attempt number (0-based)
+
+        Returns:
+            The delay in seconds for the reconnection attempt
+        """
+        delay = self.initial_delay * (self.backoff_factor ** attempt)
+        return min(delay, self.max_delay)
+
+
+class RetryStrategy:
+    """Strategy for retrying operations with exponential backoff.
+
+    This class provides methods for retrying operations with configurable
+    retry limits and backoff strategies.
+
+    Attributes:
+        retry_limit: Maximum number of retries
+        retry_delay: Initial delay in seconds between retries
+        retry_backoff: Backoff multiplier for retry delay
+    """
+
+    def __init__(self, retry_limit: int = 3, retry_delay: float = 1.0, retry_backoff: float = 2.0) -> None:
+        """Initialize a new RetryStrategy.
+
+        Args:
+            retry_limit: Maximum number of retries
+            retry_delay: Initial delay in seconds between retries
+            retry_backoff: Backoff multiplier for retry delay
+        """
+        self.retry_limit = max(0, retry_limit)
+        self.retry_delay = max(0.1, retry_delay)
+        self.retry_backoff = max(1.0, retry_backoff)
+
+    def get_retry_delay(self, attempt: int) -> float:
+        """Get the delay for a retry attempt.
+
+        Args:
+            attempt: The retry attempt number (0-based)
+
+        Returns:
+            The delay in seconds for the retry attempt
+        """
+        return self.retry_delay * (self.retry_backoff ** attempt)
+
+    def should_retry(self, attempt: int, exception: Exception) -> bool:
+        """Determine whether to retry an operation.
+
+        Args:
+            attempt: The retry attempt number (0-based)
+            exception: The exception that caused the operation to fail
+
+        Returns:
+            True if the operation should be retried, False otherwise
+        """
+        # Don't retry if we've reached the retry limit
+        if attempt >= self.retry_limit:
+            return False
+
+        # Determine whether the exception is retryable
+        # For now, we'll retry on all exceptions, but in a real implementation
+        # you might want to be more selective
+        return True
+
+    def execute_with_retry(self, operation: Callable[[], Any]) -> Any:
+        """Execute an operation with retry.
+
+        Args:
+            operation: The operation to execute
+
+        Returns:
+            The result of the operation
+
+        Raises:
+            Exception: If the operation fails after all retries
+        """
+        last_exception = None
+
+        for attempt in range(self.retry_limit + 1):
+            try:
+                return operation()
+            except Exception as e:
+                last_exception = e
+
+                if not self.should_retry(attempt, e):
+                    break
+
+                # Calculate the delay for this retry attempt
+                delay = self.get_retry_delay(attempt)
+
+                logger.warning(f"Operation failed: {str(e)}. Retrying in {delay:.2f} seconds (attempt {attempt + 1}/{self.retry_limit + 1})...")
+
+                # Wait before retrying
+                time.sleep(delay)
+
+        # If we get here, all retries failed
+        if last_exception:
+            logger.error(f"Operation failed after {self.retry_limit + 1} attempts: {str(last_exception)}")
+            raise last_exception
+
+        # This should never happen, but just in case
+        raise RuntimeError("Operation failed for unknown reason")
+
+    async def execute_with_retry_async(self, operation: Callable[[], Any]) -> Any:
+        """Execute an asynchronous operation with retry.
+
+        Args:
+            operation: The asynchronous operation to execute
+
+        Returns:
+            The result of the operation
+
+        Raises:
+            Exception: If the operation fails after all retries
+        """
+        last_exception = None
+
+        for attempt in range(self.retry_limit + 1):
+            try:
+                return await operation()
+            except Exception as e:
+                last_exception = e
+
+                if not self.should_retry(attempt, e):
+                    break
+
+                # Calculate the delay for this retry attempt
+                delay = self.get_retry_delay(attempt)
+
+                logger.warning(f"Async operation failed: {str(e)}. Retrying in {delay:.2f} seconds (attempt {attempt + 1}/{self.retry_limit + 1})...")
+
+                # Wait before retrying
+                await asyncio.sleep(delay)
+
+        # If we get here, all retries failed
+        if last_exception:
+            logger.error(f"Async operation failed after {self.retry_limit + 1} attempts: {str(last_exception)}")
+            raise last_exception
+
+        # This should never happen, but just in case
+        raise RuntimeError("Async operation failed for unknown reason")
+
+
+def parse_connection_string(connection_string: str) -> Dict[str, Any]:
+    """Parse a connection string into a dictionary of connection parameters.
+
+    Supports the following formats:
+    - surrealdb://user:pass@host:port/namespace/database?param1=value1&param2=value2 (maps to ws://)
+    - wss://user:pass@host:port/namespace/database?param1=value1&param2=value2
+    - ws://user:pass@host:port/namespace/database?param1=value1&param2=value2
+    - http://user:pass@host:port/namespace/database?param1=value1&param2=value2
+    - https://user:pass@host:port/namespace/database?param1=value1&param2=value2
+
+    Connection string parameters:
+    - pool_size: Maximum number of connections in the pool (default: 10)
+    - max_idle_time: Maximum time in seconds a connection can be idle before being closed (default: 60)
+    - connect_timeout: Timeout in seconds for establishing a connection (default: 30)
+    - operation_timeout: Timeout in seconds for operations (default: 30)
+    - retry_limit: Maximum number of retries for failed operations (default: 3)
+    - retry_delay: Initial delay in seconds between retries (default: 1)
+    - retry_backoff: Backoff multiplier for retry delay (default: 2)
+    - validate_on_borrow: Whether to validate connections when borrowing from the pool (default: true)
+
+    Args:
+        connection_string: The connection string to parse
+
+    Returns:
+        A dictionary containing the parsed connection parameters
+
+    Raises:
+        ValueError: If the connection string is invalid
+    """
+    # Validate the connection string
+    if not connection_string:
+        raise ValueError("Connection string cannot be empty")
+
+    # Check if the connection string starts with a supported protocol
+    supported_protocols = ["surrealdb://", "wss://", "ws://", "http://", "https://"]
+    protocol_match = False
+    for protocol in supported_protocols:
+        if connection_string.startswith(protocol):
+            protocol_match = True
+            break
+
+    if not protocol_match:
+        raise ValueError(f"Connection string must start with one of: {', '.join(supported_protocols)}")
+
+    # Parse the connection string using urllib.parse
+    try:
+        parsed_url = urllib.parse.urlparse(connection_string)
+
+        # Extract the components
+        scheme = parsed_url.scheme
+        netloc = parsed_url.netloc
+        path = parsed_url.path.strip('/')
+        query = parsed_url.query
+
+        # Parse the netloc to get username, password, host, and port
+        username = None
+        password = None
+        if '@' in netloc:
+            auth, netloc = netloc.split('@', 1)
+            if ':' in auth:
+                username, password = auth.split(':', 1)
+                username = urllib.parse.unquote(username)
+                password = urllib.parse.unquote(password)
+            else:
+                username = urllib.parse.unquote(auth)
+
+        # Parse host and port
+        host = netloc
+        port = None
+        if ':' in netloc:
+            host, port_str = netloc.split(':', 1)
+            try:
+                port = int(port_str)
+            except ValueError:
+                raise ValueError(f"Invalid port number: {port_str}")
+
+        # Parse namespace and database from path
+        namespace = None
+        database = None
+        path_parts = path.split('/')
+        if len(path_parts) >= 1 and path_parts[0]:
+            namespace = path_parts[0]
+        if len(path_parts) >= 2 and path_parts[1]:
+            database = path_parts[1]
+
+        # Parse query parameters
+        params = {}
+        if query:
+            query_params = urllib.parse.parse_qs(query)
+            for key, values in query_params.items():
+                if len(values) == 1:
+                    # Try to convert to appropriate types
+                    value = values[0]
+                    if value.lower() == 'true':
+                        params[key] = True
+                    elif value.lower() == 'false':
+                        params[key] = False
+                    elif value.isdigit():
+                        params[key] = int(value)
+                    elif re.match(r'^-?\d+(\.\d+)?$', value):
+                        params[key] = float(value)
+                    else:
+                        params[key] = value
+                else:
+                    params[key] = values
+
+        # Construct the URL
+        # Map the surrealdb scheme to ws scheme
+        if scheme == "surrealdb":
+            scheme = "ws"
+        url = f"{scheme}://{host}"
+        if port:
+            url += f":{port}"
+
+        # Build the result dictionary
+        result = {
+            "url": url,
+            "namespace": namespace,
+            "database": database,
+            "username": username,
+            "password": password,
+            **params
+        }
+
+        return result
+
+    except Exception as e:
+        raise ValueError(f"Failed to parse connection string: {str(e)}")
 
 @runtime_checkable
 class BaseSurrealEngineConnection(Protocol):

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Implemented advanced connection management features:
+  - Connection pooling with configurable pool size, connection reuse, validation, and cleanup
+  - Connection timeouts and retries with exponential backoff
+  - Automatic reconnection with event-based triggers and operation queuing
+  - Connection string parsing with support for connection options
 - Pagination support across all query methods with `page(number, size)` method
 - Made dependencies optional: signals (blinker) and jupyter (notebook) can now be installed separately
 - Added `PaginationResult` class for enhanced pagination with metadata
