@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Implemented advanced connection management features:
   - Connection pooling with configurable pool size, connection reuse, validation, and cleanup
+  - Integration of connection pools with Document models for seamless use in async applications
   - Connection timeouts and retries with exponential backoff
   - Automatic reconnection with event-based triggers and operation queuing
   - Connection string parsing with support for connection options

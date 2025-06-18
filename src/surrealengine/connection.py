@@ -1170,6 +1170,153 @@ class BaseSurrealEngineConnection(Protocol):
         """Get dynamic table accessor."""
         ...
 
+class ConnectionPoolClient:
+    """Client that proxies requests to connections from a connection pool.
+
+    This class provides the same interface as the SurrealDB client but gets a connection
+    from the pool for each operation and returns it when done.
+
+    Attributes:
+        pool: The connection pool to get connections from
+    """
+
+    def __init__(self, pool: 'AsyncConnectionPool') -> None:
+        """Initialize a new ConnectionPoolClient.
+
+        Args:
+            pool: The connection pool to get connections from
+        """
+        self.pool = pool
+
+    async def create(self, collection: str, data: Dict[str, Any]) -> Any:
+        """Create a new record in the database.
+
+        Args:
+            collection: The collection to create the record in
+            data: The data to create the record with
+
+        Returns:
+            The created record
+        """
+        connection = await self.pool.get_connection()
+        try:
+            return await connection.client.create(collection, data)
+        finally:
+            await self.pool.return_connection(connection)
+
+    async def update(self, id: str, data: Dict[str, Any]) -> Any:
+        """Update an existing record in the database.
+
+        Args:
+            id: The ID of the record to update
+            data: The data to update the record with
+
+        Returns:
+            The updated record
+        """
+        connection = await self.pool.get_connection()
+        try:
+            return await connection.client.update(id, data)
+        finally:
+            await self.pool.return_connection(connection)
+
+    async def delete(self, id: str) -> Any:
+        """Delete a record from the database.
+
+        Args:
+            id: The ID of the record to delete
+
+        Returns:
+            The result of the delete operation
+        """
+        connection = await self.pool.get_connection()
+        try:
+            return await connection.client.delete(id)
+        finally:
+            await self.pool.return_connection(connection)
+
+    async def select(self, id: str) -> Any:
+        """Select a record from the database.
+
+        Args:
+            id: The ID of the record to select
+
+        Returns:
+            The selected record
+        """
+        connection = await self.pool.get_connection()
+        try:
+            return await connection.client.select(id)
+        finally:
+            await self.pool.return_connection(connection)
+
+    async def query(self, query: str) -> Any:
+        """Execute a query against the database.
+
+        Args:
+            query: The query to execute
+
+        Returns:
+            The result of the query
+        """
+        connection = await self.pool.get_connection()
+        try:
+            return await connection.client.query(query)
+        finally:
+            await self.pool.return_connection(connection)
+
+    async def insert(self, collection: str, data: List[Dict[str, Any]]) -> Any:
+        """Insert multiple records into the database.
+
+        Args:
+            collection: The collection to insert the records into
+            data: The data to insert
+
+        Returns:
+            The inserted records
+        """
+        connection = await self.pool.get_connection()
+        try:
+            return await connection.client.insert(collection, data)
+        finally:
+            await self.pool.return_connection(connection)
+
+    async def signin(self, credentials: Dict[str, str]) -> Any:
+        """Sign in to the database.
+
+        Args:
+            credentials: The credentials to sign in with
+
+        Returns:
+            The result of the sign-in operation
+        """
+        connection = await self.pool.get_connection()
+        try:
+            return await connection.client.signin(credentials)
+        finally:
+            await self.pool.return_connection(connection)
+
+    async def use(self, namespace: str, database: str) -> Any:
+        """Use a specific namespace and database.
+
+        Args:
+            namespace: The namespace to use
+            database: The database to use
+
+        Returns:
+            The result of the use operation
+        """
+        connection = await self.pool.get_connection()
+        try:
+            return await connection.client.use(namespace, database)
+        finally:
+            await self.pool.return_connection(connection)
+
+    async def close(self) -> None:
+        """Close the connection pool."""
+        await self.pool.close()
+
+
 class ConnectionRegistry:
     """Global connection registry for SurrealDB.
 
@@ -1369,13 +1516,21 @@ class SurrealEngineAsyncConnection:
         database: The database to use
         username: The username for authentication
         password: The password for authentication
-        client: The SurrealDB async client instance
+        client: The SurrealDB async client instance or ConnectionPoolClient
+        use_pool: Whether to use a connection pool
+        pool: The connection pool if use_pool is True
+        pool_size: The size of the connection pool
+        max_idle_time: Maximum time in seconds a connection can be idle before being closed
     """
 
     def __init__(self, url: Optional[str] = None, namespace: Optional[str] = None, 
                  database: Optional[str] = None, username: Optional[str] = None, 
                  password: Optional[str] = None, name: Optional[str] = None,
-                 make_default: bool = False) -> None:
+                 make_default: bool = False, use_pool: bool = False,
+                 pool_size: int = 10, max_idle_time: int = 60,
+                 connect_timeout: int = 30, operation_timeout: int = 30,
+                 retry_limit: int = 3, retry_delay: float = 1.0,
+                 retry_backoff: float = 2.0, validate_on_borrow: bool = True) -> None:
         """Initialize a new SurrealEngineAsyncConnection.
 
         Args:
@@ -1386,6 +1541,15 @@ class SurrealEngineAsyncConnection:
             password: The password for authentication
             name: The name to register this connection under in the registry
             make_default: Whether to set this connection as the default
+            use_pool: Whether to use a connection pool
+            pool_size: The size of the connection pool
+            max_idle_time: Maximum time in seconds a connection can be idle before being closed
+            connect_timeout: Timeout in seconds for establishing a connection
+            operation_timeout: Timeout in seconds for operations
+            retry_limit: Maximum number of retries for failed operations
+            retry_delay: Initial delay in seconds between retries
+            retry_backoff: Backoff multiplier for retry delay
+            validate_on_borrow: Whether to validate connections when borrowing from the pool
         """
         self.url = url
         self.namespace = namespace
@@ -1393,6 +1557,16 @@ class SurrealEngineAsyncConnection:
         self.username = username
         self.password = password
         self.client = None
+        self.use_pool = use_pool
+        self.pool = None
+        self.pool_size = pool_size
+        self.max_idle_time = max_idle_time
+        self.connect_timeout = connect_timeout
+        self.operation_timeout = operation_timeout
+        self.retry_limit = retry_limit
+        self.retry_delay = retry_delay
+        self.retry_backoff = retry_backoff
+        self.validate_on_borrow = validate_on_borrow
 
         if name:
             ConnectionRegistry.add_async_connection(name, self)
@@ -1432,33 +1606,60 @@ class SurrealEngineAsyncConnection:
     async def connect(self) -> Any:
         """Connect to the database.
 
-        This method creates a new client if one doesn't exist, signs in if
-        credentials are provided, and sets the namespace and database.
+        This method creates a new client if one doesn't exist. If use_pool is True,
+        it creates a connection pool and a ConnectionPoolClient. Otherwise, it creates
+        a direct connection to the database.
 
         Returns:
-            The SurrealDB client instance
+            The SurrealDB client instance or ConnectionPoolClient
         """
         if not self.client:
-            # Create the client directly
-            self.client = surrealdb.AsyncSurreal(self.url)
+            if self.use_pool:
+                # Create a connection pool
+                self.pool = AsyncConnectionPool(
+                    url=self.url,
+                    namespace=self.namespace,
+                    database=self.database,
+                    username=self.username,
+                    password=self.password,
+                    pool_size=self.pool_size,
+                    max_idle_time=self.max_idle_time,
+                    connect_timeout=self.connect_timeout,
+                    operation_timeout=self.operation_timeout,
+                    retry_limit=self.retry_limit,
+                    retry_delay=self.retry_delay,
+                    retry_backoff=self.retry_backoff,
+                    validate_on_borrow=self.validate_on_borrow
+                )
 
-            # Sign in if credentials are provided
-            if self.username and self.password:
-                await self.client.signin({"username": self.username, "password": self.password})
+                # Create a client that uses the pool
+                self.client = ConnectionPoolClient(self.pool)
+            else:
+                # Create the client directly
+                self.client = surrealdb.AsyncSurreal(self.url)
 
-            # Use namespace and database
-            if self.namespace and self.database:
-                await self.client.use(self.namespace, self.database)
+                # Sign in if credentials are provided
+                if self.username and self.password:
+                    await self.client.signin({"username": self.username, "password": self.password})
+
+                # Use namespace and database
+                if self.namespace and self.database:
+                    await self.client.use(self.namespace, self.database)
 
         return self.client
 
     async def disconnect(self) -> None:
         """Disconnect from the database.
 
-        This method closes the client connection if one exists.
+        This method closes the client connection if one exists. If use_pool is True,
+        it closes the connection pool.
         """
         if self.client:
-            await self.client.close()
+            if self.use_pool and self.pool:
+                await self.pool.close()
+                self.pool = None
+            else:
+                await self.client.close()
             self.client = None
 
     async def transaction(self, coroutines: list) -> list:
@@ -1493,7 +1694,12 @@ class SurrealEngineAsyncConnection:
 def create_connection(url: Optional[str] = None, namespace: Optional[str] = None, 
                   database: Optional[str] = None, username: Optional[str] = None, 
                   password: Optional[str] = None, name: Optional[str] = None,
-                  make_default: bool = False, async_mode: bool = True) -> Union['SurrealEngineAsyncConnection', 'SurrealEngineSyncConnection']:
+                  make_default: bool = False, async_mode: bool = True,
+                  use_pool: bool = False, pool_size: int = 10, 
+                  max_idle_time: int = 60, connect_timeout: int = 30,
+                  operation_timeout: int = 30, retry_limit: int = 3,
+                  retry_delay: float = 1.0, retry_backoff: float = 2.0,
+                  validate_on_borrow: bool = True, auto_connect: bool = False) -> Union['SurrealEngineAsyncConnection', 'SurrealEngineSyncConnection']:
     """Factory function to create a connection of the appropriate type.
 
     Args:
@@ -1505,14 +1711,63 @@ def create_connection(url: Optional[str] = None, namespace: Optional[str] = None
         name: The name to register this connection under in the registry
         make_default: Whether to set this connection as the default
         async_mode: Whether to create an async or sync connection
+        use_pool: Whether to use a connection pool (async_mode only)
+        pool_size: The size of the connection pool
+        max_idle_time: Maximum time in seconds a connection can be idle before being closed
+        connect_timeout: Timeout in seconds for establishing a connection
+        operation_timeout: Timeout in seconds for operations
+        retry_limit: Maximum number of retries for failed operations
+        retry_delay: Initial delay in seconds between retries
+        retry_backoff: Backoff multiplier for retry delay
+        validate_on_borrow: Whether to validate connections when borrowing from the pool
+        auto_connect: Whether to automatically connect the connection
 
     Returns:
         A connection of the requested type
     """
     if async_mode:
-        return SurrealEngineAsyncConnection(url, namespace, database, username, password, name, make_default)
+        connection = SurrealEngineAsyncConnection(
+            url=url, 
+            namespace=namespace, 
+            database=database, 
+            username=username, 
+            password=password, 
+            name=name, 
+            make_default=make_default,
+            use_pool=use_pool,
+            pool_size=pool_size,
+            max_idle_time=max_idle_time,
+            connect_timeout=connect_timeout,
+            operation_timeout=operation_timeout,
+            retry_limit=retry_limit,
+            retry_delay=retry_delay,
+            retry_backoff=retry_backoff,
+            validate_on_borrow=validate_on_borrow
+        )
+
+        # Auto-connect if requested
+        if auto_connect:
+            # We can't await here, so we'll return the connection without connecting
+            # The caller will need to await connection.connect() before using it
+            pass
+
+        return connection
     else:
-        return SurrealEngineSyncConnection(url, namespace, database, username, password, name, make_default)
+        connection = SurrealEngineSyncConnection(
+            url=url, 
+            namespace=namespace, 
+            database=database, 
+            username=username, 
+            password=password, 
+            name=name, 
+            make_default=make_default
+        )
+
+        # Auto-connect if requested
+        if auto_connect:
+            connection.connect()
+
+        return connection
 
 
 class SurrealEngineSyncConnection:
