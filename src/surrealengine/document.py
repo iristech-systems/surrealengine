@@ -202,7 +202,13 @@ class Document(metaclass=DocumentMetaclass):
         Args:
             value: The document ID to set
         """
-        self._data['id'] = value
+        if 'id' in self._fields:
+            field = self._fields['id']
+            self._data['id'] = field.validate(value)
+            if 'id' not in self._changed_fields:
+                self._changed_fields.append('id')
+        else:
+            self._data['id'] = value
 
     @classmethod
     def _get_collection_name(cls) -> str:
@@ -355,10 +361,10 @@ class Document(metaclass=DocumentMetaclass):
         return instance
 
     async def resolve_references(self, depth: int = 1) -> 'Document':
-        """Resolve all references in this document.
+        """Resolve all references in this document using FETCH.
 
-        This method iterates through all fields of the document, finds ReferenceField
-        instances, and resolves the references by fetching the referenced documents.
+        This method uses SurrealDB's FETCH clause to efficiently resolve references
+        instead of making individual queries for each reference.
 
         Args:
             depth: Maximum depth of reference resolution (default: 1)
@@ -366,41 +372,66 @@ class Document(metaclass=DocumentMetaclass):
         Returns:
             The document instance with resolved references
         """
-        if depth <= 0:
+        if depth <= 0 or not self.id:
             return self
 
+        # Build FETCH clause for all reference fields
+        fetch_fields = []
         for field_name, field in self._fields.items():
             if isinstance(field, ReferenceField) and getattr(self, field_name):
-                # Get the reference ID
-                ref_id = getattr(self, field_name)
+                fetch_fields.append(field_name)
+        
+        if not fetch_fields:
+            return self
 
-                # Handle string references
-                if isinstance(ref_id, str) and ':' in ref_id:
-                    # Resolve the reference with dereference=True to automatically dereference first-level references
-                    referenced_doc = await field.document_type.get(id=ref_id, dereference=True)
-                    if referenced_doc and depth > 1:
-                        # Recursively resolve deeper references in the referenced document
-                        await referenced_doc.resolve_references(depth=depth-1)
-                    setattr(self, field_name, referenced_doc)
-
-                # Handle RecordID objects
-                elif isinstance(ref_id, RecordID):
-                    # Convert RecordID to string
-                    ref_id_str = str(ref_id)
-                    # Resolve the reference with dereference=True to automatically dereference first-level references
-                    referenced_doc = await field.document_type.get(id=ref_id_str, dereference=True)
-                    if referenced_doc and depth > 1:
-                        # Recursively resolve deeper references in the referenced document
-                        await referenced_doc.resolve_references(depth=depth-1)
-                    setattr(self, field_name, referenced_doc)
+        # Use FETCH to resolve references in a single query
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        query = f"SELECT * FROM `{self.id}` FETCH {', '.join(fetch_fields)}"
+        
+        try:
+            # Use FETCH with a WHERE clause instead of selecting from specific record
+            fetch_query = f"SELECT * FROM {self.__class__._get_collection_name()} WHERE id = {self.id} FETCH {', '.join(fetch_fields)}"
+            result = await connection.client.query(fetch_query)
+            if result and result[0]:
+                # Update this document with fetched data
+                fetched_data = result[0][0]
+                updated_doc = self.from_db(fetched_data)
+                
+                # Copy the resolved references to this instance
+                for field_name in fetch_fields:
+                    if hasattr(updated_doc, field_name):
+                        setattr(self, field_name, getattr(updated_doc, field_name))
+                
+                # If depth > 1, recursively resolve references in fetched documents
+                if depth > 1:
+                    for field_name in fetch_fields:
+                        referenced_doc = getattr(self, field_name, None)
+                        if referenced_doc and hasattr(referenced_doc, 'resolve_references'):
+                            await referenced_doc.resolve_references(depth=depth-1)
+        except Exception:
+            # Fall back to manual resolution if FETCH fails
+            for field_name, field in self._fields.items():
+                if isinstance(field, ReferenceField) and getattr(self, field_name):
+                    ref_id = getattr(self, field_name)
+                    if isinstance(ref_id, str) and ':' in ref_id:
+                        referenced_doc = await field.document_type.get(id=ref_id, dereference=True)
+                        if referenced_doc and depth > 1:
+                            await referenced_doc.resolve_references(depth=depth-1)
+                        setattr(self, field_name, referenced_doc)
+                    elif isinstance(ref_id, RecordID):
+                        ref_id_str = str(ref_id)
+                        referenced_doc = await field.document_type.get(id=ref_id_str, dereference=True)
+                        if referenced_doc and depth > 1:
+                            await referenced_doc.resolve_references(depth=depth-1)
+                        setattr(self, field_name, referenced_doc)
 
         return self
 
     def resolve_references_sync(self, depth: int = 1) -> 'Document':
-        """Resolve all references in this document synchronously.
+        """Resolve all references in this document synchronously using FETCH.
 
-        This method iterates through all fields of the document, finds ReferenceField
-        instances, and resolves the references by fetching the referenced documents.
+        This method uses SurrealDB's FETCH clause to efficiently resolve references
+        instead of making individual queries for each reference.
 
         Args:
             depth: Maximum depth of reference resolution (default: 1)
@@ -408,41 +439,67 @@ class Document(metaclass=DocumentMetaclass):
         Returns:
             The document instance with resolved references
         """
-        if depth <= 0:
+        if depth <= 0 or not self.id:
             return self
 
+        # Build FETCH clause for all reference fields
+        fetch_fields = []
         for field_name, field in self._fields.items():
             if isinstance(field, ReferenceField) and getattr(self, field_name):
-                # Get the reference ID
-                ref_id = getattr(self, field_name)
+                fetch_fields.append(field_name)
+        
+        if not fetch_fields:
+            return self
 
-                # Handle string references
-                if isinstance(ref_id, str) and ':' in ref_id:
-                    # Resolve the reference with dereference=True to automatically dereference first-level references
-                    referenced_doc = field.document_type.get_sync(id=ref_id, dereference=True)
-                    if referenced_doc and depth > 1:
-                        # Recursively resolve deeper references in the referenced document
-                        referenced_doc.resolve_references_sync(depth=depth-1)
-                    setattr(self, field_name, referenced_doc)
-
-                # Handle RecordID objects
-                elif isinstance(ref_id, RecordID):
-                    # Convert RecordID to string
-                    ref_id_str = str(ref_id)
-                    # Resolve the reference with dereference=True to automatically dereference first-level references
-                    referenced_doc = field.document_type.get_sync(id=ref_id_str, dereference=True)
-                    if referenced_doc and depth > 1:
-                        # Recursively resolve deeper references in the referenced document
-                        referenced_doc.resolve_references_sync(depth=depth-1)
-                    setattr(self, field_name, referenced_doc)
+        # Use FETCH to resolve references in a single query
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        query = f"SELECT * FROM `{self.id}` FETCH {', '.join(fetch_fields)}"
+        
+        try:
+            # Use FETCH with a WHERE clause instead of selecting from specific record
+            fetch_query = f"SELECT * FROM {self.__class__._get_collection_name()} WHERE id = {self.id} FETCH {', '.join(fetch_fields)}"
+            result = connection.client.query(fetch_query)
+            if result and result[0]:
+                # Update this document with fetched data
+                fetched_data = result[0][0]
+                updated_doc = self.from_db(fetched_data)
+                
+                # Copy the resolved references to this instance
+                for field_name in fetch_fields:
+                    if hasattr(updated_doc, field_name):
+                        setattr(self, field_name, getattr(updated_doc, field_name))
+                
+                # If depth > 1, recursively resolve references in fetched documents
+                if depth > 1:
+                    for field_name in fetch_fields:
+                        referenced_doc = getattr(self, field_name, None)
+                        if referenced_doc and hasattr(referenced_doc, 'resolve_references_sync'):
+                            referenced_doc.resolve_references_sync(depth=depth-1)
+        except Exception:
+            # Fall back to manual resolution if FETCH fails
+            for field_name, field in self._fields.items():
+                if isinstance(field, ReferenceField) and getattr(self, field_name):
+                    ref_id = getattr(self, field_name)
+                    if isinstance(ref_id, str) and ':' in ref_id:
+                        referenced_doc = field.document_type.get_sync(id=ref_id, dereference=True)
+                        if referenced_doc and depth > 1:
+                            referenced_doc.resolve_references_sync(depth=depth-1)
+                        setattr(self, field_name, referenced_doc)
+                    elif isinstance(ref_id, RecordID):
+                        ref_id_str = str(ref_id)
+                        referenced_doc = field.document_type.get_sync(id=ref_id_str, dereference=True)
+                        if referenced_doc and depth > 1:
+                            referenced_doc.resolve_references_sync(depth=depth-1)
+                        setattr(self, field_name, referenced_doc)
 
         return self
 
     @classmethod
     async def get(cls, id: Any, dereference: bool = False, dereference_depth: int = 1, **kwargs: Any) -> 'Document':
-        """Get a document by ID with optional dereferencing.
+        """Get a document by ID with optional dereferencing using FETCH.
 
-        This method retrieves a document by ID and optionally resolves references.
+        This method retrieves a document by ID and optionally resolves references
+        using SurrealDB's FETCH clause for efficient reference resolution.
 
         Args:
             id: The ID of the document to retrieve
@@ -453,20 +510,75 @@ class Document(metaclass=DocumentMetaclass):
         Returns:
             The document instance with optionally resolved references
         """
-        # Pass dereference to QuerySet.get to automatically dereference first-level references
-        document = await cls.objects.get(dereference=dereference, id=id, **kwargs)
-
-        # If dereference_depth > 1, we need to resolve deeper references
+        if not dereference:
+            # No dereferencing needed, use regular get
+            return await cls.objects.get(id=id, **kwargs)
+        
+        # Build FETCH clause for reference fields
+        fetch_fields = []
+        for field_name, field in cls._fields.items():
+            if isinstance(field, ReferenceField):
+                fetch_fields.append(field_name)
+        
+        if fetch_fields:
+            # Use FETCH to resolve references in the initial query
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            
+            # Handle ID format - both strings and RecordID objects
+            if (isinstance(id, str) and ':' in id) or isinstance(id, RecordID):
+                record_id = str(id)  # Convert RecordID to string
+            else:
+                record_id = f"{cls._get_collection_name()}:{id}"
+            
+            try:
+                # Use FETCH on the entire collection, then filter
+                fetch_query = f"SELECT * FROM {cls._get_collection_name()} FETCH {', '.join(fetch_fields)}"
+                result = await connection.client.query(fetch_query)
+                if not result or not result[0]:
+                    from .exceptions import DoesNotExist
+                    raise DoesNotExist(f"Object with ID '{id}' does not exist.")
+                
+                # Handle both single document and list of documents
+                documents = result[0]
+                target_doc = None
+                
+                # If documents is a single dict, wrap it in a list
+                if isinstance(documents, dict):
+                    documents = [documents]
+                
+                # Find the document with the matching ID
+                for doc_data in documents:
+                    if isinstance(doc_data, dict) and str(doc_data.get('id')) == record_id:
+                        target_doc = doc_data
+                        break
+                
+                if not target_doc:
+                    from .exceptions import DoesNotExist
+                    raise DoesNotExist(f"Object with ID '{id}' does not exist.")
+                
+                document = cls.from_db(target_doc)
+                
+                # If dereference_depth > 1, recursively resolve deeper references
+                if dereference_depth > 1:
+                    await document.resolve_references(depth=dereference_depth)
+                
+                return document
+            except Exception:
+                # Fall back to regular get with manual dereferencing
+                pass
+        
+        # Fallback to original method
+        document = await cls.objects.get(id=id, **kwargs)
         if dereference and dereference_depth > 1 and document:
             await document.resolve_references(depth=dereference_depth)
-
         return document
 
     @classmethod
     def get_sync(cls, id: Any, dereference: bool = False, dereference_depth: int = 1, **kwargs: Any) -> 'Document':
-        """Get a document by ID with optional dereferencing synchronously.
+        """Get a document by ID with optional dereferencing synchronously using FETCH.
 
-        This method retrieves a document by ID and optionally resolves references.
+        This method retrieves a document by ID and optionally resolves references
+        using SurrealDB's FETCH clause for efficient reference resolution.
 
         Args:
             id: The ID of the document to retrieve
@@ -477,13 +589,67 @@ class Document(metaclass=DocumentMetaclass):
         Returns:
             The document instance with optionally resolved references
         """
-        # Pass dereference to QuerySet.get_sync to automatically dereference first-level references
-        document = cls.objects.get_sync(dereference=dereference, id=id, **kwargs)
-
-        # If dereference_depth > 1, we need to resolve deeper references
+        if not dereference:
+            # No dereferencing needed, use regular get
+            return cls.objects.get_sync(id=id, **kwargs)
+        
+        # Build FETCH clause for reference fields
+        fetch_fields = []
+        for field_name, field in cls._fields.items():
+            if isinstance(field, ReferenceField):
+                fetch_fields.append(field_name)
+        
+        if fetch_fields:
+            # Use FETCH to resolve references in the initial query
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            
+            # Handle ID format - both strings and RecordID objects
+            if (isinstance(id, str) and ':' in id) or isinstance(id, RecordID):
+                record_id = str(id)  # Convert RecordID to string
+            else:
+                record_id = f"{cls._get_collection_name()}:{id}"
+            
+            try:
+                # Use FETCH on the entire collection, then filter
+                fetch_query = f"SELECT * FROM {cls._get_collection_name()} FETCH {', '.join(fetch_fields)}"
+                result = connection.client.query(fetch_query)
+                if not result or not result[0]:
+                    from .exceptions import DoesNotExist
+                    raise DoesNotExist(f"Object with ID '{id}' does not exist.")
+                
+                # Handle both single document and list of documents
+                documents = result[0]
+                target_doc = None
+                
+                # If documents is a single dict, wrap it in a list
+                if isinstance(documents, dict):
+                    documents = [documents]
+                
+                # Find the document with the matching ID
+                for doc_data in documents:
+                    if isinstance(doc_data, dict) and str(doc_data.get('id')) == record_id:
+                        target_doc = doc_data
+                        break
+                
+                if not target_doc:
+                    from .exceptions import DoesNotExist
+                    raise DoesNotExist(f"Object with ID '{id}' does not exist.")
+                
+                document = cls.from_db(target_doc)
+                
+                # If dereference_depth > 1, recursively resolve deeper references
+                if dereference_depth > 1:
+                    document.resolve_references_sync(depth=dereference_depth)
+                
+                return document
+            except Exception:
+                # Fall back to regular get with manual dereferencing
+                pass
+        
+        # Fallback to original method
+        document = cls.objects.get_sync(id=id, **kwargs)
         if dereference and dereference_depth > 1 and document:
             document.resolve_references_sync(depth=dereference_depth)
-
         return document
 
     async def save(self, connection: Optional[Any] = None) -> 'Document':
@@ -519,8 +685,10 @@ class Document(metaclass=DocumentMetaclass):
         is_new = not self.id
         if self.id:
             del data['id']
+            id_part = str(self.id).split(':')[1]
             result = await connection.client.upsert(
-                self.id,
+                RecordID(self._get_collection_name(),
+                         int(id_part) if id_part.isdigit() else id_part),
                 data
             )
         else:
@@ -590,9 +758,10 @@ class Document(metaclass=DocumentMetaclass):
         is_new = not self.id
         if self.id:
             del data['id']
-            print(self.id, type(self.id))
+            id_part = str(self.id).split(':')[1]
             result = connection.client.upsert(
-                self.id,
+                RecordID(self._get_collection_name(),
+                         int(id_part) if id_part.isdigit() else id_part),
                 data
             )
         else:

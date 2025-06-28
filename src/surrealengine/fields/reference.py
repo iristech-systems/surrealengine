@@ -94,8 +94,9 @@ class ReferenceField(Field):
         """Convert database reference to Python representation.
 
         This method converts a database reference to a Python representation.
+        If the value is already a resolved document (from FETCH), return it as is.
         If dereference is False, it returns the string reference as is.
-        If dereference is True, it fetches the referenced document.
+        If dereference is True but value is still a string, fetch the referenced document.
 
         Args:
             value: The database reference to convert
@@ -104,6 +105,14 @@ class ReferenceField(Field):
         Returns:
             The Python representation of the reference
         """
+        # If value is already a dict (fetched document), convert it to document instance
+        if isinstance(value, dict) and 'id' in value:
+            try:
+                return self.document_type.from_db(value)
+            except Exception:
+                # If conversion fails, return the dict as is
+                return value
+        
         if isinstance(value, str) and ':' in value:
             # This is a record ID reference
             if dereference:
@@ -225,8 +234,9 @@ class RelationField(Field):
         """Convert database relation to Python representation.
 
         This method converts a database relation to a Python representation.
+        If the value is already a resolved document (from FETCH), return it as is.
         If dereference is False, it returns the string reference as is.
-        If dereference is True, it fetches the related document.
+        If dereference is True but value is still a string, fetch the related document.
 
         Args:
             value: The database relation to convert
@@ -235,6 +245,14 @@ class RelationField(Field):
         Returns:
             The Python representation of the relation
         """
+        # If value is already a dict (fetched document), convert it to document instance
+        if isinstance(value, dict) and 'id' in value:
+            try:
+                return self.to_document.from_db(value)
+            except Exception:
+                # If conversion fails, return the dict as is
+                return value
+        
         if isinstance(value, str) and ':' in value:
             # This is a record ID reference
             if dereference:

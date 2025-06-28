@@ -43,6 +43,10 @@ class BaseQuerySet:
         self.split_fields: List[str] = []
         self.fetch_fields: List[str] = []
         self.with_index: Optional[str] = None
+        # Performance optimization attributes
+        self._bulk_id_selection: Optional[List[Any]] = None
+        self._id_range_selection: Optional[Tuple[Any, Any, bool]] = None
+        self._prefer_direct_access: bool = False
 
     def is_async_connection(self) -> bool:
         """Check if the connection is asynchronous.
@@ -54,7 +58,7 @@ class BaseQuerySet:
         return isinstance(self.connection, SurrealEngineAsyncConnection)
 
     def filter(self, **kwargs) -> 'BaseQuerySet':
-        """Add filter conditions to the query.
+        """Add filter conditions to the query with automatic ID optimization.
 
         This method supports Django-style field lookups with double-underscore operators:
         - field__gt: Greater than
@@ -62,12 +66,16 @@ class BaseQuerySet:
         - field__gte: Greater than or equal
         - field__lte: Less than or equal
         - field__ne: Not equal
-        - field__in: Inside (for arrays)
+        - field__in: Inside (for arrays) - optimized for ID fields
         - field__nin: Not inside (for arrays)
         - field__contains: Contains (for strings or arrays)
         - field__startswith: Starts with (for strings)
         - field__endswith: Ends with (for strings)
         - field__regex: Matches regex pattern (for strings)
+
+        PERFORMANCE OPTIMIZATIONS:
+        - id__in automatically uses direct record access syntax
+        - ID range queries (id__gte + id__lte) use range syntax
 
         Args:
             **kwargs: Field names and values to filter by
@@ -78,6 +86,24 @@ class BaseQuerySet:
         Raises:
             ValueError: If an unknown operator is provided
         """
+        # PERFORMANCE OPTIMIZATION: Check for bulk ID operations
+        if len(kwargs) == 1 and 'id__in' in kwargs:
+            clone = self._clone()
+            clone._bulk_id_selection = kwargs['id__in']
+            return clone
+        
+        # PERFORMANCE OPTIMIZATION: Check for ID range operations  
+        id_range_keys = {k for k in kwargs.keys() if k.startswith('id__') and k.endswith(('gte', 'lte', 'gt', 'lt'))}
+        if len(kwargs) == 2 and len(id_range_keys) == 2:
+            clone = self._clone()
+            if 'id__gte' in kwargs and 'id__lte' in kwargs:
+                clone._id_range_selection = (kwargs['id__gte'], kwargs['id__lte'], True)  # inclusive
+                return clone
+            elif 'id__gt' in kwargs and 'id__lt' in kwargs:
+                clone._id_range_selection = (kwargs['id__gt'], kwargs['id__lt'], False)  # exclusive
+                return clone
+        
+        # Fall back to regular filtering for non-optimizable queries
         for k, v in kwargs.items():
             if k == 'id':
                 if isinstance(v, RecordID):
@@ -112,6 +138,7 @@ class BaseQuerySet:
                 elif op == 'ne':
                     self.query_parts.append((field, '!=', v))
                 elif op == 'in':
+                    # Note: id__in is handled by optimization above
                     self.query_parts.append((field, 'INSIDE', v))
                 elif op == 'nin':
                     self.query_parts.append((field, 'NOT INSIDE', v))
@@ -224,6 +251,51 @@ class BaseQuerySet:
         self.fetch_fields.extend(fields)
         return self
 
+    def get_many(self, ids: List[Union[str, Any]]) -> 'BaseQuerySet':
+        """Get multiple records by IDs using optimized direct record access.
+        
+        This method uses SurrealDB's direct record selection syntax for better
+        performance compared to WHERE clause filtering.
+        
+        Args:
+            ids: List of record IDs (can be strings or other ID types)
+            
+        Returns:
+            The query set instance configured for direct record access
+            
+        Example:
+            # Efficient: SELECT * FROM users:1, users:2, users:3
+            users = await User.objects.get_many([1, 2, 3]).all()
+            users = await User.objects.get_many(['users:1', 'users:2']).all()
+        """
+        clone = self._clone()
+        clone._bulk_id_selection = ids
+        return clone
+    
+    def get_range(self, start_id: Union[str, Any], end_id: Union[str, Any], 
+                  inclusive: bool = True) -> 'BaseQuerySet':
+        """Get a range of records by ID using optimized range syntax.
+        
+        This method uses SurrealDB's range selection syntax for better
+        performance compared to WHERE clause filtering.
+        
+        Args:
+            start_id: Starting ID of the range
+            end_id: Ending ID of the range  
+            inclusive: Whether the range is inclusive (default: True)
+            
+        Returns:
+            The query set instance configured for range access
+            
+        Example:
+            # Efficient: SELECT * FROM users:100..=200
+            users = await User.objects.get_range(100, 200).all()
+            users = await User.objects.get_range('users:100', 'users:200', inclusive=False).all()
+        """
+        clone = self._clone()
+        clone._id_range_selection = (start_id, end_id, inclusive)
+        return clone
+
 
     def with_index(self, index: str) -> 'BaseQuerySet':
         """Use the specified index for the query.
@@ -238,6 +310,19 @@ class BaseQuerySet:
         """
         self.with_index = index
         return self
+    
+    def use_direct_access(self) -> 'BaseQuerySet':
+        """Mark this queryset to prefer direct record access when possible.
+        
+        This method sets a preference for using direct record access patterns
+        over WHERE clause filtering for better performance.
+        
+        Returns:
+            The query set instance for method chaining
+        """
+        clone = self._clone()
+        clone._prefer_direct_access = True
+        return clone
 
     def _build_query(self) -> str:
         """Build the base query string.
@@ -280,6 +365,85 @@ class BaseQuerySet:
                 else:
                     conditions.append(f"{field} {op} {json.dumps(value)}")
         return conditions
+
+    def _format_record_id(self, id_value: Any) -> str:
+        """Format an ID value into a proper SurrealDB record ID.
+        
+        Args:
+            id_value: The ID value to format
+            
+        Returns:
+            Properly formatted record ID string
+        """
+        # If it's already a full record ID (contains colon), use as-is
+        if isinstance(id_value, str) and ':' in id_value:
+            return id_value
+            
+        # If it's a RecordID object, convert to string
+        if isinstance(id_value, RecordID):
+            return str(id_value)
+            
+        # Otherwise, add collection name prefix
+        collection_name = getattr(self, 'document_class', None)
+        if collection_name:
+            collection_name = collection_name._get_collection_name()
+            return f"{collection_name}:{id_value}"
+        else:
+            return str(id_value)
+    
+    def _build_direct_record_query(self) -> Optional[str]:
+        """Build optimized direct record access query if applicable.
+        
+        Returns:
+            Optimized query string or None if not applicable
+        """
+        # Handle bulk ID selection optimization
+        if self._bulk_id_selection:
+            if not self._bulk_id_selection:  # Empty list
+                return None
+            
+            record_ids = [self._format_record_id(id_val) for id_val in self._bulk_id_selection]
+            query = f"SELECT * FROM {', '.join(record_ids)}"
+            
+            # Add other clauses (but skip WHERE since we're using direct access)
+            clauses = self._build_clauses()
+            for clause_name, clause_sql in clauses.items():
+                if clause_name != 'WHERE':  # Skip WHERE for direct access
+                    query += f" {clause_sql}"
+            
+            return query
+            
+        # Handle ID range selection optimization  
+        if self._id_range_selection:
+            start_id, end_id, inclusive = self._id_range_selection
+            
+            start_record_id = self._format_record_id(start_id)
+            end_record_id = self._format_record_id(end_id)
+            
+            # Extract just the numeric part for range syntax
+            collection_name = getattr(self, 'document_class', None)
+            if collection_name:
+                collection_name = collection_name._get_collection_name()
+                
+                # Extract numeric IDs from record IDs
+                start_num = str(start_id).split(':')[-1] if ':' in str(start_id) else str(start_id)
+                end_num = str(end_id).split(':')[-1] if ':' in str(end_id) else str(end_id)
+                
+                range_op = "..=" if inclusive else ".."
+                query = f"SELECT * FROM {collection_name}:{start_num}{range_op}{end_num}"
+            else:
+                # Fall back to WHERE clause if we can't determine collection
+                return None
+            
+            # Add other clauses (but skip WHERE since we're using direct access)
+            clauses = self._build_clauses()
+            for clause_name, clause_sql in clauses.items():
+                if clause_name != 'WHERE':  # Skip WHERE for direct access
+                    query += f" {clause_sql}"
+            
+            return query
+            
+        return None
 
     def _build_clauses(self) -> Dict[str, str]:
         """Build query clauses from the query parameters.
@@ -327,6 +491,17 @@ class BaseQuerySet:
             clauses['START'] = f"START {self.start_value}"
 
         return clauses
+    
+    def _get_collection_name(self) -> Optional[str]:
+        """Get the collection name for this queryset.
+        
+        Returns:
+            Collection name or None if not available
+        """
+        document_class = getattr(self, 'document_class', None)
+        if document_class and hasattr(document_class, '_get_collection_name'):
+            return document_class._get_collection_name()
+        return getattr(self, 'table_name', None)
 
     async def all(self) -> List[Any]:
         """Execute the query and return all results asynchronously.
@@ -679,5 +854,9 @@ class BaseQuerySet:
         clone.split_fields = self.split_fields.copy()
         clone.fetch_fields = self.fetch_fields.copy()
         clone.with_index = self.with_index
+        # Copy performance optimization attributes
+        clone._bulk_id_selection = self._bulk_id_selection
+        clone._id_range_selection = self._id_range_selection
+        clone._prefer_direct_access = self._prefer_direct_access
 
         return clone

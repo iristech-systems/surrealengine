@@ -29,62 +29,10 @@ class QuerySet(BaseQuerySet):
         self.document_class = document_class
 
     async def join(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
-        """Perform a JOIN-like operation on a reference field.
-
-        This method performs a JOIN-like operation on a reference field by retrieving
-        all documents and then resolving the references using the Document.get method.
-
-        Args:
-            field_name: The name of the reference field to join on
-            target_fields: Optional list of fields to select from the target document
-            dereference: Whether to dereference references in the joined documents (default: True)
-            dereference_depth: Maximum depth of reference resolution (default: 1)
-
-        Returns:
-            List of documents with joined data
-
-        Raises:
-            ValueError: If the field is not a ReferenceField
-        """
-        # Ensure field_name is a ReferenceField
-        field = self.document_class._fields.get(field_name)
-        if not field or not isinstance(field, ReferenceField):
-            raise ValueError(f"{field_name} is not a ReferenceField")
-
-        # Get all documents
-        documents = await self.filter().all()
-        if not documents:
-            return []
-
-        # Get the target document class
-        target_document_class = field.document_type
-
-        # Manually resolve references for each document
-        for doc in documents:
-            # Resolve the reference
-            if getattr(doc, field_name, None):
-                ref_value = getattr(doc, field_name)
-                ref_id = None
-
-                # Extract the ID from the reference
-                if isinstance(ref_value, str) and ':' in ref_value:
-                    ref_id = ref_value
-                elif hasattr(ref_value, 'id'):
-                    ref_id = ref_value.id
-
-                # If we have an ID, resolve the reference
-                if ref_id:
-                    referenced_doc = await target_document_class.get(id=ref_id, dereference=dereference, dereference_depth=dereference_depth)
-                    setattr(doc, field_name, referenced_doc)
-
-        return documents
-
-    def join_sync(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
-        """Perform a JOIN-like operation on a reference field synchronously.
+        """Perform a JOIN-like operation on a reference field using FETCH.
 
         This method performs a JOIN-like operation on a reference field by using
-        SurrealDB's graph traversal capabilities. It retrieves the referenced documents
-        and replaces the reference IDs with the actual documents.
+        SurrealDB's FETCH clause to efficiently resolve references in a single query.
 
         Args:
             field_name: The name of the reference field to join on
@@ -103,43 +51,124 @@ class QuerySet(BaseQuerySet):
         if not field or not isinstance(field, ReferenceField):
             raise ValueError(f"{field_name} is not a ReferenceField")
 
-        # Get all documents
-        documents = self.filter().all_sync()
-        if not documents:
-            return []
+        if not dereference:
+            # If no dereferencing needed, just return regular results
+            return await self.all()
 
-        # Get the target document class
-        target_document_class = field.document_type
+        # Use FETCH to join in a single query
+        queryset = self._clone()
+        queryset.fetch_fields.append(field_name)
+        
+        try:
+            documents = await queryset.all()
+            
+            # If dereference_depth > 1, recursively resolve deeper references
+            if dereference_depth > 1:
+                for doc in documents:
+                    referenced_doc = getattr(doc, field_name, None)
+                    if referenced_doc and hasattr(referenced_doc, 'resolve_references'):
+                        await referenced_doc.resolve_references(depth=dereference_depth-1)
+            
+            return documents
+        except Exception:
+            # Fall back to manual resolution if FETCH fails
+            documents = await self.all()
+            target_document_class = field.document_type
 
-        # Manually resolve references for each document
-        for doc in documents:
-            # Resolve the reference
-            if getattr(doc, field_name, None):
-                ref_value = getattr(doc, field_name)
-                ref_id = None
+            for doc in documents:
+                if getattr(doc, field_name, None):
+                    ref_value = getattr(doc, field_name)
+                    ref_id = None
 
-                # Extract the ID from the reference
-                if isinstance(ref_value, str) and ':' in ref_value:
-                    ref_id = ref_value
-                elif hasattr(ref_value, 'id'):
-                    ref_id = ref_value.id
+                    if isinstance(ref_value, str) and ':' in ref_value:
+                        ref_id = ref_value
+                    elif hasattr(ref_value, 'id'):
+                        ref_id = ref_value.id
 
-                # If we have an ID, resolve the reference
-                if ref_id:
-                    referenced_doc = target_document_class.get_sync(id=ref_id, dereference=dereference, dereference_depth=dereference_depth)
-                    setattr(doc, field_name, referenced_doc)
+                    if ref_id:
+                        referenced_doc = await target_document_class.get(id=ref_id, dereference=dereference, dereference_depth=dereference_depth)
+                        setattr(doc, field_name, referenced_doc)
 
-        return documents
+            return documents
 
-    def _build_query(self) -> str:
-        """Build the query string.
+    def join_sync(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
+        """Perform a JOIN-like operation on a reference field synchronously using FETCH.
 
-        This method builds the query string for the document class query.
-        It adds conditions from query_parts if any are present.
+        This method performs a JOIN-like operation on a reference field by using
+        SurrealDB's FETCH clause to efficiently resolve references in a single query.
+
+        Args:
+            field_name: The name of the reference field to join on
+            target_fields: Optional list of fields to select from the target document
+            dereference: Whether to dereference references in the joined documents (default: True)
+            dereference_depth: Maximum depth of reference resolution (default: 1)
 
         Returns:
-            The query string
+            List of documents with joined data
+
+        Raises:
+            ValueError: If the field is not a ReferenceField
         """
+        # Ensure field_name is a ReferenceField
+        field = self.document_class._fields.get(field_name)
+        if not field or not isinstance(field, ReferenceField):
+            raise ValueError(f"{field_name} is not a ReferenceField")
+
+        if not dereference:
+            # If no dereferencing needed, just return regular results
+            return self.all_sync()
+
+        # Use FETCH to join in a single query
+        queryset = self._clone()
+        queryset.fetch_fields.append(field_name)
+        
+        try:
+            documents = queryset.all_sync()
+            
+            # If dereference_depth > 1, recursively resolve deeper references
+            if dereference_depth > 1:
+                for doc in documents:
+                    referenced_doc = getattr(doc, field_name, None)
+                    if referenced_doc and hasattr(referenced_doc, 'resolve_references_sync'):
+                        referenced_doc.resolve_references_sync(depth=dereference_depth-1)
+            
+            return documents
+        except Exception:
+            # Fall back to manual resolution if FETCH fails
+            documents = self.all_sync()
+            target_document_class = field.document_type
+
+            for doc in documents:
+                if getattr(doc, field_name, None):
+                    ref_value = getattr(doc, field_name)
+                    ref_id = None
+
+                    if isinstance(ref_value, str) and ':' in ref_value:
+                        ref_id = ref_value
+                    elif hasattr(ref_value, 'id'):
+                        ref_id = ref_value.id
+
+                    if ref_id:
+                        referenced_doc = target_document_class.get_sync(id=ref_id, dereference=dereference, dereference_depth=dereference_depth)
+                        setattr(doc, field_name, referenced_doc)
+
+            return documents
+
+    def _build_query(self) -> str:
+        """Build the query string with performance optimizations.
+
+        This method builds the query string for the document class query.
+        It automatically uses optimized direct record access when possible.
+
+        Returns:
+            The optimized query string
+        """
+        # Try to build optimized direct record access query first
+        optimized_query = self._build_direct_record_query()
+        if optimized_query:
+            return optimized_query
+        
+        # Fall back to regular query building
         query = f"SELECT * FROM {self.document_class._get_collection_name()}"
 
         if self.query_parts:
@@ -325,9 +354,10 @@ class QuerySet(BaseQuerySet):
         return document.save_sync(self.connection)
 
     async def update(self, **kwargs: Any) -> List[Any]:
-        """Update documents matching the query asynchronously.
+        """Update documents matching the query asynchronously with performance optimizations.
 
         This method updates documents matching the query with the given field values.
+        Uses direct record access for bulk ID operations for better performance.
 
         Args:
             **kwargs: Field names and values to update
@@ -335,6 +365,31 @@ class QuerySet(BaseQuerySet):
         Returns:
             List of updated documents
         """
+        # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
+        if self._bulk_id_selection or self._id_range_selection:
+            # For bulk operations, use subquery with direct record access for better performance
+            optimized_query = self._build_direct_record_query()
+            if optimized_query:
+                # Convert SELECT to subquery for UPDATE
+                subquery = optimized_query.replace("SELECT *", "SELECT id")
+                update_query = f"UPDATE ({subquery}) SET {', '.join(f'{k} = {json.dumps(v)}' for k, v in kwargs.items())}"
+                
+                result = await self.connection.client.query(update_query)
+                
+                if not result:
+                    return []
+                
+                # Handle different result structures
+                if isinstance(result[0], dict):
+                    # Subquery UPDATE case: result is a flat list of documents
+                    return [self.document_class.from_db(doc) for doc in result]
+                elif isinstance(result[0], list):
+                    # Normal case: result[0] is a list of document dictionaries
+                    return [self.document_class.from_db(doc) for doc in result[0]]
+                else:
+                    return []
+        
+        # Fall back to regular update query
         update_query = f"UPDATE {self.document_class._get_collection_name()}"
 
         if self.query_parts:
@@ -351,9 +406,10 @@ class QuerySet(BaseQuerySet):
         return [self.document_class.from_db(doc) for doc in result[0]]
 
     def update_sync(self, **kwargs: Any) -> List[Any]:
-        """Update documents matching the query synchronously.
+        """Update documents matching the query synchronously with performance optimizations.
 
         This method updates documents matching the query with the given field values.
+        Uses direct record access for bulk ID operations for better performance.
 
         Args:
             **kwargs: Field names and values to update
@@ -361,6 +417,31 @@ class QuerySet(BaseQuerySet):
         Returns:
             List of updated documents
         """
+        # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
+        if self._bulk_id_selection or self._id_range_selection:
+            # For bulk operations, use subquery with direct record access for better performance
+            optimized_query = self._build_direct_record_query()
+            if optimized_query:
+                # Convert SELECT to subquery for UPDATE
+                subquery = optimized_query.replace("SELECT *", "SELECT id")
+                update_query = f"UPDATE ({subquery}) SET {', '.join(f'{k} = {json.dumps(v)}' for k, v in kwargs.items())}"
+                
+                result = self.connection.client.query(update_query)
+                
+                if not result:
+                    return []
+                
+                # Handle different result structures
+                if isinstance(result[0], dict):
+                    # Subquery UPDATE case: result is a flat list of documents
+                    return [self.document_class.from_db(doc) for doc in result]
+                elif isinstance(result[0], list):
+                    # Normal case: result[0] is a list of document dictionaries
+                    return [self.document_class.from_db(doc) for doc in result[0]]
+                else:
+                    return []
+        
+        # Fall back to regular update query
         update_query = f"UPDATE {self.document_class._get_collection_name()}"
 
         if self.query_parts:
@@ -377,13 +458,29 @@ class QuerySet(BaseQuerySet):
         return [self.document_class.from_db(doc) for doc in result[0]]
 
     async def delete(self) -> int:
-        """Delete documents matching the query asynchronously.
+        """Delete documents matching the query asynchronously with performance optimizations.
 
         This method deletes documents matching the query.
+        Uses direct record access for bulk ID operations for better performance.
 
         Returns:
             Number of deleted documents
         """
+        # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
+        if self._bulk_id_selection or self._id_range_selection:
+            # For bulk operations, use subquery with direct record access for better performance
+            optimized_query = self._build_direct_record_query()
+            if optimized_query:
+                # Convert SELECT to subquery for DELETE
+                subquery = optimized_query.replace("SELECT *", "SELECT id")
+                delete_query = f"DELETE ({subquery})"
+                
+                result = await self.connection.client.query(delete_query)
+                if not result or not result[0]:
+                    return 0
+                return len(result[0])
+        
+        # Fall back to regular delete query
         delete_query = f"DELETE FROM {self.document_class._get_collection_name()}"
 
         if self.query_parts:
@@ -398,13 +495,29 @@ class QuerySet(BaseQuerySet):
         return len(result[0])
 
     def delete_sync(self) -> int:
-        """Delete documents matching the query synchronously.
+        """Delete documents matching the query synchronously with performance optimizations.
 
         This method deletes documents matching the query.
+        Uses direct record access for bulk ID operations for better performance.
 
         Returns:
             Number of deleted documents
         """
+        # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
+        if self._bulk_id_selection or self._id_range_selection:
+            # For bulk operations, use subquery with direct record access for better performance
+            optimized_query = self._build_direct_record_query()
+            if optimized_query:
+                # Convert SELECT to subquery for DELETE
+                subquery = optimized_query.replace("SELECT *", "SELECT id")
+                delete_query = f"DELETE ({subquery})"
+                
+                result = self.connection.client.query(delete_query)
+                if not result or not result[0]:
+                    return 0
+                return len(result[0])
+        
+        # Fall back to regular delete query
         delete_query = f"DELETE FROM {self.document_class._get_collection_name()}"
 
         if self.query_parts:
@@ -539,3 +652,75 @@ class QuerySet(BaseQuerySet):
                 continue
 
         return created_docs if return_documents else total_created
+
+    
+    async def explain(self) -> List[Dict[str, Any]]:
+        """Get query execution plan for performance analysis.
+        
+        This method appends EXPLAIN to the query to show how SurrealDB
+        will execute it, helping identify performance bottlenecks.
+        
+        Returns:
+            List of execution plan steps with details
+            
+        Example:
+            plan = await User.objects.filter(age__lt=18).explain()
+            print(f"Query will use: {plan[0]['operation']}")
+        """
+        query = self._build_query() + " EXPLAIN"
+        result = await self.connection.client.query(query)
+        return result[0] if result and result[0] else []
+    
+    def explain_sync(self) -> List[Dict[str, Any]]:
+        """Get query execution plan for performance analysis synchronously.
+        
+        Returns:
+            List of execution plan steps with details
+        """
+        query = self._build_query() + " EXPLAIN"
+        result = self.connection.client.query(query)
+        return result[0] if result and result[0] else []
+    
+    def suggest_indexes(self) -> List[str]:
+        """Suggest indexes based on current query patterns.
+        
+        Analyzes the current query conditions and suggests optimal
+        indexes that could improve performance.
+        
+        Returns:
+            List of suggested DEFINE INDEX statements
+            
+        Example:
+            suggestions = User.objects.filter(age__lt=18, city="NYC").suggest_indexes()
+            for suggestion in suggestions:
+                print(f"Consider: {suggestion}")
+        """
+        suggestions = []
+        collection_name = self.document_class._get_collection_name()
+        
+        # Analyze filter conditions
+        analyzed_fields = set()
+        for field, op, value in self.query_parts:
+            if field != 'id' and field not in analyzed_fields:  # ID doesn't need indexing
+                analyzed_fields.add(field)
+                if op in ('=', '!=', '>', '<', '>=', '<=', 'INSIDE', 'NOT INSIDE'):
+                    suggestions.append(
+                        f"DEFINE INDEX idx_{collection_name}_{field} ON {collection_name} FIELDS {field}"
+                    )
+        
+        # Suggest compound indexes for multiple conditions
+        if len(analyzed_fields) > 1:
+            field_list = ', '.join(sorted(analyzed_fields))
+            suggestions.append(
+                f"DEFINE INDEX idx_{collection_name}_compound ON {collection_name} FIELDS {field_list}"
+            )
+        
+        # Suggest order by indexes
+        if self.order_by_value:
+            order_field, _ = self.order_by_value
+            if order_field not in analyzed_fields:
+                suggestions.append(
+                    f"DEFINE INDEX idx_{collection_name}_{order_field} ON {collection_name} FIELDS {order_field}"
+                )
+        
+        return list(set(suggestions))  # Remove duplicates

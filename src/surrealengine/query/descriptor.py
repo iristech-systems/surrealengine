@@ -538,3 +538,156 @@ class QuerySetDescriptor:
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.join_sync(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
+
+    def get_many(self, ids: List[Union[str, Any]]) -> QuerySet:
+        """Get multiple records by IDs using optimized direct record access.
+        
+        This method uses SurrealDB's direct record selection syntax for better
+        performance compared to WHERE clause filtering.
+        
+        Args:
+            ids: List of record IDs (can be strings or other ID types)
+            
+        Returns:
+            The query set instance configured for direct record access
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.get_many(ids)
+
+    def get_many_sync(self, ids: List[Union[str, Any]]) -> QuerySet:
+        """Get multiple records by IDs using optimized direct record access synchronously.
+        
+        Args:
+            ids: List of record IDs (can be strings or other ID types)
+            
+        Returns:
+            The query set instance configured for direct record access
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.get_many(ids)
+
+    def get_range(self, start_id: Union[str, Any], end_id: Union[str, Any], 
+                  inclusive: bool = True) -> QuerySet:
+        """Get a range of records by ID using optimized range syntax.
+        
+        This method uses SurrealDB's range selection syntax for better
+        performance compared to WHERE clause filtering.
+        
+        Args:
+            start_id: Starting ID of the range
+            end_id: Ending ID of the range  
+            inclusive: Whether the range is inclusive (default: True)
+            
+        Returns:
+            The query set instance configured for range access
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.get_range(start_id, end_id, inclusive)
+
+    def get_range_sync(self, start_id: Union[str, Any], end_id: Union[str, Any], 
+                       inclusive: bool = True) -> QuerySet:
+        """Get a range of records by ID using optimized range syntax synchronously.
+        
+        Args:
+            start_id: Starting ID of the range
+            end_id: Ending ID of the range  
+            inclusive: Whether the range is inclusive (default: True)
+            
+        Returns:
+            The query set instance configured for range access
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.get_range(start_id, end_id, inclusive)
+
+    async def bulk_create(self, documents: List[Any], batch_size: int = 1000,
+                         validate: bool = True, return_documents: bool = True) -> Union[List[Any], int]:
+        """Create multiple documents in a single operation asynchronously.
+
+        This method creates multiple documents in a single operation, processing
+        them in batches for better performance.
+
+        Args:
+            documents: List of Document instances to create
+            batch_size: Number of documents per batch (default: 1000)
+            validate: Whether to validate documents (default: True)
+            return_documents: Whether to return created documents (default: True)
+
+        Returns:
+            List of created documents with their IDs set if return_documents=True,
+            otherwise returns the count of created documents
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return await queryset.bulk_create(documents, batch_size, validate, return_documents)
+
+    def bulk_create_sync(self, documents: List[Any], batch_size: int = 1000,
+                        validate: bool = True, return_documents: bool = True) -> Union[List[Any], int]:
+        """Create multiple documents in a single operation synchronously.
+
+        Args:
+            documents: List of Document instances to create
+            batch_size: Number of documents per batch (default: 1000)
+            validate: Whether to validate documents (default: True)
+            return_documents: Whether to return created documents (default: True)
+
+        Returns:
+            List of created documents with their IDs set if return_documents=True,
+            otherwise returns the count of created documents
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.bulk_create_sync(documents, batch_size, validate, return_documents)
+
+    async def all(self) -> List[Any]:
+        """Execute the query and return all results asynchronously.
+        
+        Returns:
+            List of all documents matching any implicit query
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return await queryset.all()
+
+    def all_sync(self) -> List[Any]:
+        """Execute the query and return all results synchronously.
+        
+        Returns:
+            List of all documents matching any implicit query
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.all_sync()
+
+    async def count(self) -> int:
+        """Count all documents asynchronously.
+        
+        Returns:
+            Number of documents
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return await queryset.count()
+
+    def count_sync(self) -> int:
+        """Count all documents synchronously.
+        
+        Returns:
+            Number of documents
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.count_sync()
