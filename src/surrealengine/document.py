@@ -518,9 +518,9 @@ class Document(metaclass=DocumentMetaclass):
 
         is_new = not self.id
         if self.id:
-            # Update existing document
-            result = await connection.client.update(
-                f"{self.id}",
+            del data['id']
+            result = await connection.client.upsert(
+                self.id,
                 data
             )
         else:
@@ -589,8 +589,9 @@ class Document(metaclass=DocumentMetaclass):
 
         is_new = not self.id
         if self.id:
-            # Update existing document
-            result = connection.client.update(
+            del data['id']
+            print(self.id, type(self.id))
+            result = connection.client.upsert(
                 self.id,
                 data
             )
