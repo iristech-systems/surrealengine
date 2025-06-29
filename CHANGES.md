@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **DataGrid API Support**: Comprehensive frontend integration for data table libraries
+  - Efficient SurrealDB query optimization replacing Python-based filtering with database-native operations
+  - Support for BootstrapTable.js format (maintaining backward compatibility with existing APIs)
+  - DataTables.js parameter conversion and response formatting
+  - Pagination, sorting, filtering, and search functionality optimized at the database level
+  - `get_grid_data()` and `get_grid_data_sync()` helper functions for easy route integration
+  - `DataGridQueryBuilder` class for building complex filtered queries
+  - Parameter conversion utilities: `parse_datatables_params()` and `format_datatables_response()`
+  - Performance benefits: Only fetch required data, leverage SurrealDB indexes, reduce memory usage
+  - Drop-in replacement for existing route logic - reduces 50+ lines of filtering code to a single function call
+
 ## [0.2.0] - 2024-06-28
 
 ### Added

@@ -71,6 +71,13 @@ from .schema import (
     generate_schema_statements,
     generate_schema_statements_from_module
 )
+from .datagrid_api import (
+    DataGridQueryBuilder,
+    get_grid_data,
+    get_grid_data_sync,
+    parse_datatables_params,
+    format_datatables_response
+)
 
 __version__ = "0.2.0"
 __all__ = [
@@ -132,5 +139,11 @@ __all__ = [
     "create_tables_from_module",
     "create_tables_from_module_sync",
     "generate_schema_statements",
-    "generate_schema_statements_from_module"
+    "generate_schema_statements_from_module",
+    # DataGrid helpers
+    "DataGridQueryBuilder",
+    "get_grid_data",
+    "get_grid_data_sync",
+    "parse_datatables_params",
+    "format_datatables_response"
 ]

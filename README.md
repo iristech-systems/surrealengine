@@ -63,68 +63,111 @@ For more detailed examples, see [sync_api_example.py](./example_scripts/sync_api
 
 ### Advanced Connection Management
 
-SurrealEngine provides advanced connection management features for improved performance, reliability, and flexibility.
+SurrealEngine provides comprehensive connection management features including connection pooling, automatic reconnection, retry strategies, and flexible configuration options.
 
-#### Connection String Parsing
+#### Factory Function and Auto-Connection
 
-You can use connection strings to simplify connection configuration:
-
-```python
-from surrealengine import SurrealEngineSyncConnection
-from surrealengine.connection import parse_connection_string
-
-# Parse a connection string with connection parameters
-connection_string = "surrealdb://root:root@localhost:8000/test/test?pool_size=5&retry_limit=3"
-config = parse_connection_string(connection_string)
-
-# Create a connection using the parsed config
-conn = SurrealEngineSyncConnection(
-    url=config["url"],
-    namespace=config["namespace"],
-    database=config["database"],
-    username=config["username"],
-    password=config["password"]
-)
-```
-
-Connection strings support various parameters for configuring connection pooling, timeouts, retries, and more. The "surrealdb://" scheme is automatically mapped to "ws://" for compatibility with the SurrealDB client.
-
-#### Connection Pooling
-
-Connection pooling improves performance by reusing connections instead of creating new ones for each operation:
+The `create_connection()` factory function provides a unified way to create connections with advanced features:
 
 ```python
-from surrealengine.connection import SyncConnectionPool, AsyncConnectionPool
+from surrealengine import create_connection
 
-# Create a synchronous connection pool
-sync_pool = SyncConnectionPool(
-    url="ws://localhost:8000",
+# Create an async connection with pooling
+conn = create_connection(
+    url="ws://localhost:8000/rpc",
     namespace="test",
     database="test",
     username="root",
     password="root",
-    pool_size=10,                # Maximum number of connections in the pool
-    max_idle_time=60,            # Maximum time a connection can be idle before being closed
-    connect_timeout=5,           # Timeout for establishing a connection
-    operation_timeout=30,        # Timeout for operations
-    validate_on_borrow=True      # Validate connections when borrowing from the pool
+    async_mode=True,          # Create async connection (default)
+    use_pool=True,            # Enable connection pooling
+    pool_size=15,             # Pool size (default: 10)
+    make_default=True,        # Set as default connection
+    auto_connect=False        # Don't auto-connect (await conn.connect() manually)
 )
 
-# Get a connection from the pool
-conn = sync_pool.get_connection()
+# Create a sync connection (no pooling for sync)
+sync_conn = create_connection(
+    url="ws://localhost:8000/rpc",
+    namespace="test",
+    database="test",
+    username="root",
+    password="root",
+    async_mode=False,         # Create sync connection
+    auto_connect=True         # Auto-connect immediately
+)
+```
 
-# Use the connection
-result = conn.client.query("SELECT * FROM user LIMIT 1")
+#### Connection String Parsing
 
-# Return the connection to the pool
-sync_pool.return_connection(conn)
+SurrealEngine supports connection strings for streamlined configuration:
 
-# Close the pool when done
-sync_pool.close()
+```python
+from surrealengine.connection import parse_connection_string
 
-# Asynchronous connection pool works similarly
+# Parse a comprehensive connection string
+connection_string = "surrealdb://root:root@localhost:8000/test/test?pool_size=15&retry_limit=5&connect_timeout=10&operation_timeout=45&validate_on_borrow=true"
+config = parse_connection_string(connection_string)
+
+# Create connection using parsed config
+conn = create_connection(**config, async_mode=True, use_pool=True)
+```
+
+**Supported connection string parameters:**
+- `pool_size`: Maximum connections in pool (default: 10)
+- `max_idle_time`: Idle timeout in seconds (default: 60)
+- `connect_timeout`: Connection timeout in seconds (default: 30)
+- `operation_timeout`: Operation timeout in seconds (default: 30)
+- `retry_limit`: Maximum retry attempts (default: 3)
+- `retry_delay`: Initial retry delay in seconds (default: 1.0)
+- `retry_backoff`: Retry delay multiplier (default: 2.0)
+- `validate_on_borrow`: Validate connections when borrowed (default: true)
+
+**Supported protocols:**
+- `surrealdb://` (mapped to `ws://`)
+- `ws://` and `wss://`
+- `http://` and `https://`
+
+#### Connection Pooling
+
+Connection pooling dramatically improves performance by reusing connections:
+
+```python
+from surrealengine.connection import AsyncConnectionPool, SyncConnectionPool
+
+# Async connection pool with comprehensive configuration
 async_pool = AsyncConnectionPool(
-    url="ws://localhost:8000",
+    url="ws://localhost:8000/rpc",
+    namespace="test",
+    database="test",
+    username="root",
+    password="root",
+    pool_size=20,                # Maximum connections
+    max_idle_time=120,           # Idle timeout (seconds)
+    connect_timeout=10,          # Connection timeout
+    operation_timeout=60,        # Operation timeout
+    retry_limit=5,               # Retry attempts
+    retry_delay=0.5,             # Initial retry delay
+    retry_backoff=2.0,           # Backoff multiplier
+    validate_on_borrow=True      # Validate on borrow
+)
+
+# Async pool usage
+conn = await async_pool.get_connection()
+try:
+    result = await conn.client.query("SELECT * FROM user LIMIT 1")
+finally:
+    await async_pool.return_connection(conn)
+
+# Pool statistics
+print(f"Pool stats: {async_pool.created_connections} created, {async_pool.borrowed_connections} borrowed")
+
+# Close pool
+await async_pool.close()
+
+# Sync connection pool
+sync_pool = SyncConnectionPool(
+    url="ws://localhost:8000/rpc",
     namespace="test",
     database="test",
     username="root",
@@ -132,64 +175,136 @@ async_pool = AsyncConnectionPool(
     pool_size=10
 )
 
-# Get a connection from the pool
-conn = await async_pool.get_connection()
+# Sync pool usage with context manager
+with sync_pool.get_connection() as conn:
+    result = conn.client.query("SELECT * FROM user LIMIT 1")
 
-# Use the connection
-result = await conn.client.query("SELECT * FROM user LIMIT 1")
-
-# Return the connection to the pool
-await async_pool.return_connection(conn)
-
-# Close the pool when done
-await async_pool.close()
+sync_pool.close()
 ```
 
-#### Retry Strategy
+#### Integrated Pool Client
 
-The retry strategy allows operations to be automatically retried with exponential backoff when they fail:
+The `ConnectionPoolClient` provides seamless pool integration:
+
+```python
+# Connection with integrated pooling
+conn = create_connection(
+    url="ws://localhost:8000/rpc",
+    namespace="test",
+    database="test", 
+    username="root",
+    password="root",
+    use_pool=True,
+    pool_size=15,
+    async_mode=True
+)
+
+await conn.connect()  # Initializes the pool
+
+# Use normally - pooling is transparent
+result = await conn.client.query("SELECT * FROM user")
+
+# Pool is automatically managed
+await conn.disconnect()
+```
+
+#### Retry Strategy with Exponential Backoff
+
+Automatic retry with configurable backoff strategies:
 
 ```python
 from surrealengine.connection import RetryStrategy
 
-# Create a retry strategy
+# Create retry strategy
 retry = RetryStrategy(
-    retry_limit=3,       # Maximum number of retries
-    retry_delay=1.0,     # Initial delay in seconds between retries
-    retry_backoff=2.0    # Backoff multiplier for retry delay
+    retry_limit=5,         # Maximum retries
+    retry_delay=0.5,       # Initial delay (seconds)
+    retry_backoff=2.0      # Exponential backoff multiplier
 )
 
-# Execute an operation with retry
+# Async retry
 try:
-    result = retry.execute_with_retry(lambda: conn.client.query("SELECT * FROM user"))
+    result = await retry.execute_with_retry_async(
+        lambda: conn.client.query("SELECT * FROM user")
+    )
 except Exception as e:
-    print(f"Operation failed after retries: {str(e)}")
+    print(f"Operation failed after {retry.retry_limit} retries: {e}")
 
-# For async operations
+# Sync retry
 try:
-    result = await retry.execute_with_retry_async(lambda: conn.client.query("SELECT * FROM user"))
+    result = retry.execute_with_retry(
+        lambda: conn.client.query("SELECT * FROM user")
+    )
 except Exception as e:
-    print(f"Async operation failed after retries: {str(e)}")
+    print(f"Operation failed: {e}")
 ```
 
-#### Automatic Reconnection
+#### Event-Driven Connection Monitoring
 
-SurrealEngine supports automatic reconnection when a connection is lost, with event notifications and operation queuing:
+Monitor connection lifecycle with event listeners:
 
 ```python
 from surrealengine.connection import ConnectionEvent, ConnectionEventListener
 
-# Create a connection event listener
-class MyConnectionListener(ConnectionEventListener):
+class DatabaseConnectionMonitor(ConnectionEventListener):
     def on_event(self, event_type, connection, **kwargs):
-        if event_type == ConnectionEvent.RECONNECTING:
-            print("Connection lost, attempting to reconnect...")
+        if event_type == ConnectionEvent.CONNECTING:
+            print(f"Connecting to {connection.url}...")
+        elif event_type == ConnectionEvent.CONNECTED:
+            print("Successfully connected!")
+        elif event_type == ConnectionEvent.DISCONNECTED:
+            print("Connection closed")
+        elif event_type == ConnectionEvent.RECONNECTING:
+            print("Connection lost, attempting reconnection...")
         elif event_type == ConnectionEvent.RECONNECTED:
             print("Connection reestablished!")
+        elif event_type == ConnectionEvent.ERROR:
+            error = kwargs.get('error', 'Unknown error')
+            print(f"Connection error: {error}")
 
-# Register the listener with a connection
-listener = MyConnectionListener()
-conn.add_listener(listener)
+# Register listener
+monitor = DatabaseConnectionMonitor()
+conn.add_listener(monitor)
+
+# Remove listener when done
+conn.remove_listener(monitor)
+```
+
+#### Connection Registry
+
+Manage multiple named connections:
+
+```python
+from surrealengine.connection import get_connection, list_connections
+
+# Create multiple connections
+primary_conn = create_connection(
+    url="ws://primary-db:8000/rpc",
+    namespace="prod",
+    database="main",
+    username="root",
+    password="secret",
+    name="primary",
+    make_default=True
+)
+
+analytics_conn = create_connection(
+    url="ws://analytics-db:8000/rpc",
+    namespace="analytics", 
+    database="metrics",
+    username="reader",
+    password="readonly",
+    name="analytics"
+)
+
+# Retrieve connections by name
+primary = get_connection("primary")
+analytics = get_connection("analytics")
+default = get_connection()  # Gets default connection
+
+# List all registered connections
+all_connections = list_connections()
+print(f"Registered connections: {list(all_connections.keys())}")
 ```
 
 For a complete example of the connection management features, see [connection_management_example.py](./example_scripts/connection_management_example.py).
@@ -623,6 +738,173 @@ The logging system supports the following log levels:
 - CRITICAL (50): A serious error, indicating that the program itself may be unable to continue running
 
 For more examples of using the logging system, see [test_new_features.py](./example_scripts/test_new_features.py).
+
+## DataGrid API Support
+
+SurrealEngine provides comprehensive frontend integration for data table libraries, allowing you to replace inefficient Python-based filtering with optimized SurrealDB queries.
+
+### Performance Benefits
+
+Instead of fetching all data and filtering in Python:
+```python
+# ❌ Inefficient approach
+all_listings = await case.get_listings()  # Fetch everything
+filtered_listings = []
+for listing in all_listings:
+    if marketplace and listing.marketplace != marketplace:
+        continue
+    # ... more Python filtering
+```
+
+Use efficient database-level operations:
+```python
+# ✅ Optimized approach
+from surrealengine import get_grid_data
+
+result = await get_grid_data(
+    Listing,
+    request.args.to_dict(),
+    search_fields=['marketplace', 'seller_name', 'product_name'],
+    custom_filters={'marketplace': 'marketplace', 'seller': 'seller_name'}
+)
+return jsonify(result)  # Perfect BootstrapTable format!
+```
+
+### BootstrapTable.js Support
+
+SurrealEngine generates responses in BootstrapTable format by default:
+
+```python
+# Your existing route (async)
+@app.route('/api/listings')
+async def api_listings():
+    result = await get_grid_data(
+        Listing,
+        request.args.to_dict(),
+        search_fields=['product_name', 'marketplace', 'seller_name'],
+        custom_filters={'marketplace': 'marketplace', 'seller': 'seller_name'},
+        default_sort='date_collected'
+    )
+    # Returns: {"total": 150, "rows": [...]}
+    return jsonify(result)
+
+# Synchronous version
+def api_listings_sync():
+    from surrealengine import get_grid_data_sync
+    result = get_grid_data_sync(Listing, request.args.to_dict(), search_fields, custom_filters)
+    return jsonify(result)
+```
+
+### DataTables.js Support
+
+For DataTables which uses different parameter names:
+
+```python
+from surrealengine import parse_datatables_params, format_datatables_response
+
+@app.route('/api/listings/datatables', methods=['POST'])
+async def api_listings_datatables():
+    # Convert DataTables parameters (start/length) to standard format (offset/limit)
+    params = parse_datatables_params(request.args.to_dict())
+    
+    result = await get_grid_data(Listing, params, search_fields, custom_filters)
+    
+    # Format for DataTables
+    return jsonify(format_datatables_response(
+        result['total'], 
+        result['rows'], 
+        params['draw']
+    ))
+```
+
+### Search and Filtering
+
+The DataGrid API supports:
+- **Text search** across multiple fields using `contains` operator
+- **Field-specific filters** with custom parameter mapping
+- **Sorting** by any field (ascending/descending)
+- **Pagination** with offset/limit or start/length parameters
+
+```python
+# Example with comprehensive filtering
+result = await get_grid_data(
+    ProductListing,
+    {
+        'limit': '25',
+        'offset': '0',
+        'search': 'wireless headphones',  # Searches across search_fields
+        'marketplace': 'Amazon',          # Custom filter
+        'seller': 'TechStore',           # Custom filter
+        'sort': 'price',                 # Sort field
+        'order': 'desc'                  # Sort direction
+    },
+    search_fields=['product_name', 'description', 'brand'],
+    custom_filters={
+        'marketplace': 'marketplace',     # URL param -> DB field mapping
+        'seller': 'seller_name',
+        'category': 'product_category'
+    }
+)
+```
+
+### Performance Improvements
+
+The DataGrid API leverages SurrealDB's performance optimizations:
+- **Direct record access** for ID-based queries (3.4x faster)
+- **Native filtering** instead of Python loops
+- **Index utilization** for optimized queries
+- **Reduced data transfer** - only fetch needed records
+- **Memory efficiency** - no large dataset loading
+
+For complete examples, see [test_datagrid_functionality.py](./example_scripts/test_datagrid_functionality.py) and [datagrid_example.py](./example_scripts/datagrid_example.py).
+
+## Query Performance Optimizations
+
+SurrealEngine includes automatic query optimizations that can improve performance by up to 3.4x:
+
+### Automatic ID Optimizations
+
+```python
+# These filters are automatically optimized:
+
+# ✅ Optimized: Uses direct record access
+users = await User.objects.filter(id__in=[1, 2, 3]).all()
+# Becomes: SELECT * FROM user:1, user:2, user:3
+
+# ✅ Optimized: Uses range syntax  
+users = await User.objects.filter(id__gte=100, id__lte=200).all()
+# Becomes: SELECT * FROM user:100..=200
+
+# ✅ Optimized: Convenience methods
+users = await User.objects.get_many([1, 2, 3]).all()
+users = await User.objects.get_range(100, 200).all()
+```
+
+### Query Analysis Tools
+
+```python
+# Analyze query performance
+results = await User.objects.filter(age__gt=25)
+plan = await results.explain()
+print(plan)  # Shows execution plan
+
+# Get index suggestions
+suggestions = await User.objects.suggest_indexes()
+for suggestion in suggestions:
+    print(f"Consider adding index: {suggestion}")
+```
+
+### Enhanced Bulk Operations
+
+```python
+# Optimized bulk updates using subqueries
+updated = await User.objects.filter(age__lt=18).update(status='minor')
+
+# Optimized bulk deletes
+deleted = await User.objects.filter(active=False).delete()
+```
+
+For performance testing examples, see [test_performance_optimizations.py](./example_scripts/test_performance_optimizations.py).
 
 ## Features in Development
 
