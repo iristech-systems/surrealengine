@@ -363,8 +363,39 @@ class BaseQuerySet:
                     value_str = json.dumps(value)
                     conditions.append(f"{field} {op} {value_str}")
                 else:
-                    conditions.append(f"{field} {op} {json.dumps(value)}")
+                    # Convert value to database format if we have field information
+                    db_value = self._convert_value_for_query(field, value)
+                    conditions.append(f"{field} {op} {json.dumps(db_value)}")
         return conditions
+
+    def _convert_value_for_query(self, field_name: str, value: Any) -> Any:
+        """Convert a value to its database representation for query conditions.
+        
+        This method checks if the document class has a field definition for the given
+        field name and uses its to_db() method to convert the value properly.
+        
+        Args:
+            field_name: The name of the field
+            value: The value to convert
+            
+        Returns:
+            The converted value ready for JSON serialization
+        """
+        # Check if we have a document class with field definitions
+        document_class = getattr(self, 'document_class', None)
+        if document_class and hasattr(document_class, '_fields'):
+            # Get the field definition
+            field_obj = document_class._fields.get(field_name)
+            if field_obj and hasattr(field_obj, 'to_db'):
+                # Use the field's to_db method to convert the value
+                try:
+                    return field_obj.to_db(value)
+                except Exception:
+                    # If conversion fails, return the original value
+                    pass
+        
+        # If no field definition or conversion failed, return original value
+        return value
 
     def _format_record_id(self, id_value: Any) -> str:
         """Format an ID value into a proper SurrealDB record ID.

@@ -23,7 +23,7 @@ services:
     restart: always
     command: start --log debug --user root --pass root
     ports:
-      - "8001:8001"
+      - "8001:8000"
     volumes:
       - db-data:/data
     healthcheck:
