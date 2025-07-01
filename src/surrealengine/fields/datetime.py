@@ -63,24 +63,24 @@ class DateTimeField(Field):
         """Convert Python datetime to database representation.
 
         This method converts a Python datetime object to a SurrealDB datetime format
-        for storage in the database. SurrealDB v2.0.0+ requires datetime values
-        to have a `d` prefix or be cast as <datetime>.
+        for storage in the database. Returns ISO string format for JSON serialization
+        compatibility in queries.
 
         Args:
             value: The Python datetime to convert
 
         Returns:
-            String with the datetime in SurrealDB format (<datetime>"iso_string")
+            ISO format string that can be JSON serialized
         """
         if value is not None:
             if isinstance(value, str):
                 try:
                     value = datetime.datetime.fromisoformat(value)
                 except ValueError:
-                    pass
+                    return value
             if isinstance(value, datetime.datetime):
-                # Format as <datetime>"iso_string" to ensure SurrealDB treats it as a datetime
-                return value
+                # Return ISO string format for JSON serialization compatibility
+                return value.isoformat()
         return value
 
     def from_db(self, value: Any) -> Optional[datetime.datetime]:
