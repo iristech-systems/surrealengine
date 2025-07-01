@@ -1,10 +1,11 @@
 import re
 import uuid
+import decimal
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Pattern, Type, Union
 
 from .base import Field
-from .scalar import StringField
+from .scalar import StringField, NumberField
 from ..exceptions import ValidationError
 
 class BytesField(Field):
@@ -210,7 +211,7 @@ class RegexField(Field):
         return value
 
 
-class DecimalField(Field):
+class DecimalField(NumberField):
     """Decimal field type.
 
     This field type stores decimal values with arbitrary precision using Python's
@@ -250,22 +251,22 @@ class DecimalField(Field):
                 raise TypeError(f"Expected decimal for field '{self.name}', got {type(value)}")
         return value
 
-    def to_db(self, value: Any) -> Optional[str]:
+    def to_db(self, value: Any) -> Optional[float]:
         """Convert Python decimal to database representation.
 
-        This method converts a Python Decimal object to a string for storage in the database.
+        This method converts a Python Decimal object to a float for storage in the database.
 
         Args:
             value: The Python Decimal to convert
 
         Returns:
-            The string representation for the database
+            The float representation for the database
         """
         if value is not None:
             if isinstance(value, Decimal):
-                return str(value)
+                return float(value)
             try:
-                return str(Decimal(str(value)))
+                return float(Decimal(str(value)))
             except (TypeError, ValueError, decimal.InvalidOperation):
                 pass
         return value

@@ -1,10 +1,4 @@
-import sys
-import os
-
-# Add the src directory to the Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from src.surrealengine import (
+from surrealengine import (
     Document, StringField, IntField, FloatField, DateTimeField,
     create_connection, BooleanField
 )
@@ -31,7 +25,7 @@ class Task(Document):
 def main():
     # Connect to the database using the sync API
     connection = create_connection(
-        url="ws://db:8000/rpc",
+        url="ws://localhost:8001/rpc",
         namespace="test_ns",
         database="test_db",
         username="root",
@@ -45,9 +39,17 @@ def main():
         print("Connected to SurrealDB using sync API")
 
         # Create the table and indexes
-        Task.create_table_sync
-        Task.create_indexes_sync
-        print("Created task table and indexes")
+        try:
+            Task.create_table_sync()
+            print("Created task table")
+        except Exception as e:
+            print(f"Table might already exist: {e}")
+        
+        try:
+            Task.create_indexes_sync()
+            print("Created task indexes")
+        except Exception as e:
+            print(f"Indexes might already exist: {e}")
 
         # Create tasks
         task1 = Task(
@@ -81,7 +83,7 @@ def main():
         print(f"Created tasks: {task1.title}, {task2.title}, {task3.title}")
 
         # Query tasks using sync API
-        all_tasks = Task.objects.filter_sync().all_sync()
+        all_tasks = Task.objects.all_sync()
         print(f"All tasks: {[task.title for task in all_tasks]}")
 
         # Query with filter
@@ -102,12 +104,12 @@ def main():
         print(f"Refreshed task from database: {task2.title} - completed: {task2.completed}")
 
         # Count tasks
-        total_tasks = Task.objects.filter_sync().count_sync()
+        total_tasks = Task.objects.count_sync()
         completed_tasks = Task.objects.filter_sync(completed=True).count_sync()
         print(f"Task statistics: {completed_tasks} of {total_tasks} tasks completed")
 
         # Clean up - delete all tasks
-        for task in Task.objects.filter_sync().all_sync():
+        for task in Task.objects.all_sync():
             task.delete_sync()
 
         print("Cleaned up all tasks")

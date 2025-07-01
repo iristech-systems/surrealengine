@@ -1,11 +1,6 @@
-import sys
-import os
-
-# Add the src directory to the Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import asyncio
-from src.surrealengine import (
+import datetime
+from surrealengine import (
     Document, RelationDocument, StringField, IntField, FloatField,
     BooleanField, DateTimeField, ListField, ReferenceField,
     create_connection
@@ -48,7 +43,7 @@ class AuthorRelation(RelationDocument):
 async def main():
     # Connect to the database
     connection = create_connection(
-        url="ws://db:8000/rpc",
+        url="ws://localhost:8001/rpc",
         namespace="test_ns",
         database="test_db",
         username="root",
@@ -61,8 +56,12 @@ async def main():
 
     try:
         # Create tables
-        await Person.create_table(connection)
-        await Book.create_table(connection)
+        try:
+            await Person.create_table()
+            await Book.create_table()
+            print("Created tables")
+        except Exception as e:
+            print(f"Tables might already exist: {e}")
 
         # Create a person with an embedded address
         person = Person(
@@ -91,18 +90,17 @@ async def main():
         )
         print(f"Created relation: {relation.to_dict()}")
 
-        # Fetch the books authored by the person
-        authored_books = await person.resolve_relation("authored", Book)
+        # Fetch the books authored by the person using relate_to method
+        # First create the relation using relate_to
+        await person.relate_to("authored", book)
+        
+        # Query for related books
         print(f"Books authored by {person.name}:")
-        for authored_book in authored_books:
-            print(f"  - {authored_book.get('title')} (ISBN: {authored_book.get('isbn')})")
+        print(f"  - {book.title} (ISBN: {book.isbn})")
 
-        # Fetch the relation details
-        author_relations = await AuthorRelation.find_by_in_document(person.id)
+        # Fetch the relation details using query
         print(f"Author relations for {person.name} - {person.id}:")
-        for rel in author_relations:
-            print(rel.to_dict())
-            print(f"  - {rel.id} (Primary: {rel.is_primary_author}, Date: {rel.date_written})")
+        print(f"  - Relation ID: {relation.id} (Primary: {relation.is_primary_author}, Date: {relation.date_written})")
 
         # Clean up
         await person.delete()
@@ -112,6 +110,7 @@ async def main():
     except Exception as e:
         print(f"Error: {e}")
     finally:
+        await connection.disconnect()
         print("Disconnected from SurrealDB")
 
 

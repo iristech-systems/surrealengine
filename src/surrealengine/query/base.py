@@ -2,8 +2,13 @@ from ..base_query import BaseQuerySet
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
 from ..exceptions import MultipleObjectsReturned, DoesNotExist
 from ..fields import ReferenceField
+from surrealdb import RecordID
 import json
 import asyncio
+import logging
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 
 class QuerySet(BaseQuerySet):
@@ -467,8 +472,17 @@ class QuerySet(BaseQuerySet):
             Number of deleted documents
         """
         # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
-        if self._bulk_id_selection or self._id_range_selection:
-            # For bulk operations, use subquery with direct record access for better performance
+        if self._bulk_id_selection:
+            # Use direct record deletion syntax for bulk ID operations
+            record_ids = [self._format_record_id(id_val) for id_val in self._bulk_id_selection]
+            delete_query = f"DELETE {', '.join(record_ids)}"
+            
+            result = await self.connection.client.query(delete_query)
+            # Direct record deletion returns empty list on success
+            # Return the count of IDs we attempted to delete
+            return len(record_ids)
+        elif self._id_range_selection:
+            # For range operations, use optimized query with subquery
             optimized_query = self._build_direct_record_query()
             if optimized_query:
                 # Convert SELECT to subquery for DELETE
@@ -504,8 +518,17 @@ class QuerySet(BaseQuerySet):
             Number of deleted documents
         """
         # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
-        if self._bulk_id_selection or self._id_range_selection:
-            # For bulk operations, use subquery with direct record access for better performance
+        if self._bulk_id_selection:
+            # Use direct record deletion syntax for bulk ID operations
+            record_ids = [self._format_record_id(id_val) for id_val in self._bulk_id_selection]
+            delete_query = f"DELETE {', '.join(record_ids)}"
+            
+            result = self.connection.client.query(delete_query)
+            # Direct record deletion returns empty list on success
+            # Return the count of IDs we attempted to delete
+            return len(record_ids)
+        elif self._id_range_selection:
+            # For range operations, use optimized query with subquery
             optimized_query = self._build_direct_record_query()
             if optimized_query:
                 # Convert SELECT to subquery for DELETE
@@ -562,33 +585,65 @@ class QuerySet(BaseQuerySet):
 
             # Validate batch if required
             if validate:
-                # Parallel validation using asyncio.gather
-                validation_tasks = [doc.validate() for doc in batch]
-                await asyncio.gather(*validation_tasks)
+                # Sequential validation since validate() is synchronous
+                for doc in batch:
+                    doc.validate()
 
-            # Convert batch to DB representation
-            data = [doc.to_db() for doc in batch]
-
-            # Construct optimized bulk insert query
-            query = f"INSERT INTO {collection} {json.dumps(data)};"
-
-            # Execute batch insert
-            try:
-                result = await self.connection.client.query(query)
-
-                if return_documents and result and result[0]:
-                    # Process results if needed
-                    batch_docs = [self.document_class.from_db(doc_data)
-                                  for doc_data in result[0]]
-                    created_docs.extend(batch_docs)
-                    total_created += len(batch_docs)
-                elif result and result[0]:
-                    total_created += len(result[0])
-
-            except Exception as e:
-                # Log error and continue with next batch
-                print(f"Error in bulk create batch: {str(e)}")
-                continue
+            # Separate documents with and without explicit IDs
+            docs_without_ids = []
+            docs_with_ids = []
+            
+            for doc in batch:
+                if doc.id:
+                    docs_with_ids.append(doc)
+                else:
+                    docs_without_ids.append(doc)
+            
+            # Handle documents without IDs using bulk INSERT
+            if docs_without_ids:
+                data = [doc.to_db() for doc in docs_without_ids]
+                query = f"INSERT INTO {collection} {json.dumps(data)};"
+                
+                try:
+                    result = await self.connection.client.query(query)
+                    if return_documents and result and result[0]:
+                        batch_docs = [self.document_class.from_db(doc_data)
+                                      for doc_data in result[0]]
+                        created_docs.extend(batch_docs)
+                        total_created += len(batch_docs)
+                    elif result and result[0]:
+                        total_created += len(result[0])
+                except Exception as e:
+                    logger.error(f"Error in bulk create batch (no IDs): {str(e)}")
+            
+            # Handle documents with explicit IDs using individual upserts
+            for doc in docs_with_ids:
+                try:
+                    data = doc.to_db()
+                    # Remove ID from data and extract ID part
+                    if 'id' in data:
+                        del data['id']
+                        id_part = str(doc.id).split(':')[1]
+                        result = await self.connection.client.upsert(
+                            RecordID(collection, int(id_part) if id_part.isdigit() else id_part),
+                            data
+                        )
+                        
+                        if return_documents and result:
+                            if isinstance(result, list) and result:
+                                doc_data = result[0]
+                            else:
+                                doc_data = result
+                            
+                            if isinstance(doc_data, dict):
+                                if created_docs is not None:
+                                    created_docs.append(self.document_class.from_db(doc_data))
+                        
+                        total_created += 1
+                        
+                except Exception as e:
+                    logger.error(f"Error creating document with ID {doc.id}: {str(e)}")
+                    continue
 
         return created_docs if return_documents else total_created
 
@@ -648,7 +703,7 @@ class QuerySet(BaseQuerySet):
 
             except Exception as e:
                 # Log error and continue with next batch
-                print(f"Error in bulk create batch: {str(e)}")
+                logger.error(f"Error in bulk create batch: {str(e)}")
                 continue
 
         return created_docs if return_documents else total_created

@@ -59,9 +59,25 @@ class GeometryField(Field):
         # Handle GeometryPoint and other Geometry objects
         if hasattr(value, 'to_json'):
             return value.to_json()
+        
+        # Handle GeometryPoint from surrealdb.data
+        if hasattr(value, 'get_coordinates') and hasattr(value, 'longitude') and hasattr(value, 'latitude'):
+            coords = value.get_coordinates()
+            # Use simple tuple format as preferred by SurrealDB
+            return list(coords)  # Convert tuple to list for JSON serialization
+
+        # Handle simple coordinate arrays for Point geometry (longitude, latitude)
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            try:
+                # Validate that coordinates are numeric
+                float(value[0])  # longitude
+                float(value[1])  # latitude
+                return list(value)  # Convert to list for consistency
+            except (TypeError, ValueError):
+                pass  # Fall through to other validation
 
         if not isinstance(value, dict):
-            raise ValidationError("Geometry value must be a dictionary")
+            raise ValidationError("Geometry value must be a dictionary or coordinate array")
 
         if "type" not in value or "coordinates" not in value:
             raise ValidationError("Geometry must have 'type' and 'coordinates' fields")

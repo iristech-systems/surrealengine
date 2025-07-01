@@ -1,9 +1,13 @@
 import json
 import asyncio
+import logging
 from typing import Any, Dict, List, Optional, Type, Union, Callable
 from .exceptions import DoesNotExist, MultipleObjectsReturned
 from surrealdb import RecordID
 from .base_query import BaseQuerySet
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 class SchemalessQuerySet(BaseQuerySet):
     """QuerySet for schemaless operations.
@@ -294,7 +298,7 @@ class SchemalessQuerySet(BaseQuerySet):
 
             except Exception as e:
                 # Log error and continue with next batch
-                print(f"Error in bulk create batch: {str(e)}")
+                logger.error(f"Error in bulk create batch: {str(e)}")
                 continue
 
         return created_docs if return_documents else total_created
@@ -349,7 +353,7 @@ class SchemalessQuerySet(BaseQuerySet):
 
             except Exception as e:
                 # Log error and continue with next batch
-                print(f"Error in bulk create batch: {str(e)}")
+                logger.error(f"Error in bulk create batch: {str(e)}")
                 continue
 
         return created_docs if return_documents else total_created

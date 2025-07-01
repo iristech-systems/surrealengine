@@ -226,25 +226,39 @@ class DurationField(Field):
             raise TypeError(f"Expected duration for field '{self.name}', got {type(value)}")
         return value
 
-    def to_db(self, value: Any) -> Optional[str]:
+    def to_db(self, value: Any) -> Optional[Any]:
         """Convert Python timedelta to database representation.
 
-        This method converts a Python timedelta object to a SurrealDB duration string
+        This method converts a Python timedelta object to a SurrealDB Duration object
         for storage in the database.
 
         Args:
             value: The Python timedelta to convert
 
         Returns:
-            The SurrealDB duration string for the database
+            The SurrealDB Duration object for the database
         """
         if value is None:
             return None
 
+        # Import SurrealDB Duration class
+        from surrealdb import Duration
+
         if isinstance(value, str):
-            # If it's already a string, validate it as a duration
-            self.validate(value)
-            return value
+            # If it's already a string, convert to a supported format
+            self.validate(value)  # Validate first
+            # Convert years to days (approximate: 1 year = 365 days)
+            if 'y' in value:
+                # Simple conversion for basic year formats like "2y"
+                import re
+                year_match = re.search(r'(\d+)y', value)
+                if year_match:
+                    years = int(year_match.group(1))
+                    days = years * 365
+                    # Replace the year part with days
+                    converted = re.sub(r'\d+y', f'{days}d', value)
+                    return Duration.parse(converted)
+            return Duration.parse(value)
 
         if isinstance(value, datetime.timedelta):
             # Convert timedelta to SurrealDB duration format
@@ -263,7 +277,11 @@ class DurationField(Field):
             if seconds > 0 or not result:
                 result += f"{seconds}s"
 
-            return result
+            return Duration.parse(result)
+
+        # If it's already a Duration object, return as is
+        if hasattr(value, 'to_string') and hasattr(value, 'elapsed'):
+            return value
 
         raise TypeError(f"Cannot convert {type(value)} to duration")
 

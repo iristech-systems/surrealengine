@@ -111,7 +111,8 @@ class NumberField(Field):
         """
         value = super().validate(value)
         if value is not None:
-            if not isinstance(value, (int, float)):
+            from decimal import Decimal
+            if not isinstance(value, (int, float, Decimal)):
                 raise TypeError(f"Expected number for field '{self.name}', got {type(value)}")
 
             if self.min_value is not None and value < self.min_value:

@@ -77,13 +77,15 @@ class RecordIDField(Field):
         if value is None:
             return None
 
-        if isinstance(value, str) and ':' in value:
+        if isinstance(value, RecordID):
+            return str(value)
+        elif isinstance(value, str) and ':' in value:
             return value
         elif isinstance(value, (list, tuple)) and len(value) == 2:
             table, id_val = value
             return f"{table}:{id_val}"
 
-        return value
+        return str(value)
 
     def from_db(self, value: Any) -> Optional[str]:
         """Convert database value to Python representation.

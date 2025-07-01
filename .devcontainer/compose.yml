@@ -23,11 +23,11 @@ services:
     restart: always
     command: start --log debug --user root --pass root
     ports:
-      - "8001:8000"
+      - "8001:8001"
     volumes:
       - db-data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 10s
       timeout: 5s
       retries: 5

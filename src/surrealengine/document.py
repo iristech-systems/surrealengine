@@ -1,5 +1,6 @@
 import json
 import datetime
+import logging
 from dataclasses import dataclass, field as dataclass_field, make_dataclass
 from typing import Any, Dict, List, Optional, Type, Union, ClassVar
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
@@ -11,6 +12,9 @@ from .signals import (
     pre_delete, post_delete, pre_bulk_insert, post_bulk_insert, SIGNAL_SUPPORT
 )
 from .materialized_view import MaterializedView
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 
 class DocumentMetaclass(type):
@@ -1063,7 +1067,7 @@ class Document(metaclass=DocumentMetaclass):
                         if doc:
                             resolved_documents.append(doc)
                     except Exception as e:
-                        print(f"Error resolving document {collection}:{record_id}: {str(e)}")
+                        logger.error(f"Error resolving document {collection}:{record_id}: {str(e)}")
 
         return resolved_documents
 
@@ -1114,7 +1118,7 @@ class Document(metaclass=DocumentMetaclass):
                         if doc:
                             resolved_documents.append(doc)
                     except Exception as e:
-                        print(f"Error resolving document {collection}:{record_id}: {str(e)}")
+                        logger.error(f"Error resolving document {collection}:{record_id}: {str(e)}")
 
         return resolved_documents
 
@@ -1427,7 +1431,6 @@ class Document(metaclass=DocumentMetaclass):
 
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=False)
-            print(connection)
 
         result = cls.objects(connection).bulk_create_sync(
             documents,
@@ -2336,7 +2339,7 @@ class RelationDocument(Document):
 
                     return doc
             except Exception as e:
-                print(f"Error resolving out_document {self.out_document}: {str(e)}")
+                logger.error(f"Error resolving out_document {self.out_document}: {str(e)}")
 
         elif isinstance(self.out_document, RecordID):
             try:
@@ -2349,7 +2352,7 @@ class RelationDocument(Document):
 
                     return doc
             except Exception as e:
-                print(f"Error resolving out_document {self.out_document}: {str(e)}")
+                logger.error(f"Error resolving out_document {self.out_document}: {str(e)}")
 
         # Return the current value if resolution failed
         return self.out_document
@@ -2389,7 +2392,7 @@ class RelationDocument(Document):
 
                     return doc
             except Exception as e:
-                print(f"Error resolving out_document {self.out_document}: {str(e)}")
+                logger.error(f"Error resolving out_document {self.out_document}: {str(e)}")
 
         elif isinstance(self.out_document, RecordID):
             try:
@@ -2402,7 +2405,7 @@ class RelationDocument(Document):
 
                     return doc
             except Exception as e:
-                print(f"Error resolving out_document {self.out_document}: {str(e)}")
+                logger.error(f"Error resolving out_document {self.out_document}: {str(e)}")
 
         # Return the current value if resolution failed
         return self.out_document
