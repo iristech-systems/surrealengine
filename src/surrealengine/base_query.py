@@ -57,10 +57,10 @@ class BaseQuerySet:
         SurrealEngineAsyncConnection, SurrealEngineSyncConnection = _get_connection_classes()
         return isinstance(self.connection, SurrealEngineAsyncConnection)
 
-    def filter(self, **kwargs) -> 'BaseQuerySet':
+    def filter(self, query=None, **kwargs) -> 'BaseQuerySet':
         """Add filter conditions to the query with automatic ID optimization.
 
-        This method supports Django-style field lookups with double-underscore operators:
+        This method supports both Q objects and Django-style field lookups with double-underscore operators:
         - field__gt: Greater than
         - field__lt: Less than
         - field__gte: Greater than or equal
@@ -78,6 +78,7 @@ class BaseQuerySet:
         - ID range queries (id__gte + id__lte) use range syntax
 
         Args:
+            query: Q object or QueryExpression for complex queries
             **kwargs: Field names and values to filter by
 
         Returns:
@@ -86,6 +87,34 @@ class BaseQuerySet:
         Raises:
             ValueError: If an unknown operator is provided
         """
+        # Handle Q objects and QueryExpressions
+        if query is not None:
+            # Import here to avoid circular imports
+            try:
+                from .query_expressions import Q, QueryExpression
+                
+                if isinstance(query, Q):
+                    # Convert Q object to conditions
+                    conditions = query.to_conditions()
+                    for field, op, value in conditions:
+                        if field == '__raw__':
+                            # Handle raw query conditions
+                            self.query_parts.append(('__raw__', '=', value))
+                        else:
+                            self.query_parts.append((field, op, value))
+                    return self
+                
+                elif isinstance(query, QueryExpression):
+                    # Apply QueryExpression to this queryset
+                    return query.apply_to_queryset(self)
+                
+                else:
+                    raise ValueError(f"Unsupported query type: {type(query)}")
+                    
+            except ImportError:
+                raise ValueError("Query expressions not available")
+        
+        # Continue with existing kwargs processing if no query object
         # PERFORMANCE OPTIMIZATION: Check for bulk ID operations
         if len(kwargs) == 1 and 'id__in' in kwargs:
             clone = self._clone()
@@ -148,9 +177,9 @@ class BaseQuerySet:
                     else:
                         self.query_parts.append((field, 'CONTAINS', v))
                 elif op == 'startswith':
-                    self.query_parts.append((f"string::startsWith({field}, '{v}')", '=', True))
+                    self.query_parts.append((f"string::starts_with({field}, '{v}')", '=', True))
                 elif op == 'endswith':
-                    self.query_parts.append((f"string::endsWith({field}, '{v}')", '=', True))
+                    self.query_parts.append((f"string::ends_with({field}, '{v}')", '=', True))
                 elif op == 'regex':
                     self.query_parts.append((f"string::matches({field}, r'{v}')", '=', True))
                 else:
@@ -349,8 +378,11 @@ class BaseQuerySet:
         """
         conditions = []
         for field, op, value in self.query_parts:
+            # Handle raw query conditions
+            if field == '__raw__':
+                conditions.append(value)
             # Handle special cases
-            if op == '=' and isinstance(field, str) and '::' in field:
+            elif op == '=' and isinstance(field, str) and '::' in field:
                 conditions.append(f"{field}")
             else:
                 # Special handling for RecordIDs - don't quote them
@@ -362,6 +394,15 @@ class BaseQuerySet:
                 elif op in ('INSIDE', 'NOT INSIDE'):
                     value_str = json.dumps(value)
                     conditions.append(f"{field} {op} {value_str}")
+                elif op == 'STARTSWITH':
+                    conditions.append(f"string::starts_with({field}, '{value}')")
+                elif op == 'ENDSWITH':
+                    conditions.append(f"string::ends_with({field}, '{value}')")
+                elif op == 'CONTAINS':
+                    if isinstance(value, str):
+                        conditions.append(f"string::contains({field}, '{value}')")
+                    else:
+                        conditions.append(f"{field} CONTAINS {json.dumps(value)}")
                 else:
                     # Convert value to database format if we have field information
                     db_value = self._convert_value_for_query(field, value)

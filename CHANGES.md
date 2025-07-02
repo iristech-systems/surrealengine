@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2025-07-02
+
 ### Added
+- **Query Expression System**: Advanced query building with Q objects and QueryExpression
+  - **Q objects** for complex boolean logic supporting AND (&), OR (|), and NOT (~) operations
+  - **QueryExpression class** for comprehensive query building with FETCH, ORDER BY, GROUP BY, LIMIT, and START clauses
+  - **objects(query) syntax** - Alternative to filter() allowing direct query object passing: `User.objects(Q(active=True))`
+  - **filter(query) enhancement** - Now accepts Q objects and QueryExpressions in addition to kwargs
+  - **Raw query support** with `Q.raw()` for custom SurrealQL WHERE clauses
+  - **FETCH integration** - QueryExpression with FETCH automatically dereferences related documents
+  - **Django-style operators** - Support for field__operator syntax (gt, lt, gte, lte, ne, in, contains, startswith, endswith, regex)
+  - **Method chaining** - Full compatibility with existing queryset methods (limit, order_by, fetch, etc.)
+  - **Synchronous support** - All query expression features work with both async and sync operations
+
+### Fixed
+- **String function compatibility** - Updated to use correct SurrealDB v2.x string function names (`string::starts_with` instead of `string::startsWith`, `string::ends_with` instead of `string::endsWith`)
+
+### Added (Continued)
 - **DataGrid API Support**: Comprehensive frontend integration for data table libraries
   - Efficient SurrealDB query optimization replacing Python-based filtering with database-native operations
   - Support for BootstrapTable.js format (maintaining backward compatibility with existing APIs)

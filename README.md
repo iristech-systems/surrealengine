@@ -511,7 +511,12 @@ For more examples of working with references and dereferencing, see [test_refere
 
 ### Advanced Querying
 
-SurrealEngine provides a powerful query API for filtering, ordering, and paginating results:
+SurrealEngine provides multiple powerful query APIs for filtering, ordering, and paginating results:
+- **Traditional field lookups** for simple queries
+- **Q objects** for complex boolean logic (AND/OR/NOT)
+- **QueryExpression** for comprehensive query building with FETCH, ORDER BY, etc.
+
+#### Traditional Field Lookup Queries
 
 ```python
 # Asynchronous operations
@@ -529,7 +534,72 @@ users_with_dark_theme = await User.objects.filter(
 
 # Order results
 results = await Person.objects.filter(age__gt=25).order_by("name", "DESC").all()
+```
 
+#### Complex Queries with Q Objects
+
+For complex boolean logic, use Q objects which support AND (&), OR (|), and NOT (~) operations:
+
+```python
+from surrealengine import Q
+
+# Complex AND/OR queries
+query = Q(age__gt=18) & Q(active=True)  # AND condition
+users = await User.objects.filter(query).all()
+
+# OR conditions  
+query = Q(department="engineering") | Q(department="sales")
+users = await User.objects.filter(query).all()
+
+# NOT conditions
+query = ~Q(active=False)  # Get all active users
+users = await User.objects.filter(query).all()
+
+# Complex nested logic
+query = (Q(age__gte=18) & Q(active=True)) | Q(role="admin")
+users = await User.objects.filter(query).all()
+
+# Raw queries for ultimate flexibility
+query = Q.raw("age > 20 AND username CONTAINS 'admin'")
+users = await User.objects.filter(query).all()
+
+# Alternative objects(query) syntax
+users = await User.objects(Q(active=True) & Q(age__gt=25))
+```
+
+#### QueryExpression for Comprehensive Query Building
+
+For queries requiring FETCH, GROUP BY, ORDER BY, and other clauses:
+
+```python
+from surrealengine import QueryExpression, Q
+
+# QueryExpression with FETCH for automatic dereferencing
+expr = QueryExpression(where=Q(published=True)).fetch("author")
+posts = await Post.objects.filter(expr).all()
+
+# Complex expression with multiple clauses
+expr = (QueryExpression(where=Q(active=True))
+        .fetch("profile", "posts")
+        .order_by("created_at", "DESC") 
+        .limit(10))
+users = await User.objects.filter(expr).all()
+
+# Synchronous versions also supported
+query = Q(age__gt=25) & Q(active=True)
+users = User.objects.filter_sync(query).all_sync()
+
+expr = QueryExpression(where=Q(active=True)).fetch("profile").limit(5)
+users = User.objects.filter_sync(expr).all_sync()
+```
+
+The Q object and QueryExpression system provides Django-style querying with powerful boolean logic, automatic reference dereferencing through FETCH, and full compatibility with existing SurrealEngine query methods.
+
+For comprehensive examples of Q objects and QueryExpression, see [query_expressions_example.py](./example_scripts/query_expressions_example.py).
+
+#### Traditional Query Methods
+
+```python
 # Pagination
 # Basic pagination with limit and start
 page1 = await Person.objects.filter(age__gt=25).limit(10).all()

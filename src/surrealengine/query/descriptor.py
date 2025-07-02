@@ -39,15 +39,16 @@ class QuerySetDescriptor:
         self.connection = None
         return self
 
-    async def __call__(self, limit: Optional[int] = None, start: Optional[int] = None,
+    async def __call__(self, query=None, limit: Optional[int] = None, start: Optional[int] = None,
                        page: Optional[tuple] = None, **kwargs: Any) -> List[Any]:
         """Allow direct filtering through call syntax asynchronously.
 
-        This method allows calling the descriptor directly with filters
+        This method allows calling the descriptor directly with filters or query objects
         to query the document class. It supports pagination through limit and start parameters
         or the page parameter.
 
         Args:
+            query: Q object or QueryExpression for complex queries
             limit: Maximum number of results to return (for pagination)
             start: Number of results to skip (for pagination)
             page: Tuple of (page_number, page_size) for pagination
@@ -59,8 +60,14 @@ class QuerySetDescriptor:
         # Get the default async connection
         connection = ConnectionRegistry.get_default_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
+        
+        # Apply query object if provided
+        if query is not None:
+            queryset = queryset.filter(query)
+        
         # Apply filters and pagination
-        queryset = queryset.filter(**kwargs)
+        if kwargs:
+            queryset = queryset.filter(**kwargs)
 
         if page is not None:
             page_number, page_size = page
@@ -74,15 +81,16 @@ class QuerySetDescriptor:
         # Return results
         return await queryset.all()
 
-    def call_sync(self, limit: Optional[int] = None, start: Optional[int] = None,
+    def call_sync(self, query=None, limit: Optional[int] = None, start: Optional[int] = None,
                   page: Optional[tuple] = None, **kwargs: Any) -> List[Any]:
         """Allow direct filtering through call syntax synchronously.
 
-        This method allows calling the descriptor directly with filters
+        This method allows calling the descriptor directly with filters or query objects
         to query the document class. It supports pagination through limit and start parameters
         or the page parameter.
 
         Args:
+            query: Q object or QueryExpression for complex queries
             limit: Maximum number of results to return (for pagination)
             start: Number of results to skip (for pagination)
             page: Tuple of (page_number, page_size) for pagination
@@ -94,8 +102,14 @@ class QuerySetDescriptor:
         # Get the default sync connection
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
+        
+        # Apply query object if provided
+        if query is not None:
+            queryset = queryset.filter(query)
+        
         # Apply filters and pagination
-        queryset = queryset.filter(**kwargs)
+        if kwargs:
+            queryset = queryset.filter(**kwargs)
 
         if page is not None:
             page_number, page_size = page
@@ -149,12 +163,13 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.get_sync(**kwargs)
 
-    def filter(self, **kwargs: Any) -> QuerySet:
+    def filter(self, query=None, **kwargs: Any) -> QuerySet:
         """Create a QuerySet with filters using the default async connection.
 
         This method creates a new QuerySet with the given filters using the default async connection.
 
         Args:
+            query: Q object or QueryExpression for complex queries
             **kwargs: Field names and values to filter by
 
         Returns:
@@ -163,14 +178,15 @@ class QuerySetDescriptor:
         # Get the default async connection
         connection = ConnectionRegistry.get_default_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
-        return queryset.filter(**kwargs)
+        return queryset.filter(query=query, **kwargs)
 
-    def filter_sync(self, **kwargs: Any) -> QuerySet:
+    def filter_sync(self, query=None, **kwargs: Any) -> QuerySet:
         """Create a QuerySet with filters using the default sync connection.
 
         This method creates a new QuerySet with the given filters using the default sync connection.
 
         Args:
+            query: Q object or QueryExpression for complex queries
             **kwargs: Field names and values to filter by
 
         Returns:
@@ -179,7 +195,7 @@ class QuerySetDescriptor:
         # Get the default sync connection
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
-        return queryset.filter(**kwargs)
+        return queryset.filter(query=query, **kwargs)
 
     def limit(self, value: int) -> QuerySet:
         """Set the maximum number of results to return.

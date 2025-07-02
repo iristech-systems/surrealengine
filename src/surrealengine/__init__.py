@@ -63,6 +63,7 @@ from .materialized_view import (
     GroupConcat
 )
 from .query import QuerySet, RelationQuerySet
+from .query_expressions import Q, QueryExpression
 from .aggregation import AggregationPipeline
 from .schema import (
     get_document_classes,
@@ -79,7 +80,7 @@ from .datagrid_api import (
     format_datatables_response
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __all__ = [
     "SurrealEngine",
     "SurrealEngineAsyncConnection",
@@ -107,6 +108,8 @@ __all__ = [
     "GeometryField",
     "QuerySet",
     "RelationQuerySet",
+    "Q",
+    "QueryExpression",
     "DurationField",
     "OptionField",
     "LiteralField",
