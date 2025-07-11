@@ -2,6 +2,8 @@
 # SurrealEngine
 
 SurrealEngine is an Object-Document Mapper (ODM) for SurrealDB, providing a Pythonic interface for working with SurrealDB databases. It supports both synchronous and asynchronous operations.
+Credit to MongoEngine for providing such an extensive ODM. Much of my work was directly influenced by my love for MongoEngine.
+
 
 ## Requirements
 
