@@ -1,3 +1,4 @@
+import datetime
 import json
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
 from surrealdb import RecordID
@@ -82,7 +83,15 @@ class RelationQuerySet:
 
         # Add attributes if provided
         if attrs:
-            attrs_str = ", ".join([f"{k}: {json.dumps(v)}" for k, v in attrs.items()])
+            # Convert datetime objects to ISO format for JSON serialization
+            processed_attrs = {}
+            for k, v in attrs.items():
+                if isinstance(v, datetime.datetime):
+                    processed_attrs[k] = v.isoformat()
+                else:
+                    processed_attrs[k] = v
+            
+            attrs_str = ", ".join([f"{k}: {json.dumps(v)}" for k, v in processed_attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
         result = await self.connection.client.query(query)
@@ -145,7 +154,15 @@ class RelationQuerySet:
 
         # Add attributes if provided
         if attrs:
-            attrs_str = ", ".join([f"{k}: {json.dumps(v)}" for k, v in attrs.items()])
+            # Convert datetime objects to ISO format for JSON serialization
+            processed_attrs = {}
+            for k, v in attrs.items():
+                if isinstance(v, datetime.datetime):
+                    processed_attrs[k] = v.isoformat()
+                else:
+                    processed_attrs[k] = v
+            
+            attrs_str = ", ".join([f"{k}: {json.dumps(v)}" for k, v in processed_attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
         result = self.connection.client.query(query)
