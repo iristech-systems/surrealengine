@@ -422,10 +422,10 @@ class Document(metaclass=DocumentMetaclass):
         # Get changed data and convert to DB format
         changed_data = {}
         for field_name in self._changed_fields:
-            # Skip the 'id' field for updates since it's specified in the upsert target
-            if field_name == 'id':
-                continue
-                
+            # Note: We don't skip the 'id' field here anymore because:
+            # 1. SurrealDB handles it properly in upsert operations
+            # 2. The ID might be stored as a string and needed for queries
+            # 3. Skipping it can break RecordID-based queries
             if field_name in self._fields:
                 field = self._fields[field_name]
                 value = self._data.get(field_name)
