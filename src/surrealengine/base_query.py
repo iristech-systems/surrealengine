@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union, Type, cast
 from .exceptions import MultipleObjectsReturned, DoesNotExist
 from surrealdb import RecordID
 from .pagination import PaginationResult
+from .record_id_utils import RecordIdUtils
 
 # Import these at runtime to avoid circular imports
 def _get_connection_classes():
@@ -135,19 +136,17 @@ class BaseQuerySet:
         # Fall back to regular filtering for non-optimizable queries
         for k, v in kwargs.items():
             if k == 'id':
-                if isinstance(v, RecordID):
-                    self.query_parts.append((k, '=', str(v)))
-                elif isinstance(v, str) and ':' in v:
-                    # Handle full record ID format (collection:id)
-                    self.query_parts.append((k, '=', v))
+                # Use RecordIdUtils for comprehensive ID handling
+                table_name = None
+                if hasattr(self, 'document_class') and self.document_class:
+                    table_name = self.document_class._get_collection_name()
+                
+                normalized_id = RecordIdUtils.normalize_record_id(v, table_name)
+                if normalized_id:
+                    self.query_parts.append((k, '=', normalized_id))
                 else:
-                    # Handle short ID format by prefixing with collection name
-                    collection = getattr(self, 'document_class', None)
-                    if collection:
-                        full_id = f"{collection._get_collection_name()}:{v}"
-                        self.query_parts.append((k, '=', full_id))
-                    else:
-                        self.query_parts.append((k, '=', v))
+                    # Fall back to original value if normalization fails
+                    self.query_parts.append((k, '=', str(v)))
                 continue
 
             parts = k.split('__')
@@ -385,12 +384,26 @@ class BaseQuerySet:
             elif op == '=' and isinstance(field, str) and '::' in field:
                 conditions.append(f"{field}")
             else:
-                # Special handling for RecordIDs - don't quote them
-                if field == 'id' and isinstance(value, str) and ':' in value:
-                    conditions.append(f"{field} {op} {value}")
+                # Special handling for RecordIDs - use normalized format
+                if field == 'id' or (isinstance(value, str) and RecordIdUtils.is_valid_record_id(value)):
+                    # Ensure RecordID is properly formatted
+                    if isinstance(value, str) and RecordIdUtils.is_valid_record_id(value):
+                        conditions.append(f"{field} {op} {value}")
+                    elif isinstance(value, RecordID):
+                        conditions.append(f"{field} {op} {str(value)}")
+                    else:
+                        # Try to normalize the RecordID
+                        table_name = None
+                        if hasattr(self, 'document_class') and self.document_class:
+                            table_name = self.document_class._get_collection_name()
+                        normalized = RecordIdUtils.normalize_record_id(value, table_name)
+                        if normalized:
+                            conditions.append(f"{field} {op} {normalized}")
+                        else:
+                            conditions.append(f"{field} {op} {json.dumps(value)}")
                 # Special handling for INSIDE and NOT INSIDE operators
-                elif isinstance(value, RecordID) or (isinstance(value, str) and ':' in field):
-                    conditions.append(f"{field} {op} {value}")
+                elif isinstance(value, RecordID):
+                    conditions.append(f"{field} {op} {str(value)}")
                 elif op in ('INSIDE', 'NOT INSIDE'):
                     value_str = json.dumps(value)
                     conditions.append(f"{field} {op} {value_str}")
@@ -441,25 +454,33 @@ class BaseQuerySet:
     def _format_record_id(self, id_value: Any) -> str:
         """Format an ID value into a proper SurrealDB record ID.
         
+        This method handles various RecordID formats including URL-encoded versions.
+        
         Args:
             id_value: The ID value to format
             
         Returns:
             Properly formatted record ID string
         """
-        # If it's already a full record ID (contains colon), use as-is
+        # Get table name if available
+        table_name = None
+        if hasattr(self, 'document_class') and self.document_class:
+            table_name = self.document_class._get_collection_name()
+        
+        # Use RecordIdUtils for comprehensive handling
+        normalized = RecordIdUtils.normalize_record_id(id_value, table_name)
+        
+        # If normalization succeeded, return it
+        if normalized is not None:
+            return normalized
+            
+        # Fall back to original behavior if normalization fails
         if isinstance(id_value, str) and ':' in id_value:
             return id_value
-            
-        # If it's a RecordID object, convert to string
-        if isinstance(id_value, RecordID):
+        elif isinstance(id_value, RecordID):
             return str(id_value)
-            
-        # Otherwise, add collection name prefix
-        collection_name = getattr(self, 'document_class', None)
-        if collection_name:
-            collection_name = collection_name._get_collection_name()
-            return f"{collection_name}:{id_value}"
+        elif table_name:
+            return f"{table_name}:{id_value}"
         else:
             return str(id_value)
     

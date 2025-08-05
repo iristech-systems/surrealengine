@@ -4,6 +4,7 @@ This module provides support for building and executing aggregation pipelines
 in SurrealEngine. Aggregation pipelines allow for complex data transformations
 and analysis through a series of stages.
 """
+import json
 import re
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
@@ -122,6 +123,48 @@ class AggregationPipeline:
         })
         return self
         
+    def match(self, **conditions):
+        """Filter documents before aggregation (similar to WHERE clause).
+        
+        This method adds filtering conditions that are applied before
+        any aggregation operations. Multiple conditions are combined with AND.
+        
+        Args:
+            **conditions: Field-value pairs for filtering (e.g., status='active')
+            
+        Returns:
+            The pipeline instance for method chaining
+            
+        Example:
+            pipeline.match(status='completed', price__gt=100)
+        """
+        self.stages.append({
+            'type': 'match',
+            'conditions': conditions
+        })
+        return self
+        
+    def having(self, **conditions):
+        """Filter aggregated results (similar to HAVING clause).
+        
+        This method adds filtering conditions that are applied after
+        aggregation operations. Use this to filter based on aggregated values.
+        
+        Args:
+            **conditions: Field-value pairs for filtering aggregated results
+            
+        Returns:
+            The pipeline instance for method chaining
+            
+        Example:
+            pipeline.group(by_fields='category', total=Sum('price')).having(total__gt=1000)
+        """
+        self.stages.append({
+            'type': 'having',
+            'conditions': conditions
+        })
+        return self
+        
     def build_query(self):
         """Build the SurrealQL query from the pipeline stages.
         
@@ -142,7 +185,77 @@ class AggregationPipeline:
         
         # Process the stages to modify the query
         for stage in self.stages:
-            if stage['type'] == 'group':
+            if stage['type'] == 'match':
+                # Handle MATCH stage (pre-aggregation filtering)
+                conditions = stage['conditions']
+                
+                if conditions:
+                    # Build WHERE conditions
+                    where_conditions = []
+                    for field, value in conditions.items():
+                        # Handle Django-style operators
+                        if '__' in field:
+                            field_name, op = field.rsplit('__', 1)
+                            if op == 'gt':
+                                where_conditions.append(f"{field_name} > {json.dumps(value)}")
+                            elif op == 'lt':
+                                where_conditions.append(f"{field_name} < {json.dumps(value)}")
+                            elif op == 'gte':
+                                where_conditions.append(f"{field_name} >= {json.dumps(value)}")
+                            elif op == 'lte':
+                                where_conditions.append(f"{field_name} <= {json.dumps(value)}")
+                            elif op == 'ne':
+                                where_conditions.append(f"{field_name} != {json.dumps(value)}")
+                            elif op == 'in':
+                                where_conditions.append(f"{field_name} IN {json.dumps(value)}")
+                            elif op == 'nin':
+                                where_conditions.append(f"{field_name} NOT IN {json.dumps(value)}")
+                            elif op == 'contains':
+                                where_conditions.append(f"{field_name} CONTAINS {json.dumps(value)}")
+                            elif op == 'startswith':
+                                where_conditions.append(f"string::startsWith({field_name}, {json.dumps(value)})")
+                            elif op == 'endswith':
+                                where_conditions.append(f"string::endsWith({field_name}, {json.dumps(value)})")
+                            else:
+                                # Default to equality
+                                where_conditions.append(f"{field_name} = {json.dumps(value)}")
+                        else:
+                            # Simple equality
+                            if isinstance(value, str):
+                                where_conditions.append(f"{field} = {json.dumps(value)}")
+                            else:
+                                where_conditions.append(f"{field} = {json.dumps(value)}")
+                    
+                    where_clause = f"WHERE {' AND '.join(where_conditions)}"
+                    
+                    # Check if there's already a WHERE clause
+                    if "WHERE" in rest_part.upper():
+                        # Append to existing WHERE clause
+                        where_index = rest_part.upper().find("WHERE")
+                        # Find the end of WHERE clause
+                        for clause in ["GROUP BY", "SPLIT", "FETCH", "ORDER BY", "LIMIT", "START"]:
+                            clause_index = rest_part.upper().find(clause, where_index)
+                            if clause_index != -1:
+                                # Insert before the next clause
+                                existing_where = rest_part[where_index:clause_index].strip()
+                                new_where = f"{existing_where} AND {' AND '.join(where_conditions)}"
+                                rest_part = f"{rest_part[:where_index]}{new_where} {rest_part[clause_index:]}"
+                                break
+                        else:
+                            # No other clause after WHERE
+                            rest_part = f"{rest_part} AND {' AND '.join(where_conditions)}"
+                    else:
+                        # Add WHERE clause before GROUP BY or other clauses
+                        for clause in ["GROUP BY", "SPLIT", "FETCH", "ORDER BY", "LIMIT", "START"]:
+                            clause_index = rest_part.upper().find(clause)
+                            if clause_index != -1:
+                                rest_part = f"{rest_part[:clause_index]}{where_clause} {rest_part[clause_index:]}"
+                                break
+                        else:
+                            # No other clauses, add to the end
+                            rest_part = f"{rest_part} {where_clause}"
+            
+            elif stage['type'] == 'group':
                 # Handle GROUP BY stage
                 by_fields = stage['by_fields']
                 aggregations = stage['aggregations']
@@ -197,6 +310,43 @@ class AggregationPipeline:
                     
                     # Replace the SELECT part
                     select_part = f"SELECT {', '.join(select_fields)}"
+            
+            elif stage['type'] == 'having':
+                # Handle HAVING stage (post-aggregation filtering)
+                conditions = stage['conditions']
+                
+                if conditions:
+                    # Build HAVING conditions
+                    having_conditions = []
+                    for field, value in conditions.items():
+                        # Handle Django-style operators
+                        if '__' in field:
+                            field_name, op = field.rsplit('__', 1)
+                            if op == 'gt':
+                                having_conditions.append(f"{field_name} > {json.dumps(value)}")
+                            elif op == 'lt':
+                                having_conditions.append(f"{field_name} < {json.dumps(value)}")
+                            elif op == 'gte':
+                                having_conditions.append(f"{field_name} >= {json.dumps(value)}")
+                            elif op == 'lte':
+                                having_conditions.append(f"{field_name} <= {json.dumps(value)}")
+                            elif op == 'ne':
+                                having_conditions.append(f"{field_name} != {json.dumps(value)}")
+                            elif op == 'in':
+                                having_conditions.append(f"{field_name} IN {json.dumps(value)}")
+                            elif op == 'nin':
+                                having_conditions.append(f"{field_name} NOT IN {json.dumps(value)}")
+                            else:
+                                # Default to equality
+                                having_conditions.append(f"{field_name} = {json.dumps(value)}")
+                        else:
+                            # Simple equality
+                            having_conditions.append(f"{field} = {json.dumps(value)}")
+                    
+                    # For SurrealDB, HAVING is implemented as a WHERE clause on the aggregated results
+                    # We need to wrap the entire query in a subquery and apply WHERE on it
+                    # This will be handled at the end of query building
+                    self.having_conditions = having_conditions
             
             elif stage['type'] == 'sort':
                 # Handle SORT stage
@@ -285,7 +435,15 @@ class AggregationPipeline:
                         rest_part = f"{rest_part} {with_clause}"
         
         # Combine the SELECT part with the rest of the query
-        return f"{select_part} {rest_part}"
+        final_query = f"{select_part} {rest_part}"
+        
+        # Handle HAVING conditions by wrapping in a subquery
+        if hasattr(self, 'having_conditions') and self.having_conditions:
+            # Wrap the entire query in a subquery and apply WHERE conditions
+            having_where = " AND ".join(self.having_conditions)
+            final_query = f"SELECT * FROM ({final_query}) WHERE {having_where}"
+        
+        return final_query
         
     async def execute(self, connection=None):
         """Execute the pipeline and return results.

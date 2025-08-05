@@ -4,3 +4,7 @@ __pycache__/
 .vscode/
 .devcontainer/devcontainer-lock.json
 notebooks/*.ipynb_checkpoints/
+
+# Archive directories
+archive_*/
+*_archive/

@@ -1,3 +1,17 @@
+"""
+Document classes for object-document mapping with SurrealDB.
+
+This module provides the foundation for defining and working with documents
+in SurrealDB using an Object-Document Mapper (ODM) pattern. It includes
+the base Document class, RelationDocument for graph relationships, and
+supporting metaclasses for field processing and schema generation.
+
+Classes:
+    DocumentMetaclass: Metaclass for processing field definitions
+    Document: Base class for all database documents
+    RelationDocument: Base class for graph relation documents
+    HybridDocument: Document with backend-specific field handling
+"""
 import json
 import datetime
 import logging
@@ -55,6 +69,9 @@ class DocumentMetaclass(type):
             'indexes': getattr(meta, 'indexes', []),
             'id_field': getattr(meta, 'id_field', 'id'),
             'strict': getattr(meta, 'strict', True),
+            'time_series': getattr(meta, 'time_series', False),
+            'time_field': getattr(meta, 'time_field', None),
+            'abstract': getattr(meta, 'abstract', False),
         }
 
         # Process fields
@@ -109,6 +126,35 @@ class Document(metaclass=DocumentMetaclass):
         _fields: Dictionary of fields for this document class (class attribute)
         _fields_ordered: List of field names in order of definition (class attribute)
         _meta: Dictionary of metadata for this document class (class attribute)
+
+    Meta Options:
+        The Meta inner class can be used to configure various document options:
+
+        collection (str): Name of the database collection/table. Defaults to lowercase class name.
+        indexes (List[Dict]): List of index definitions. Each index dict can contain:
+            - keys (List[str]): Field names to include in the index
+            - unique (bool): Whether the index enforces uniqueness (default: False)
+            - name (str): Custom name for the index
+            - type (str): Index type (e.g., "search" for full-text search)
+        id_field (str): Name of the ID field. Defaults to "id".
+        strict (bool): Whether to enforce strict field validation. Defaults to True.
+            When False, allows dynamic fields not defined in the schema.
+        time_series (bool): Whether this is a time series table. Defaults to False.
+        time_field (str): Field to use for time series timestamp. Required when time_series is True.
+        abstract (bool): Whether this document is abstract. Abstract documents are not registered
+            with the database and are meant to be inherited.
+
+    Example:
+        >>> class User(Document):
+        ...     name = StringField(required=True)
+        ...     email = StringField(indexed=True, unique=True)
+        ...     
+        ...     class Meta:
+        ...         collection = "users"
+        ...         indexes = [
+        ...             {"keys": ["email"], "unique": True},
+        ...             {"keys": ["name", "created_at"]}
+        ...         ]
     """
     objects = QuerySetDescriptor()
     id = RecordIDField()
@@ -131,6 +177,7 @@ class Document(metaclass=DocumentMetaclass):
 
         self._data: Dict[str, Any] = {}
         self._changed_fields: List[str] = []
+        self._original_data: Dict[str, Any] = {}  # Track original values for change detection
 
         # Set default values
         for field_name, field in self._fields.items():
@@ -145,6 +192,11 @@ class Document(metaclass=DocumentMetaclass):
                 setattr(self, key, value)
             elif self._meta.get('strict', True):
                 raise AttributeError(f"Unknown field: {key}")
+
+        # For new documents, mark as clean after initialization
+        # since initial value setting shouldn't count as "changes"
+        if not self.id:  # New document
+            self.mark_clean()
 
         # Trigger post_init signal
         if SIGNAL_SUPPORT:
@@ -184,6 +236,9 @@ class Document(metaclass=DocumentMetaclass):
             super().__setattr__(name, value)
         elif name in self._fields:
             field = self._fields[name]
+            # Store original value before changing (if not already tracked)
+            if name not in self._changed_fields and hasattr(self, '_original_data'):
+                self._original_data[name] = self._data.get(name)
             self._data[name] = field.validate(value)
             if name not in self._changed_fields:
                 self._changed_fields.append(name)
@@ -208,6 +263,9 @@ class Document(metaclass=DocumentMetaclass):
         """
         if 'id' in self._fields:
             field = self._fields['id']
+            # Store original value before changing (if not already tracked)
+            if 'id' not in self._changed_fields and hasattr(self, '_original_data'):
+                self._original_data['id'] = self._data.get('id')
             self._data['id'] = field.validate(value)
             if 'id' not in self._changed_fields:
                 self._changed_fields.append('id')
@@ -222,6 +280,156 @@ class Document(metaclass=DocumentMetaclass):
             The collection name
         """
         return cls._meta.get('collection')
+
+    # ================================
+    # ENHANCED CHANGE TRACKING METHODS
+    # ================================
+    
+    def has_changed(self, field: str = None) -> bool:
+        """Check if the document or a specific field has changed.
+        
+        Args:
+            field: Optional field name to check. If None, checks if any field changed.
+            
+        Returns:
+            True if the document/field has changed, False otherwise
+            
+        Examples:
+            >>> user = User(name="John", age=30)
+            >>> await user.save()
+            >>> user.age = 31
+            >>> user.has_changed()  # True
+            >>> user.has_changed('age')  # True 
+            >>> user.has_changed('name')  # False
+        """
+        if field:
+            return field in self._changed_fields
+        return len(self._changed_fields) > 0
+    
+    def get_changes(self) -> Dict[str, Any]:
+        """Get a dictionary of all changed fields and their new values.
+        
+        Returns:
+            Dictionary mapping field names to their new values
+            
+        Examples:
+            >>> user.age = 31
+            >>> user.name = "Jane"
+            >>> user.get_changes()  # {'age': 31, 'name': 'Jane'}
+        """
+        return {field: self._data.get(field) for field in self._changed_fields}
+    
+    def get_original_value(self, field: str) -> Any:
+        """Get the original value of a field before any changes.
+        
+        Args:
+            field: Name of the field
+            
+        Returns:
+            The original value of the field
+            
+        Examples:
+            >>> user.age = 31  # was 30
+            >>> user.get_original_value('age')  # 30
+        """
+        return self._original_data.get(field)
+    
+    def revert_changes(self, fields: List[str] = None) -> None:
+        """Revert changes to original values.
+        
+        Args:
+            fields: Optional list of field names to revert. If None, reverts all changes.
+            
+        Examples:
+            >>> user.age = 31
+            >>> user.name = "Jane" 
+            >>> user.revert_changes(['age'])  # Only revert age
+            >>> user.revert_changes()  # Revert all changes
+        """
+        if fields:
+            # Revert specific fields
+            for field in fields:
+                if field in self._changed_fields and field in self._original_data:
+                    self._data[field] = self._original_data[field]
+                    self._changed_fields.remove(field)
+        else:
+            # Revert all changes
+            for field in list(self._changed_fields):
+                if field in self._original_data:
+                    self._data[field] = self._original_data[field]
+            self._changed_fields.clear()
+    
+    @property
+    def is_dirty(self) -> bool:
+        """Check if the document has unsaved changes.
+        
+        Returns:
+            True if there are unsaved changes, False otherwise
+            
+        Examples:
+            >>> user.is_dirty  # False
+            >>> user.age = 31
+            >>> user.is_dirty  # True
+            >>> await user.save()
+            >>> user.is_dirty  # False
+        """
+        return len(self._changed_fields) > 0
+    
+    @property
+    def is_clean(self) -> bool:
+        """Check if the document has no unsaved changes.
+        
+        Returns:
+            True if there are no unsaved changes, False otherwise
+        """
+        return len(self._changed_fields) == 0
+    
+    @property
+    def dirty_fields(self) -> List[str]:
+        """Get list of field names that have been changed.
+        
+        Returns:
+            List of field names with unsaved changes
+            
+        Examples:
+            >>> user.age = 31
+            >>> user.name = "Jane"
+            >>> user.dirty_fields  # ['age', 'name']
+        """
+        return self._changed_fields.copy()
+    
+    def mark_clean(self) -> None:
+        """Mark the document as clean (no pending changes).
+        
+        This updates the original data to match current data and clears changed fields.
+        Usually called automatically after successful save operations.
+        """
+        from copy import deepcopy
+        self._original_data = deepcopy(self._data)
+        self._changed_fields.clear()
+    
+    def get_changed_data_for_update(self) -> Dict[str, Any]:
+        """Get only the changed fields formatted for database update.
+        
+        Returns:
+            Dictionary of changed fields in database format
+            
+        This is used internally for optimized updates that only send changed fields.
+        """
+        if not self._changed_fields:
+            return {}
+        
+        # Get changed data and convert to DB format
+        changed_data = {}
+        for field_name in self._changed_fields:
+            if field_name in self._fields:
+                field = self._fields[field_name]
+                value = self._data.get(field_name)
+                changed_data[field.db_field or field_name] = field.to_db(value)
+            else:
+                changed_data[field_name] = self._data.get(field_name)
+        
+        return changed_data
 
     def validate(self) -> None:
         """Validate all fields.
@@ -315,9 +523,10 @@ class Document(metaclass=DocumentMetaclass):
         # Create an empty instance without triggering signals
         instance = cls.__new__(cls)
 
-        # Initialize _data and _changed_fields
+        # Initialize _data, _changed_fields, and _original_data
         instance._data = {}
         instance._changed_fields = []
+        instance._original_data = {}
 
         # Add id field if not present
         if 'id' not in instance._fields:
@@ -362,6 +571,10 @@ class Document(metaclass=DocumentMetaclass):
                 # If conversion fails, just use the data as is
                 pass
 
+        # Initialize original data for change tracking
+        from copy import deepcopy
+        instance._original_data = deepcopy(instance._data)
+        
         return instance
 
     async def resolve_references(self, depth: int = 1) -> 'Document':
@@ -513,6 +726,27 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The document instance with optionally resolved references
+
+        Examples:
+            Get a document by ID:
+
+            >>> user = await User.get("user:123")
+            >>> print(f"Retrieved user: {user.name}")
+
+            Get with full record ID:
+
+            >>> task = await Task.get("tasks:abc123")
+            >>> print(f"Task: {task.title}")
+
+            Get with reference dereferencing:
+
+            >>> post = await Post.get("post:456", dereference=True)
+            >>> print(f"Post by: {post.author.name}")  # author is resolved
+
+            Get with deep dereferencing:
+
+            >>> post = await Post.get("post:456", dereference=True, dereference_depth=2)
+            # Resolves references 2 levels deep
         """
         if not dereference:
             # No dereferencing needed, use regular get
@@ -671,6 +905,24 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValidationError: If the document fails validation
+
+        Examples:
+            Create and save a new document:
+
+            >>> user = User(name="John Doe", email="john@example.com", age=30)
+            >>> saved_user = await user.save()
+            >>> print(f"Created user with ID: {saved_user.id}")
+
+            Update an existing document:
+
+            >>> user.age = 31
+            >>> updated_user = await user.save()
+            >>> print(f"Updated user age to {updated_user.age}")
+
+            Save with specific connection:
+
+            >>> custom_connection = create_connection("ws://localhost:8001")
+            >>> await user.save(connection=custom_connection)
         """
         # Trigger pre_save signal
         if SIGNAL_SUPPORT:
@@ -680,15 +932,24 @@ class Document(metaclass=DocumentMetaclass):
             connection = ConnectionRegistry.get_default_connection(async_mode=True)
 
         self.validate()
-        data = self.to_db()
+        
+        # Smart save: use only changed fields for existing documents
+        is_new = not self.id
+        if is_new:
+            # For new documents, send all data
+            data = self.to_db()
+        else:
+            # For existing documents, only send changed fields for optimization
+            data = self.get_changed_data_for_update()
+            # If no changes, still validate but skip database operation
+            if not data:
+                return self
 
         # Trigger pre_save_post_validation signal
         if SIGNAL_SUPPORT:
             pre_save_post_validation.send(self.__class__, document=self)
 
-        is_new = not self.id
         if self.id:
-            del data['id']
             id_part = str(self.id).split(':')[1]
             result = await connection.client.upsert(
                 RecordID(self._get_collection_name(),
@@ -696,7 +957,7 @@ class Document(metaclass=DocumentMetaclass):
                 data
             )
         else:
-            # Create new document
+            # Create new document - use full data
             result = await connection.client.create(
                 self._get_collection_name(),
                 data
@@ -727,6 +988,9 @@ class Document(metaclass=DocumentMetaclass):
         if SIGNAL_SUPPORT:
             post_save.send(self.__class__, document=self, created=is_new)
 
+        # Mark document as clean after successful save
+        self.mark_clean()
+
         return self
 
     def save_sync(self, connection: Optional[Any] = None) -> 'Document':
@@ -753,15 +1017,24 @@ class Document(metaclass=DocumentMetaclass):
             connection = ConnectionRegistry.get_default_connection(async_mode=False)
 
         self.validate()
-        data = self.to_db()
+        
+        # Smart save: use only changed fields for existing documents
+        is_new = not self.id
+        if is_new:
+            # For new documents, send all data
+            data = self.to_db()
+        else:
+            # For existing documents, only send changed fields for optimization
+            data = self.get_changed_data_for_update()
+            # If no changes, still validate but skip database operation
+            if not data:
+                return self
 
         # Trigger pre_save_post_validation signal
         if SIGNAL_SUPPORT:
             pre_save_post_validation.send(self.__class__, document=self)
 
-        is_new = not self.id
         if self.id:
-            del data['id']
             id_part = str(self.id).split(':')[1]
             result = connection.client.upsert(
                 RecordID(self._get_collection_name(),
@@ -769,7 +1042,7 @@ class Document(metaclass=DocumentMetaclass):
                 data
             )
         else:
-            # Create new document
+            # Create new document - use full data
             result = connection.client.create(
                 self._get_collection_name(),
                 data
@@ -800,6 +1073,9 @@ class Document(metaclass=DocumentMetaclass):
         if SIGNAL_SUPPORT:
             post_save.send(self.__class__, document=self, created=is_new)
 
+        # Mark document as clean after successful save
+        self.mark_clean()
+
         return self
 
     async def delete(self, connection: Optional[Any] = None) -> bool:
@@ -815,6 +1091,22 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValueError: If the document doesn't have an ID
+
+        Examples:
+            Delete a document:
+
+            >>> user = await User.get("user:123")
+            >>> await user.delete()
+            >>> print("User deleted successfully")
+
+            Delete with custom connection:
+
+            >>> await user.delete(connection=custom_connection)
+
+            Bulk delete pattern:
+
+            >>> for task in await Task.objects.filter(completed=True).all():
+            ...     await task.delete()
         """
         # Trigger pre_delete signal
         if SIGNAL_SUPPORT:
@@ -895,6 +1187,9 @@ class Document(metaclass=DocumentMetaclass):
                 if db_field in doc:
                     self._data[field_name] = field.from_db(doc[db_field])
 
+            # Reset change tracking after refresh
+            from copy import deepcopy
+            self._original_data = deepcopy(self._data)
             self._changed_fields = []
         return self
 
@@ -929,6 +1224,9 @@ class Document(metaclass=DocumentMetaclass):
                 if db_field in doc:
                     self._data[field_name] = field.from_db(doc[db_field])
 
+            # Reset change tracking after refresh
+            from copy import deepcopy
+            self._original_data = deepcopy(self._data)
             self._changed_fields = []
         return self
 
@@ -1136,6 +1434,24 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The created relation record or None if creation failed
+
+        Examples:
+            Create a simple relation:
+
+            >>> person = await Person.get("person:john")
+            >>> book = await Book.get("book:novel")
+            >>> relation = await person.relate_to("authored", book)
+
+            Create relation with attributes:
+
+            >>> await person.relate_to("authored", book,
+            ...     date_written="2022-01-15T00:00:00Z",
+            ...     is_primary_author=True)
+
+            Create multiple relations:
+
+            >>> for book in user_books:
+            ...     await author.relate_to("wrote", book, year=2023)
         """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=True)
@@ -1854,6 +2170,27 @@ class Document(metaclass=DocumentMetaclass):
         Args:
             connection: Optional connection to use
             schemafull: Whether to create a SCHEMAFULL table (default: True)
+
+        Examples:
+            Create a SCHEMAFULL table:
+
+            >>> await User.create_table()
+            >>> print("Created users table with strict schema")
+
+            Create a SCHEMALESS table:
+
+            >>> await FlexibleDoc.create_table(schemafull=False)
+            >>> print("Created flexible table without schema constraints")
+
+            Create with custom connection:
+
+            >>> await Person.create_table(connection=custom_connection)
+
+            Create multiple tables:
+
+            >>> await Person.create_table()
+            >>> await Address.create_table()
+            >>> await Organization.create_table()
         """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=True)

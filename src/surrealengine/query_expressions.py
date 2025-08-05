@@ -15,14 +15,48 @@ class Q:
     This class allows building complex query expressions that can be used
     with filter() and objects() methods.
     
-    Example:
-        # Complex AND/OR queries
-        query = Q(age__gt=18) & Q(active=True)
-        users = User.objects.filter(query)
-        
-        # Complex queries with objects()
-        query = Q(department="engineering") | Q(department="sales")
-        users = User.objects(query)
+    Examples:
+        Simple query:
+
+        >>> q = Q(age__gt=25)
+        >>> users = await User.objects.filter(q).all()
+
+        Complex AND/OR queries:
+
+        >>> q1 = Q(age__gt=25) & Q(active=True)  # AND condition
+        >>> active_older_users = await User.objects.filter(q1).all()
+
+        >>> q2 = Q(age__lt=30) | Q(username="charlie")  # OR condition
+        >>> users_or = await User.objects.filter(q2).all()
+
+        Using NOT:
+
+        >>> q3 = ~Q(active=True)  # NOT active
+        >>> inactive_users = await User.objects.filter(q3).all()
+
+        Raw queries:
+
+        >>> q4 = Q.raw("age > 20 AND username CONTAINS 'a'")
+        >>> users_raw = await User.objects.filter(q4).all()
+
+        Query operators:
+
+        >>> queries = [
+        ...     Q(age__in=[25, 30]),  # IN operator
+        ...     Q(username__startswith="a"),  # STARTSWITH
+        ...     Q(email__contains="example"),  # CONTAINS
+        ...     Q(age__gte=25) & Q(age__lte=35),  # Range
+        ... ]
+
+        Using with objects() method:
+
+        >>> query = Q(published=True) & Q(views__gt=75)
+        >>> popular_posts = await Post.objects(query)
+
+        Combining with additional filters:
+
+        >>> base_query = Q(published=True)
+        >>> high_view_posts = await Post.objects(base_query, views__gt=150)
     """
     
     def __init__(self, **kwargs):
@@ -188,6 +222,38 @@ class QueryExpression:
     
     This class provides a more comprehensive query building interface
     that includes not just WHERE conditions but also FETCH, GROUP BY, etc.
+
+    Examples:
+        QueryExpression with FETCH for dereferencing:
+
+        >>> expr = QueryExpression(where=Q(published=True)).fetch("author")
+        >>> posts_with_authors = await Post.objects.filter(expr).all()
+
+        Complex QueryExpression with multiple clauses:
+
+        >>> complex_expr = (QueryExpression(where=Q(active=True))
+        ...                .order_by("age", "DESC")
+        ...                .limit(2))
+        >>> top_users = await User.objects.filter(complex_expr).all()
+
+        QueryExpression with grouping:
+
+        >>> expr = (QueryExpression(where=Q(published=True))
+        ...         .group_by("category")
+        ...         .order_by("created_at", "DESC"))
+
+        QueryExpression with pagination:
+
+        >>> expr = (QueryExpression(where=Q(active=True))
+        ...         .order_by("created_at", "DESC")
+        ...         .limit(10)
+        ...         .start(20))  # Skip first 20 records
+
+        Combining with fetch for complex relationships:
+
+        >>> expr = (QueryExpression(where=Q(type="article"))
+        ...         .fetch("author", "category", "tags")
+        ...         .order_by("published_at", "DESC"))
     """
     
     def __init__(self, where: Optional[Q] = None):

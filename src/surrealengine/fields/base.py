@@ -1,3 +1,20 @@
+"""
+Base field classes for SurrealEngine document field definitions.
+
+This module provides the fundamental field types used to define document schemas
+in SurrealEngine. All field types inherit from the base Field class and provide
+validation, serialization, and database conversion functionality.
+
+Classes:
+    Field: Base class for all field types
+    RecordIDField: Field for SurrealDB record IDs
+    
+Key Features:
+    - Type validation and conversion
+    - Database serialization/deserialization  
+    - Signal support for field operations
+    - Extensible validation system
+"""
 import datetime
 import re
 import uuid
@@ -73,7 +90,22 @@ class Field:
             The validated value
 
         Raises:
-            ValueError: If the value is invalid
+            ValidationError: If the value is invalid for this field type
+            ValueError: If the value is None and the field is required
+
+        Examples:
+            Basic validation:
+
+            >>> field = StringField(required=True)
+            >>> field.validate("hello")
+            'hello'
+
+            Required field validation:
+
+            >>> field = StringField(required=True)
+            >>> field.validate(None)  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            ValueError: Field 'field_name' is required
         """
         # Trigger pre_validate signal
         if SIGNAL_SUPPORT:
@@ -102,6 +134,18 @@ class Field:
 
         Returns:
             The database representation of the value
+
+        Examples:
+            Basic to_db conversion:
+
+            >>> field = Field()
+            >>> field.to_db("hello")
+            'hello'
+
+            None value handling:
+
+            >>> field.to_db(None)
+            
         """
         # Trigger pre_to_db signal
         if SIGNAL_SUPPORT:
@@ -126,6 +170,18 @@ class Field:
 
         Returns:
             The Python representation of the value
+
+        Examples:
+            Basic from_db conversion:
+
+            >>> field = Field()
+            >>> field.from_db("hello")
+            'hello'
+
+            None value handling:
+
+            >>> field.from_db(None)
+            
         """
         # Trigger pre_from_db signal
         if SIGNAL_SUPPORT:

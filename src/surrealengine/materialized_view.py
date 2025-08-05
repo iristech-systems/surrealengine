@@ -209,6 +209,139 @@ class GroupConcat(Aggregation):
         return f"array::join(array::collect(), '{self.separator}')"
 
 
+class CountIf(Aggregation):
+    """Conditional count aggregation function.
+
+    This class represents a conditional count aggregation that counts
+    records matching a specific condition.
+    """
+
+    def __init__(self, condition: str):
+        """Initialize a new CountIf.
+
+        Args:
+            condition: The condition to evaluate (e.g., "status = 'active'")
+        """
+        super().__init__()
+        self.condition = condition
+
+    def __str__(self) -> str:
+        """Return the SurrealQL representation of the conditional count function."""
+        # Using IF THEN ELSE syntax for SurrealDB
+        return f"count(IF {self.condition} THEN 1 ELSE NULL END)"
+
+
+class SumIf(Aggregation):
+    """Conditional sum aggregation function.
+
+    This class represents a conditional sum aggregation that sums
+    field values where a condition is true.
+    """
+
+    def __init__(self, field: str, condition: str):
+        """Initialize a new SumIf.
+
+        Args:
+            field: The field to sum
+            condition: The condition to evaluate
+        """
+        super().__init__(field)
+        self.condition = condition
+
+    def __str__(self) -> str:
+        """Return the SurrealQL representation of the conditional sum function."""
+        return f"math::sum(IF {self.condition} THEN {self.field} ELSE 0 END)"
+
+
+class MeanIf(Aggregation):
+    """Conditional mean aggregation function.
+
+    This class represents a conditional mean aggregation that averages
+    field values where a condition is true.
+    """
+
+    def __init__(self, field: str, condition: str):
+        """Initialize a new MeanIf.
+
+        Args:
+            field: The field to average
+            condition: The condition to evaluate
+        """
+        super().__init__(field)
+        self.condition = condition
+
+    def __str__(self) -> str:
+        """Return the SurrealQL representation of the conditional mean function."""
+        return f"math::mean(IF {self.condition} THEN {self.field} ELSE NULL END)"
+
+
+class MinIf(Aggregation):
+    """Conditional min aggregation function.
+
+    This class represents a conditional min aggregation that finds the minimum
+    field value where a condition is true.
+    """
+
+    def __init__(self, field: str, condition: str):
+        """Initialize a new MinIf.
+
+        Args:
+            field: The field to find minimum of
+            condition: The condition to evaluate
+        """
+        super().__init__(field)
+        self.condition = condition
+
+    def __str__(self) -> str:
+        """Return the SurrealQL representation of the conditional min function."""
+        return f"math::min(IF {self.condition} THEN {self.field} ELSE NULL END)"
+
+
+class MaxIf(Aggregation):
+    """Conditional max aggregation function.
+
+    This class represents a conditional max aggregation that finds the maximum
+    field value where a condition is true.
+    """
+
+    def __init__(self, field: str, condition: str):
+        """Initialize a new MaxIf.
+
+        Args:
+            field: The field to find maximum of
+            condition: The condition to evaluate
+        """
+        super().__init__(field)
+        self.condition = condition
+
+    def __str__(self) -> str:
+        """Return the SurrealQL representation of the conditional max function."""
+        return f"math::max(IF {self.condition} THEN {self.field} ELSE NULL END)"
+
+
+class DistinctCountIf(Aggregation):
+    """Conditional distinct count aggregation function.
+
+    This class represents a conditional distinct count aggregation that counts
+    unique field values where a condition is true.
+    """
+
+    def __init__(self, field: str, condition: str):
+        """Initialize a new DistinctCountIf.
+
+        Args:
+            field: The field to count distinct values of
+            condition: The condition to evaluate
+        """
+        super().__init__(field)
+        self.condition = condition
+
+    def __str__(self) -> str:
+        """Return the SurrealQL representation of the conditional distinct count function."""
+        # Use a simpler approach for conditional distinct count
+        return f"array::len(array::distinct(array::collect(IF {self.condition} THEN {self.field} END)))"
+
+
 class MaterializedView:
     """Materialized view for SurrealDB.
 

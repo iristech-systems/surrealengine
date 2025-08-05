@@ -1,3 +1,19 @@
+"""
+Connection management for SurrealDB with pooling and registry support.
+
+This module provides connection classes for both synchronous and asynchronous
+operations with SurrealDB. It includes connection pooling, retry logic,
+and a global connection registry for managing multiple database connections.
+
+Classes:
+    ConnectionPoolBase: Abstract base class for connection pools
+    AsyncConnectionPool: Asynchronous connection pool implementation
+    SyncConnectionPool: Synchronous connection pool implementation
+    BaseSurrealEngineConnection: Base connection interface
+    SurrealEngineAsyncConnection: Asynchronous connection manager
+    SurrealEngineSyncConnection: Synchronous connection manager
+    ConnectionRegistry: Global registry for managing connections
+"""
 import surrealdb
 import time
 import logging
@@ -1724,6 +1740,59 @@ def create_connection(url: Optional[str] = None, namespace: Optional[str] = None
 
     Returns:
         A connection of the requested type
+
+    Examples:
+        Basic async connection:
+
+        >>> connection = create_connection(
+        ...     url="ws://localhost:8001/rpc",
+        ...     namespace="test_ns",
+        ...     database="test_db",
+        ...     username="root",
+        ...     password="root",
+        ...     make_default=True
+        ... )
+        >>> await connection.connect()
+
+        Sync connection:
+
+        >>> connection = create_connection(
+        ...     url="ws://localhost:8001/rpc",
+        ...     namespace="test_ns", 
+        ...     database="test_db",
+        ...     username="root",
+        ...     password="root",
+        ...     async_mode=False,
+        ...     make_default=True
+        ... )
+        >>> connection.connect()
+
+        Connection with pooling:
+
+        >>> connection = create_connection(
+        ...     url="ws://localhost:8000/rpc",
+        ...     namespace="production",
+        ...     database="app_db",
+        ...     username="app_user",
+        ...     password="secure_password",
+        ...     use_pool=True,
+        ...     pool_size=20,
+        ...     make_default=True
+        ... )
+
+        Named connection with context manager:
+
+        >>> connection = create_connection(
+        ...     url="ws://db:8000/rpc",
+        ...     namespace="test_ns",
+        ...     database="test_db", 
+        ...     username="root",
+        ...     password="root",
+        ...     name="test_connection"
+        ... )
+        >>> async with connection:
+        ...     # Use connection
+        ...     pass
     """
     if async_mode:
         connection = SurrealEngineAsyncConnection(

@@ -1,5 +1,51 @@
-"""
-SurrealEngine: Object-Document Mapper for SurrealDB with both sync and async support
+"""SurrealEngine: Object-Document Mapper for SurrealDB with both sync and async support.
+
+SurrealEngine is a comprehensive Object-Document Mapper (ODM) for SurrealDB that provides
+an intuitive Python interface for database operations. It supports both synchronous and
+asynchronous operations, connection pooling, field validation, query building, and 
+graph-based relationships.
+
+Key Features:
+    - Dual sync/async support for all operations
+    - Connection pooling and management
+    - Rich field types with validation
+    - Query builder with Django-style filtering
+    - Graph relationships and traversal
+    - Materialized views and aggregations
+    - Schema management and migrations
+    - Signals for model lifecycle events
+
+Example:
+    Basic document definition and usage:
+
+    >>> from surrealengine import Document, StringField, IntField
+    >>> from surrealengine import create_connection
+    >>> 
+    >>> class User(Document):
+    ...     name = StringField(required=True)
+    ...     age = IntField()
+    ...     
+    ...     class Meta:
+    ...         collection = "users"
+    >>> 
+    >>> # Create connection and save user
+    >>> connection = create_connection("ws://localhost:8000/rpc")
+    >>> await connection.connect()
+    >>> 
+    >>> user = User(name="Alice", age=30)
+    >>> await user.save()
+    >>> print(f"Created user: {user.id}")
+
+Modules:
+    connection: Database connection management and pooling
+    document: Core document classes and metaclasses
+    fields: Field types for document schemas
+    query: Query building and execution
+    exceptions: Custom exception classes
+    schema: Schema management utilities
+    signals: Model lifecycle signals
+    materialized_view: Materialized view support
+    aggregation: Data aggregation utilities
 """
 
 from .connection import (
@@ -60,11 +106,19 @@ from .materialized_view import (
     Variance,
     Percentile,
     Distinct,
-    GroupConcat
+    GroupConcat,
+    CountIf,
+    SumIf,
+    MeanIf,
+    MinIf,
+    MaxIf,
+    DistinctCountIf
 )
 from .query import QuerySet, RelationQuerySet
 from .query_expressions import Q, QueryExpression
 from .aggregation import AggregationPipeline
+from .expr import Expr
+from .record_id_utils import RecordIdUtils
 from .schema import (
     get_document_classes,
     create_tables_from_module,
@@ -110,6 +164,8 @@ __all__ = [
     "RelationQuerySet",
     "Q",
     "QueryExpression",
+    "Expr",
+    "RecordIdUtils",
     "DurationField",
     "OptionField",
     "LiteralField",
@@ -137,6 +193,12 @@ __all__ = [
     "Percentile",
     "Distinct",
     "GroupConcat",
+    "CountIf",
+    "SumIf",
+    "MeanIf",
+    "MinIf",
+    "MaxIf",
+    "DistinctCountIf",
     # Schema generation functions
     "get_document_classes",
     "create_tables_from_module",

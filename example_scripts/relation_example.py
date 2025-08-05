@@ -39,17 +39,35 @@ class AuthorRelation(RelationDocument):
     class Meta:
         collection = "authored"
 
+# Connection pool configuration
+POOL_SIZE = 5
+MAX_IDLE_TIME = 300  # 5 minutes
+CONNECT_TIMEOUT = 10
+OPERATION_TIMEOUT = 30
+RETRY_LIMIT = 3
+RETRY_DELAY = 1.0
+RETRY_BACKOFF = 2.0
 
 async def main():
     # Connect to the database
     connection = create_connection(
-        url="ws://localhost:8001/rpc",
+        url="ws://localhost:8000/rpc",
         namespace="test_ns",
         database="test_db",
         username="root",
         password="root",
-        make_default=True
+        make_default=True,  # This automatically sets it as the default
+        use_pool=True,  # Enable connection pooling
+        pool_size=POOL_SIZE,
+        max_idle_time=MAX_IDLE_TIME,
+        connect_timeout=CONNECT_TIMEOUT,
+        operation_timeout=OPERATION_TIMEOUT,
+        retry_limit=RETRY_LIMIT,
+        retry_delay=RETRY_DELAY,
+        retry_backoff=RETRY_BACKOFF,
+        validate_on_borrow=True
     )
+
 
     await connection.connect()
     print("Connected to SurrealDB")
@@ -85,7 +103,7 @@ async def main():
         # Create a relation between the person and the book
         relation = await AuthorRelation.create_relation(
             person, book,
-            date_written="2022-01-15T00:00:00Z",
+            date_written=datetime.datetime.now(datetime.UTC),
             is_primary_author=True
         )
         print(f"Created relation: {relation.to_dict()}")
@@ -103,8 +121,7 @@ async def main():
         print(f"  - Relation ID: {relation.id} (Primary: {relation.is_primary_author}, Date: {relation.date_written})")
 
         # Clean up
-        await person.delete()
-        await book.delete()
+
         print("Deleted person and book")
 
     except Exception as e:

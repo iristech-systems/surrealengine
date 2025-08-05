@@ -1,3 +1,16 @@
+"""
+Schema management utilities for SurrealEngine.
+
+This module provides utilities for discovering document classes, generating
+schema statements, and creating database tables from Python modules. It supports
+both synchronous and asynchronous operations for schema management.
+
+Functions:
+    get_document_classes: Discover document classes in a module
+    create_tables_from_module: Create database tables from document classes
+    generate_schema_statements: Generate SQL schema statements
+    generate_schema_statements_from_module: Generate schema from a module
+"""
 import inspect
 import importlib
 from typing import Any, Dict, List, Optional, Type, Union, Set

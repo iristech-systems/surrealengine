@@ -13,6 +13,34 @@ class StringField(Field):
         min_length: Minimum length of the string
         max_length: Maximum length of the string
         regex: Regular expression pattern to match
+
+    Examples:
+        Basic string field:
+
+        >>> name = StringField(required=True)
+
+        String with length constraints:
+
+        >>> title = StringField(max_length=100, required=True)
+        >>> username = StringField(min_length=3, max_length=20)
+
+        String with regex validation:
+
+        >>> email = StringField(regex=r'^[^@]+@[^@]+\.[^@]+$')
+        >>> slug = StringField(regex=r'^[a-z0-9-]+$')
+
+        Indexed string field:
+
+        >>> name = StringField(indexed=True, unique=True)
+        >>> category = StringField(indexed=True)
+
+        String field with choices:
+
+        >>> status = StringField(choices=['active', 'inactive', 'pending'])
+
+        String field for schema definition:
+
+        >>> name = StringField(required=True, define_schema=True)
     """
 
     def __init__(self, min_length: Optional[int] = None, max_length: Optional[int] = None,
@@ -23,7 +51,16 @@ class StringField(Field):
             min_length: Minimum length of the string
             max_length: Maximum length of the string
             regex: Regular expression pattern to match
-            **kwargs: Additional arguments to pass to the parent class
+            choices: List of valid choices for this field
+            required: Whether the field is required (default: False)
+            default: Default value for the field
+            db_field: Name of the field in the database (defaults to the field name)
+            define_schema: Whether to define this field in the schema (even for SCHEMALESS tables)
+            indexed: Whether the field should be indexed (default: False)
+            unique: Whether the index should enforce uniqueness (default: False)
+            search: Whether the index is a search index (default: False)
+            analyzer: Analyzer to use for search indexes
+            index_with: List of other field names to include in the index
         """
         self.min_length = min_length
         self.max_length = max_length
@@ -77,6 +114,21 @@ class NumberField(Field):
     Attributes:
         min_value: Minimum allowed value
         max_value: Maximum allowed value
+
+    Examples:
+        Basic number field:
+
+        >>> score = NumberField()
+
+        Number with range constraints:
+
+        >>> priority = NumberField(min_value=1, max_value=5, default=3)
+        >>> percentage = NumberField(min_value=0, max_value=100)
+        >>> age = NumberField(min_value=0)
+
+        Required number field:
+
+        >>> price = NumberField(min_value=0, required=True)
     """
 
     def __init__(self, min_value: Optional[Union[int, float]] = None,
@@ -86,7 +138,15 @@ class NumberField(Field):
         Args:
             min_value: Minimum allowed value
             max_value: Maximum allowed value
-            **kwargs: Additional arguments to pass to the parent class
+            required: Whether the field is required (default: False)
+            default: Default value for the field
+            db_field: Name of the field in the database (defaults to the field name)
+            define_schema: Whether to define this field in the schema (even for SCHEMALESS tables)
+            indexed: Whether the field should be indexed (default: False)
+            unique: Whether the index should enforce uniqueness (default: False)
+            search: Whether the index is a search index (default: False)
+            analyzer: Analyzer to use for search indexes
+            index_with: List of other field names to include in the index
         """
         self.min_value = min_value
         self.max_value = max_value
@@ -129,13 +189,39 @@ class IntField(NumberField):
 
     This field type stores integer values and provides validation
     to ensure the value is an integer.
+
+    Examples:
+        Basic integer field:
+
+        >>> age = IntField(min_value=0)
+        >>> count = IntField(default=0)
+
+        Integer with constraints:
+
+        >>> priority = IntField(min_value=1, max_value=5, default=3)
+        >>> year = IntField(min_value=1900, max_value=2100)
+
+        Required integer:
+
+        >>> user_id = IntField(required=True)
+        >>> views = IntField(default=0, min_value=0)
     """
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize a new IntField.
 
         Args:
-            **kwargs: Additional arguments to pass to the parent class
+            min_value: Minimum allowed value
+            max_value: Maximum allowed value
+            required: Whether the field is required (default: False)
+            default: Default value for the field
+            db_field: Name of the field in the database (defaults to the field name)
+            define_schema: Whether to define this field in the schema (even for SCHEMALESS tables)
+            indexed: Whether the field should be indexed (default: False)
+            unique: Whether the index should enforce uniqueness (default: False)
+            search: Whether the index is a search index (default: False)
+            analyzer: Analyzer to use for search indexes
+            index_with: List of other field names to include in the index
         """
         super().__init__(**kwargs)
         self.py_type = int
@@ -180,13 +266,39 @@ class FloatField(NumberField):
 
     This field type stores floating-point values and provides validation
     to ensure the value can be converted to a float.
+
+    Examples:
+        Basic float field:
+
+        >>> price = FloatField(min_value=0)
+        >>> rating = FloatField(min_value=0.0, max_value=5.0)
+
+        Float with precision:
+
+        >>> estimated_hours = FloatField(min_value=0.1)
+        >>> percentage = FloatField(min_value=0.0, max_value=100.0)
+
+        Financial data:
+
+        >>> balance = FloatField(default=0.0)
+        >>> tax_rate = FloatField(min_value=0.0, max_value=1.0)
     """
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize a new FloatField.
 
         Args:
-            **kwargs: Additional arguments to pass to the parent class
+            min_value: Minimum allowed value
+            max_value: Maximum allowed value
+            required: Whether the field is required (default: False)
+            default: Default value for the field
+            db_field: Name of the field in the database (defaults to the field name)
+            define_schema: Whether to define this field in the schema (even for SCHEMALESS tables)
+            indexed: Whether the field should be indexed (default: False)
+            unique: Whether the index should enforce uniqueness (default: False)
+            search: Whether the index is a search index (default: False)
+            analyzer: Analyzer to use for search indexes
+            index_with: List of other field names to include in the index
         """
         super().__init__(**kwargs)
         self.py_type = float
@@ -219,13 +331,36 @@ class BooleanField(Field):
 
     This field type stores boolean values and provides validation
     to ensure the value is a boolean.
+
+    Examples:
+        Basic boolean field:
+
+        >>> active = BooleanField(default=True)
+        >>> completed = BooleanField(default=False)
+
+        Required boolean:
+
+        >>> is_primary_author = BooleanField(default=True)
+        >>> published = BooleanField(default=False)
+
+        Boolean with indexing:
+
+        >>> active = BooleanField(default=True, indexed=True)
     """
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize a new BooleanField.
 
         Args:
-            **kwargs: Additional arguments to pass to the parent class
+            required: Whether the field is required (default: False)
+            default: Default value for the field
+            db_field: Name of the field in the database (defaults to the field name)
+            define_schema: Whether to define this field in the schema (even for SCHEMALESS tables)
+            indexed: Whether the field should be indexed (default: False)
+            unique: Whether the index should enforce uniqueness (default: False)
+            search: Whether the index is a search index (default: False)
+            analyzer: Analyzer to use for search indexes
+            index_with: List of other field names to include in the index
         """
         super().__init__(**kwargs)
         self.py_type = bool

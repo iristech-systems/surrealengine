@@ -12,6 +12,29 @@ class ReferenceField(Field):
 
     Attributes:
         document_type: The type of document being referenced
+
+    Examples:
+        Basic reference field:
+
+        >>> author = ReferenceField(User, required=True)
+        >>> category = ReferenceField(Category)
+
+        Optional reference:
+
+        >>> parent = ReferenceField(Comment)  # Self-reference
+        >>> reviewer = ReferenceField(User)
+
+        Reference with schema definition:
+
+        >>> resident = ReferenceField(Person, define_schema=True)
+        >>> organization = ReferenceField(Organization, indexed=True)
+
+        Multiple references in a document:
+
+        >>> class Post(Document):
+        ...     author = ReferenceField(User, required=True)
+        ...     category = ReferenceField(Category)
+        ...     reviewer = ReferenceField(User)
     """
 
     def __init__(self, document_type: Type, **kwargs: Any) -> None:
@@ -19,7 +42,15 @@ class ReferenceField(Field):
 
         Args:
             document_type: The type of document being referenced
-            **kwargs: Additional arguments to pass to the parent class
+            required: Whether the field is required (default: False)
+            default: Default value for the field
+            db_field: Name of the field in the database (defaults to the field name)
+            define_schema: Whether to define this field in the schema (even for SCHEMALESS tables)
+            indexed: Whether the field should be indexed (default: False)
+            unique: Whether the index should enforce uniqueness (default: False)
+            search: Whether the index is a search index (default: False)
+            analyzer: Analyzer to use for search indexes
+            index_with: List of other field names to include in the index
         """
         self.document_type = document_type
         super().__init__(**kwargs)
@@ -156,7 +187,15 @@ class RelationField(Field):
 
         Args:
             to_document: The type of document being related to
-            **kwargs: Additional arguments to pass to the parent class
+            required: Whether the field is required (default: False)
+            default: Default value for the field
+            db_field: Name of the field in the database (defaults to the field name)
+            define_schema: Whether to define this field in the schema (even for SCHEMALESS tables)
+            indexed: Whether the field should be indexed (default: False)
+            unique: Whether the index should enforce uniqueness (default: False)
+            search: Whether the index is a search index (default: False)
+            analyzer: Analyzer to use for search indexes
+            index_with: List of other field names to include in the index
         """
         self.to_document = to_document
         super().__init__(**kwargs)
