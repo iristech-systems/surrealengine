@@ -422,6 +422,10 @@ class Document(metaclass=DocumentMetaclass):
         # Get changed data and convert to DB format
         changed_data = {}
         for field_name in self._changed_fields:
+            # Skip the 'id' field for updates since it's specified in the upsert target
+            if field_name == 'id':
+                continue
+                
             if field_name in self._fields:
                 field = self._fields[field_name]
                 value = self._data.get(field_name)
