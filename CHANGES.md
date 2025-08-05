@@ -7,48 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0] - 2025-08-05
-
-### Added
-- **Advanced Change Tracking**: Comprehensive change detection and state management for documents
-  - Track field-level changes with `has_changed()` method for specific fields or entire document
-  - Access changed values with `get_changes()` returning dictionary of modified fields
-  - Retrieve original values with `get_original_value(field)` for any field
-  - Revert changes selectively with `revert_changes(['field1', 'field2'])` or all changes
-  - Clean/dirty state management with `is_dirty`, `is_clean` properties
-  - `dirty_fields` property returns list of modified field names
-  - Automatic state cleanup after successful save operations
-
-- **Smart Save Optimization**: Intelligent database updates that only send changed fields
-  - Existing documents only send modified fields to database (up to 66%+ reduction in data transfer)
-  - Skip database operations entirely when no changes detected
-  - New documents still send all fields as expected
-  - Significant performance improvements for large documents with few changes
-  - Zero breaking changes - fully backward compatible
-
-- **Conditional Aggregations**: Advanced aggregation functions with built-in filtering
-  - `CountIf`, `SumIf`, `MeanIf`, `MinIf`, `MaxIf`, `DistinctCountIf` functions
-  - Support for complex conditions like `CountIf("status = 'success' AND amount > 100")`
-  - Expression builder (`Expr`) for programmatic condition construction
-  - Pre and post-aggregation filtering with `match()` and `having()` methods
-  - Full integration with existing aggregation pipeline system
-
-- **Enhanced RecordID Handling**: Flexible support for various RecordID formats
-  - String format support: `"table:id"` now works seamlessly in queries
-  - URL-encoded format support: `"table%3Aid"` automatically decoded
-  - Short ID format: Just `"id"` when table context is known
-  - `RecordIdUtils` class for comprehensive ID manipulation
-  - Enhanced `Expr` class with RecordID-specific query methods
-  - Automatic normalization in all query operations
-
-### Changed
-- Document initialization now starts clean for new documents (initial values don't count as changes)
-- Enhanced `save()` methods to use smart save optimization transparently
-
-### Fixed
-- Fixed change tracking to properly handle initial document state
-- Improved field validation to work correctly with change tracking
-
 ## [0.2.1] - 2025-07-02
 
 ### Added
