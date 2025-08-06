@@ -142,7 +142,8 @@ def patch_document():
     async def new_save(self, connection=None):
         """Enhanced save method that uses update for existing documents."""
         # If document exists and has changes, use update instead of upsert
-        if self.id and self._changed_fields and not any(isinstance(self, cls) for cls in Document.__subclasses__()):
+        # We want to use update for all Document instances, including FetchProgress
+        if self.id and self._changed_fields:
             # Get only the changed data
             data = self.get_changed_data_for_update()
             if data:
@@ -154,7 +155,8 @@ def patch_document():
     def new_save_sync(self, connection=None):
         """Enhanced sync save method that uses update for existing documents."""
         # If document exists and has changes, use update instead of upsert
-        if self.id and self._changed_fields and not any(isinstance(self, cls) for cls in Document.__subclasses__()):
+        # We want to use update for all Document instances, including FetchProgress
+        if self.id and self._changed_fields:
             # Get only the changed data
             data = self.get_changed_data_for_update()
             if data:
