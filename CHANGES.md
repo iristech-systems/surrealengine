@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Prevents SurrealDB parse errors when querying by URL fields
   - Improves reliability of queries with complex string values
   - Added special handling for URL detection and proper quoting in filter conditions
+- **Document Update Type Error**: Fixed TypeError in document_update.py's isinstance() check
+  - Corrected the improper use of Document.__subclasses__() in isinstance() check
+  - Changed to use any(isinstance(self, cls) for cls in Document.__subclasses__())
+  - Fixes "isinstance() arg 2 must be a type, a tuple of types, or a union" error
+  - Ensures FetchProgress and other Document classes can be properly updated
 
 ## [0.2.1] - 2025-07-02
 
