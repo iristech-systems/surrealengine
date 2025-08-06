@@ -953,6 +953,13 @@ class Document(metaclass=DocumentMetaclass):
         if SIGNAL_SUPPORT:
             pre_save_post_validation.send(self.__class__, document=self)
 
+        # Special handling for RelationDocument instances
+        # If this is a RelationDocument and has an ID, use update() instead of upsert
+        # to avoid deleting fields not included in the update
+        if self.id and isinstance(self, RelationDocument) and hasattr(self, 'update'):
+            # Use the update method which preserves existing data
+            return await self.update(**data)
+        
         if self.id:
             id_part = str(self.id).split(':')[1]
             result = await connection.client.upsert(
@@ -1038,6 +1045,13 @@ class Document(metaclass=DocumentMetaclass):
         if SIGNAL_SUPPORT:
             pre_save_post_validation.send(self.__class__, document=self)
 
+        # Special handling for RelationDocument instances
+        # If this is a RelationDocument and has an ID, use update_sync() instead of upsert
+        # to avoid deleting fields not included in the update
+        if self.id and isinstance(self, RelationDocument) and hasattr(self, 'update_sync'):
+            # Use the update_sync method which preserves existing data
+            return self.update_sync(**data)
+            
         if self.id:
             id_part = str(self.id).split(':')[1]
             result = connection.client.upsert(

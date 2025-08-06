@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **RelationDocument Update Methods**: Added update() and update_sync() methods to RelationDocument
+  - Allows updating specific fields in a relation without deleting existing data
+  - Solves the issue with save() method's upsert behavior that would delete fields not included in the update
+  - Preserves all existing relation attributes while only modifying the specified fields
+
+### Fixed
+- **RelationDocument Save Behavior**: Modified Document.save() and save_sync() methods to automatically use update() for RelationDocument instances
+  - Prevents data loss when saving RelationDocument instances with partial updates
+  - Maintains backward compatibility with existing code that uses save() instead of update()
+  - Fixes issues with routes that use ProductURL and other RelationDocument classes
+
 ## [0.2.1] - 2025-07-02
 
 ### Added

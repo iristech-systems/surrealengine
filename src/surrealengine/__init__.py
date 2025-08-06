@@ -133,6 +133,7 @@ from .datagrid_api import (
     parse_datatables_params,
     format_datatables_response
 )
+from .relation_update import patch_relation_document
 
 __version__ = "0.2.1"
 __all__ = [
@@ -212,3 +213,6 @@ __all__ = [
     "parse_datatables_params",
     "format_datatables_response"
 ]
+
+# Apply the patch to add update methods to RelationDocument
+patch_relation_document()
