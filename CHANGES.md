@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Prevents data loss when saving RelationDocument instances with partial updates
   - Maintains backward compatibility with existing code that uses save() instead of update()
   - Fixes issues with routes that use ProductURL and other RelationDocument classes
+- **URL Query Escaping**: Fixed issue with URL values in query filters
+  - Ensures proper JSON serialization of URL strings containing spaces and special characters
+  - Prevents SurrealDB parse errors when querying by URL fields
+  - Improves reliability of queries with complex string values
+  - Added special handling for URL detection and proper quoting in filter conditions
 
 ## [0.2.1] - 2025-07-02
 

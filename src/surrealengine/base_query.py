@@ -148,6 +148,12 @@ class BaseQuerySet:
                     # Fall back to original value if normalization fails
                     self.query_parts.append((k, '=', str(v)))
                 continue
+            
+            # Special handling for URL fields - mark them with a special tag
+            if k == 'url' or (isinstance(v, str) and (v.startswith('http://') or v.startswith('https://'))):
+                # Add a special tag to indicate this is a URL that needs quoting
+                self.query_parts.append((k, '=', {'__url_value__': v}))
+                continue
 
             parts = k.split('__')
             field = parts[0]
@@ -408,17 +414,30 @@ class BaseQuerySet:
                     value_str = json.dumps(value)
                     conditions.append(f"{field} {op} {value_str}")
                 elif op == 'STARTSWITH':
-                    conditions.append(f"string::starts_with({field}, '{value}')")
+                    # Use json.dumps to properly escape the string value
+                    escaped_value = json.dumps(value)[1:-1]  # Remove the outer quotes
+                    conditions.append(f"string::starts_with({field}, '{escaped_value}')")
                 elif op == 'ENDSWITH':
-                    conditions.append(f"string::ends_with({field}, '{value}')")
+                    # Use json.dumps to properly escape the string value
+                    escaped_value = json.dumps(value)[1:-1]  # Remove the outer quotes
+                    conditions.append(f"string::ends_with({field}, '{escaped_value}')")
                 elif op == 'CONTAINS':
                     if isinstance(value, str):
-                        conditions.append(f"string::contains({field}, '{value}')")
+                        # Use json.dumps to properly escape the string value
+                        escaped_value = json.dumps(value)[1:-1]  # Remove the outer quotes
+                        conditions.append(f"string::contains({field}, '{escaped_value}')")
                     else:
                         conditions.append(f"{field} CONTAINS {json.dumps(value)}")
+                # Special handling for URL values
+                elif isinstance(value, dict) and '__url_value__' in value:
+                    # Extract the URL value and ensure it's properly quoted
+                    url_value = value['__url_value__']
+                    conditions.append(f"{field} {op} {json.dumps(url_value)}")
                 else:
                     # Convert value to database format if we have field information
                     db_value = self._convert_value_for_query(field, value)
+                    # Always use json.dumps to ensure proper escaping of all values
+                    # This is especially important for URLs and strings with special characters
                     conditions.append(f"{field} {op} {json.dumps(db_value)}")
         return conditions
 
