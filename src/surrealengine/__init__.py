@@ -134,6 +134,7 @@ from .datagrid_api import (
     format_datatables_response
 )
 from .relation_update import patch_relation_document
+from .document_update import patch_document
 
 __version__ = "0.2.1"
 __all__ = [
@@ -216,3 +217,6 @@ __all__ = [
 
 # Apply the patch to add update methods to RelationDocument
 patch_relation_document()
+
+# Apply the patch to add update methods to Document
+patch_document()

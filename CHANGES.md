@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Document Update Methods**: Added update() and update_sync() methods to all Document classes
+  - Allows updating specific fields in any document without deleting existing data
+  - Solves the issue with save() method's upsert behavior that would delete fields not included in the update
+  - Preserves all existing document attributes while only modifying the specified fields
+  - Fixes issues with FetchProgress and other Document classes that need partial updates
+
 - **RelationDocument Update Methods**: Added update() and update_sync() methods to RelationDocument
   - Allows updating specific fields in a relation without deleting existing data
   - Solves the issue with save() method's upsert behavior that would delete fields not included in the update
