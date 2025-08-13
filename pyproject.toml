@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "surrealengine"
-version = "0.2.1"
+version = "0.2.3"
 description = "An async Object-Document Mapper (ODM) for SurrealDB"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -26,7 +26,7 @@ classifiers = [
     "Framework :: AsyncIO",
 ]
 dependencies = [
-    "surrealdb==1.0.4",
+    "surrealdb==1.0.6",
 ]
 
 [project.optional-dependencies]
