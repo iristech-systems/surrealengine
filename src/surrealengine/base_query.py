@@ -411,7 +411,27 @@ class BaseQuerySet:
                 elif isinstance(value, RecordID):
                     conditions.append(f"{field} {op} {str(value)}")
                 elif op in ('INSIDE', 'NOT INSIDE'):
-                    value_str = json.dumps(value)
+                    # Special handling for array RHS: emit record IDs without quotes
+                    def _is_record_id_str(s):
+                        return isinstance(s, str) and RecordIdUtils.is_valid_record_id(s)
+                    def _format_literal(item):
+                        # Accept dicts with 'id'
+                        if isinstance(item, dict) and 'id' in item and _is_record_id_str(item['id']):
+                            return item['id']
+                        # RecordID object
+                        if isinstance(item, RecordID):
+                            return str(item)
+                        # String record id
+                        if _is_record_id_str(item):
+                            return item
+                        # Fallback to JSON for proper quoting/escaping
+                        return json.dumps(item)
+                    if isinstance(value, (list, tuple, set)):
+                        items = ', '.join(_format_literal(v) for v in value)
+                        value_str = f"[{items}]"
+                    else:
+                        # Single non-iterable value - still format appropriately
+                        value_str = _format_literal(value)
                     conditions.append(f"{field} {op} {value_str}")
                 elif op == 'STARTSWITH':
                     # Use json.dumps to properly escape the string value

@@ -142,6 +142,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - SurrealQL builder now emits FETCH as the last clause. This resolves parse errors like `Parse error: Unexpected token ORDER, expected Eof` when chaining `.fetch(...).order_by(...).limit(...)`. The new clause order is: WHERE, GROUP BY, SPLIT, WITH, ORDER BY, LIMIT, START, FETCH.
+- Correct formatting for INSIDE/NOT INSIDE arrays containing RecordIDs: items that are Surreal record IDs (e.g., products:abc123) are no longer quoted inside the array. This yields `in INSIDE [products:1, products:2]` instead of `in INSIDE ["products:1", "products:2"]`. Other non-record-id strings remain properly quoted.
 
 ### Added
 - RelationDocument helpers for batch filters by the inbound endpoint:
