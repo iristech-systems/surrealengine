@@ -8,3 +8,4 @@ notebooks/*.ipynb_checkpoints/
 # Archive directories
 archive_*/
 *_archive/
+/external_docs/

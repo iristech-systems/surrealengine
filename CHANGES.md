@@ -137,3 +137,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Connection management with connection registry
 - Transaction support
 - Relation management with graph traversal
+
+## Unreleased
+
+### Fixed
+- SurrealQL builder now emits FETCH as the last clause. This resolves parse errors like `Parse error: Unexpected token ORDER, expected Eof` when chaining `.fetch(...).order_by(...).limit(...)`. The new clause order is: WHERE, GROUP BY, SPLIT, WITH, ORDER BY, LIMIT, START, FETCH.
+
+### Added
+- RelationDocument helpers for batch filters by the inbound endpoint:
+  - `RelationDocument.find_by_in_documents(in_docs, **filters)` (async)
+  - `RelationDocument.find_by_in_documents_sync(in_docs, **filters)` (sync)
+  These accept Document instances, RecordID, dicts with `id`, or record ID strings, normalize inputs, and apply an `in__in` filter under the hood.
+

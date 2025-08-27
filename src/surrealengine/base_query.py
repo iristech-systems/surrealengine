@@ -561,7 +561,7 @@ class BaseQuerySet:
         """Build query clauses from the query parameters.
 
         This method builds the various clauses for the query string, including
-        WHERE, GROUP BY, SPLIT, FETCH, WITH, ORDER BY, LIMIT, and START.
+        WHERE, GROUP BY, SPLIT, WITH, ORDER BY, LIMIT, START, and FETCH.
 
         Returns:
             Dictionary of clause names and their string representations
@@ -581,10 +581,6 @@ class BaseQuerySet:
         if self.split_fields:
             clauses['SPLIT'] = f"SPLIT {', '.join(self.split_fields)}"
 
-        # Build FETCH clause
-        if self.fetch_fields:
-            clauses['FETCH'] = f"FETCH {', '.join(self.fetch_fields)}"
-
         # Build WITH clause
         if self.with_index:
             clauses['WITH'] = f"WITH INDEX {self.with_index}"
@@ -601,6 +597,10 @@ class BaseQuerySet:
         # Build START clause
         if self.start_value is not None:
             clauses['START'] = f"START {self.start_value}"
+
+        # IMPORTANT: In SurrealQL, FETCH must be the last clause
+        if self.fetch_fields:
+            clauses['FETCH'] = f"FETCH {', '.join(self.fetch_fields)}"
 
         return clauses
     

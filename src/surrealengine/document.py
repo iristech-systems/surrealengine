@@ -2659,6 +2659,63 @@ class RelationDocument(Document):
         filters = {'in': in_doc, **additional_filters}
         return queryset.filter(**filters)
 
+    @classmethod
+    def find_by_in_documents(cls, in_docs, **additional_filters):
+        """
+        Query RelationDocument where the `in` reference is any of the provided records (async-ready queryset).
+
+        Args:
+            in_docs: Iterable of items; each item may be a Document instance, RecordID, 'table:id' string, or dict with 'id'.
+            **additional_filters: Any additional filters to apply to the query.
+
+        Returns:
+            QuerySet filtered by in__in
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(cls, connection)
+
+        def _norm(v):
+            if isinstance(v, Document):
+                return v.id
+            if isinstance(v, RecordID):
+                return str(v)
+            if isinstance(v, dict) and v.get('id'):
+                return v['id']
+            return v
+
+        in_ids = [ _norm(v) for v in in_docs if v ]
+        filters = { 'in__in': in_ids, **additional_filters }
+        return queryset.filter(**filters)
+
+    @classmethod
+    def find_by_in_documents_sync(cls, in_docs, **additional_filters):
+        """Synchronous version of find_by_in_documents.
+
+        Args:
+            in_docs: Iterable of items; each item may be a Document instance, RecordID, 'table:id' string, or dict with 'id'.
+            **additional_filters: Any additional filters to apply to the query.
+
+        Returns:
+            QuerySet filtered by in__in
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(cls, connection)
+
+        def _norm(v):
+            if isinstance(v, Document):
+                return v.id
+            if isinstance(v, RecordID):
+                return str(v)
+            if isinstance(v, dict) and v.get('id'):
+                return v['id']
+            return v
+
+        in_ids = [ _norm(v) for v in in_docs if v ]
+        filters = { 'in__in': in_ids, **additional_filters }
+        return queryset.filter(**filters)
+
     async def resolve_out(self, connection=None):
         """Resolve the out_document field asynchronously.
 
