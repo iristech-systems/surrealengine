@@ -329,6 +329,7 @@ print(f"Registered connections: {list(all_connections.keys())}")
 ```
 
 For a complete example of the connection management features, see [connection_management_example.py](./example_scripts/connection_management_example.py).
+For newly added connection safety and observability features (ContextVar defaults, pool health checks, backpressure metrics, optional OTEL), see [connection_and_observability_example.py](./example_scripts/connection_and_observability_example.py).
 
 ### Basic Document Model
 
@@ -1006,6 +1007,34 @@ deleted = await User.objects.filter(id__in=['user:7', 'user:8']).delete()
 - **Validated performance**: All optimization tests now pass (9/9 = 100% success rate) with up to 3.4x performance improvements
 
 For performance testing examples, see [test_performance_optimizations.py](./example_scripts/test_performance_optimizations.py).
+
+### Graph Traversal and Live Queries
+
+SurrealEngine exposes SurrealDB's arrow-based graph traversal and LIVE SELECT streaming API.
+
+- Traverse relationships with bounded depth and direction via QuerySet.traverse(path, max_depth=None, unique=True)
+- Subscribe to live changes via QuerySet.live(where=None) yielding {action, data, ts}
+
+Example traversal:
+
+```python
+# People and their ordered products, unique results
+rows = await QuerySet(Person, conn).traverse("->order->product", unique=True).limit(10).all()
+```
+
+Example LIVE subscription:
+
+```python
+# Listen for CREATE/UPDATE/DELETE on person table; cancel by breaking or task cancel
+async for event in QuerySet(Person, conn).live(where=Q(name__startswith="A")):
+    print(event)
+    if should_stop():
+        break
+```
+
+Note: Bounded depth is implemented by repeating a simple single-edge path up to max_depth as a pragmatic approach. SurrealDB's Python SDK currently offers table-level live queries; where filters are applied client-side.
+
+See example_scripts/graph_and_live_example.py for a runnable demo. The script seeds a tiny dataset inline so you can run it as-is.
 
 ## Features in Development
 

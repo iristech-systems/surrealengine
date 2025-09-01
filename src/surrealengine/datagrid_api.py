@@ -232,6 +232,3 @@ def format_datatables_response(total: int, rows: List[Dict[str, Any]], draw: int
         "data": rows
     }
 
-
-# Note: Advanced features like live subscriptions and exports can be added later
-# For now, focusing on the core DataGrid query optimization functionality

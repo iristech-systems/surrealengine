@@ -50,7 +50,8 @@ class Field:
 
     def __init__(self, required: bool = False, default: Any = None, db_field: Optional[str] = None,
                  define_schema: bool = False, indexed: bool = False, unique: bool = False, 
-                 search: bool = False, analyzer: Optional[str] = None, index_with: Optional[List[str]] = None) -> None:
+                 search: bool = False, analyzer: Optional[str] = None, index_with: Optional[List[str]] = None,
+                 comment: Optional[str] = None) -> None:
         """Initialize a new Field.
 
         Args:
@@ -76,6 +77,7 @@ class Field:
         self.analyzer = analyzer
         self.index_with = index_with
         self.py_type = Any
+        self.comment = comment
 
     def validate(self, value: Any) -> Any:
         """Validate the field value.

@@ -51,7 +51,7 @@ RETRY_BACKOFF = 2.0
 async def main():
     # Connect to the database
     connection = create_connection(
-        url="ws://localhost:8000/rpc",
+        url="ws://db:8000/rpc",
         namespace="test_ns",
         database="test_db",
         username="root",

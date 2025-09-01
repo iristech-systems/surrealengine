@@ -184,7 +184,7 @@ async def main():
     
     # Connect to database
     db = create_connection(
-        url="ws://localhost:8000/rpc",
+        url="ws://db:8000/rpc",
         namespace="test_ns",
         database="test_db",
         username="root",

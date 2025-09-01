@@ -6,9 +6,50 @@ that can be used in conditional aggregations and filtering.
 import json
 from typing import Any, Union, Optional
 from .record_id_utils import RecordIdUtils
+from .surrealql import escape_identifier, escape_literal
 
 
 class Expr:
+    class _CaseBuilder:
+        def __init__(self):
+            self._whens: list[tuple['Expr', 'Expr']] = []
+            self._else: Optional['Expr'] = None
+            self._alias: Optional[str] = None
+        
+        def when(self, condition: 'Expr|str', then: 'Expr|Any') -> 'Expr._CaseBuilder':
+            cond_expr = condition if isinstance(condition, Expr) else Expr.raw(str(condition))
+            then_expr = then if isinstance(then, Expr) else Expr.raw(str(escape_literal(then)))
+            self._whens.append((cond_expr, then_expr))
+            return self
+        
+        def else_(self, default: 'Expr|Any') -> 'Expr._CaseBuilder':
+            self._else = default if isinstance(default, Expr) else Expr.raw(str(escape_literal(default)))
+            return self
+        
+        def alias(self, name: str) -> 'Expr._CaseBuilder':
+            self._alias = name
+            return self
+        
+        def build(self) -> 'Expr':
+            parts = ["CASE"]
+            for cond, then in self._whens:
+                parts.append(f"WHEN {cond} THEN {then}")
+            if self._else is not None:
+                parts.append(f"ELSE {self._else}")
+            parts.append("END")
+            expr = Expr(" ".join(parts))
+            if self._alias:
+                return expr.alias(self._alias)
+            return expr
+        
+        def __str__(self) -> str:
+            return str(self.build())
+    
+    @staticmethod
+    def case() -> 'Expr._CaseBuilder':
+        """Start building a CASE expression."""
+        return Expr._CaseBuilder()
+
     """Build complex expressions for aggregations and filtering.
     
     This class provides a fluent interface for building SQL-like expressions
@@ -31,6 +72,19 @@ class Expr:
             active_count=CountIf(str(condition))
         )
     """
+
+    @staticmethod
+    def var(name: str) -> 'Expr':
+        """Reference a query variable like $name.
+        
+        Args:
+            name: Variable name without the leading $
+        
+        Returns:
+            An expression representing the variable reference
+        """
+        # Do not escape; SurrealQL variables are prefixed with $
+        return Expr(f"${name}")
     
     def __init__(self, expr: str):
         """Initialize an expression.
@@ -74,6 +128,14 @@ class Expr:
         """
         return Expr(f"NOT ({self.expr})")
     
+    def alias(self, name: str) -> 'Expr':
+        """Alias this expression in a SELECT projection.
+        
+        Args:
+            name: Alias/field name
+        """
+        return Expr(f"({self.expr}) AS {escape_identifier(name)}")
+    
     @staticmethod
     def field(name: str) -> 'Expr':
         """Create an expression for a field reference.
@@ -97,7 +159,7 @@ class Expr:
         Returns:
             An expression for field = value
         """
-        return Expr(f"{field} = {json.dumps(value)}")
+        return Expr(f"{field} = {escape_literal(value)}")
     
     @staticmethod
     def ne(field: str, value: Any) -> 'Expr':
@@ -110,7 +172,7 @@ class Expr:
         Returns:
             An expression for field != value
         """
-        return Expr(f"{field} != {json.dumps(value)}")
+        return Expr(f"{field} != {escape_literal(value)}")
     
     @staticmethod
     def gt(field: str, value: Union[int, float]) -> 'Expr':
@@ -123,7 +185,7 @@ class Expr:
         Returns:
             An expression for field > value
         """
-        return Expr(f"{field} > {json.dumps(value)}")
+        return Expr(f"{field} > {escape_literal(value)}")
     
     @staticmethod
     def gte(field: str, value: Union[int, float]) -> 'Expr':
@@ -136,7 +198,7 @@ class Expr:
         Returns:
             An expression for field >= value
         """
-        return Expr(f"{field} >= {json.dumps(value)}")
+        return Expr(f"{field} >= {escape_literal(value)}")
     
     @staticmethod
     def lt(field: str, value: Union[int, float]) -> 'Expr':
@@ -149,7 +211,7 @@ class Expr:
         Returns:
             An expression for field < value
         """
-        return Expr(f"{field} < {json.dumps(value)}")
+        return Expr(f"{field} < {escape_literal(value)}")
     
     @staticmethod
     def lte(field: str, value: Union[int, float]) -> 'Expr':
@@ -162,7 +224,7 @@ class Expr:
         Returns:
             An expression for field <= value
         """
-        return Expr(f"{field} <= {json.dumps(value)}")
+        return Expr(f"{field} <= {escape_literal(value)}")
     
     @staticmethod
     def between(field: str, low: Union[int, float], high: Union[int, float]) -> 'Expr':
@@ -176,7 +238,7 @@ class Expr:
         Returns:
             An expression for low <= field <= high
         """
-        return Expr(f"{field} BETWEEN {json.dumps(low)} AND {json.dumps(high)}")
+        return Expr(f"{field} BETWEEN {escape_literal(low)} AND {escape_literal(high)}")
     
     @staticmethod
     def in_(field: str, values: list) -> 'Expr':
@@ -189,7 +251,7 @@ class Expr:
         Returns:
             An expression for field IN [values]
         """
-        return Expr(f"{field} IN {json.dumps(values)}")
+        return Expr(f"{field} IN {escape_literal(values)}")
     
     @staticmethod
     def not_in(field: str, values: list) -> 'Expr':
@@ -202,7 +264,7 @@ class Expr:
         Returns:
             An expression for field NOT IN [values]
         """
-        return Expr(f"{field} NOT IN {json.dumps(values)}")
+        return Expr(f"{field} NOT IN {escape_literal(values)}")
     
     @staticmethod
     def contains(field: str, value: str) -> 'Expr':
@@ -215,7 +277,7 @@ class Expr:
         Returns:
             An expression for field CONTAINS value
         """
-        return Expr(f"{field} CONTAINS {json.dumps(value)}")
+        return Expr(f"{field} CONTAINS {escape_literal(value)}")
     
     @staticmethod
     def starts_with(field: str, prefix: str) -> 'Expr':
@@ -228,7 +290,7 @@ class Expr:
         Returns:
             An expression for checking if field starts with prefix
         """
-        return Expr(f"string::startsWith({field}, {json.dumps(prefix)})")
+        return Expr(f"string::starts_with({field}, {escape_literal(prefix)})")
     
     @staticmethod
     def ends_with(field: str, suffix: str) -> 'Expr':
@@ -241,7 +303,7 @@ class Expr:
         Returns:
             An expression for checking if field ends with suffix
         """
-        return Expr(f"string::endsWith({field}, {json.dumps(suffix)})")
+        return Expr(f"string::ends_with({field}, {escape_literal(suffix)})")
     
     @staticmethod
     def is_null(field: str) -> 'Expr':
@@ -278,7 +340,7 @@ class Expr:
         Returns:
             An expression for regex matching
         """
-        return Expr(f"string::matches({field}, {json.dumps(pattern)})")
+        return Expr(f"string::matches({field}, {escape_literal(pattern)})")
     
     @staticmethod
     def raw(expression: str) -> 'Expr':
@@ -317,7 +379,7 @@ class Expr:
         normalized_id = RecordIdUtils.normalize_record_id(record_id, table_name)
         if normalized_id is None:
             # Fall back to regular string handling if normalization fails
-            return Expr(f"{field} = {json.dumps(str(record_id))}")
+            return Expr(f"{field} = {escape_literal(str(record_id))}")
         return Expr(f"{field} = {normalized_id}")
     
     @staticmethod
@@ -340,7 +402,7 @@ class Expr:
         normalized_ids = RecordIdUtils.batch_normalize(record_ids, table_name)
         if not normalized_ids:
             # If no IDs could be normalized, fall back to original list
-            return Expr(f"{field} IN {json.dumps([str(rid) for rid in record_ids])}")
+            return Expr(f"{field} IN {escape_literal([str(rid) for rid in record_ids])}")
         return Expr(f"{field} IN [{', '.join(normalized_ids)}]")
     
     @staticmethod
@@ -357,7 +419,7 @@ class Expr:
         """
         normalized_id = RecordIdUtils.normalize_record_id(record_id, table_name)
         if normalized_id is None:
-            return Expr(f"{field} != {json.dumps(str(record_id))}")
+            return Expr(f"{field} != {escape_literal(str(record_id))}")
         return Expr(f"{field} != {normalized_id}")
     
     @staticmethod

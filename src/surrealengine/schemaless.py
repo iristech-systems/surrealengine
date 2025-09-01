@@ -880,7 +880,9 @@ class SchemalessTable:
             query += f" COMMENT '{comment}'"
 
         # Execute the query
-        await self.connection.client.query(query)
+        from .connection import _maybe_span  # lazy import to avoid cycles
+        with _maybe_span("surreal.schema.define_index", {"db.system": "surrealdb", "db.name": self.connection.database, "db.namespace": self.connection.namespace, "db.operation": "define_index", "db.collection": self.name, "db.index": index_name}):
+            await self.connection.client.query(query)
 
     def create_index_sync(self, index_name: str, fields: List[str], unique: bool = False,
                          search: bool = False, analyzer: Optional[str] = None,
@@ -911,7 +913,9 @@ class SchemalessTable:
             query += f" COMMENT '{comment}'"
 
         # Execute the query
-        self.connection.client.query(query)
+        from .connection import _maybe_span  # lazy import to avoid cycles
+        with _maybe_span("surreal.schema.define_index", {"db.system": "surrealdb", "db.name": self.connection.database, "db.namespace": self.connection.namespace, "db.operation": "define_index", "db.collection": self.name, "db.index": index_name}):
+            self.connection.client.query(query)
 
     @property
     def objects(self) -> SchemalessQuerySet:

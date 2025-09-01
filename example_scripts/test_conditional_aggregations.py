@@ -39,7 +39,7 @@ class Transaction(Document):
 async def main():
     # Connect to SurrealDB
     db = create_connection(
-        url="ws://localhost:8001/rpc",
+        url="ws://db:8000/rpc",
         namespace="test_ns",
         database="test_db",
         username="root",
@@ -182,6 +182,7 @@ async def main():
             .execute()
         
         logger.info("High-volume categories:")
+        print(result)
         for stat in result:
             logger.info(f"Category: {stat.get('category')}")
             logger.info(f"  Transactions: {stat.get('transaction_count')}")

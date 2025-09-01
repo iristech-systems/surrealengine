@@ -24,10 +24,62 @@ from abc import ABC, abstractmethod
 from queue import Queue, Empty
 from threading import Lock, Event
 import asyncio
+from contextvars import ContextVar
 from .schemaless import SurrealEngine
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+# Optional OpenTelemetry
+try:
+    from opentelemetry import trace as _otel_trace  # type: ignore
+    _otel_tracer = _otel_trace.get_tracer("surrealengine.connection")
+except Exception:
+    _otel_trace = None
+    _otel_tracer = None
+
+from contextlib import contextmanager
+
+@contextmanager
+def _maybe_span(name: str, attributes: Optional[Dict[str, Any]] = None):
+    if _otel_tracer is None:
+        yield None
+        return
+    span = _otel_tracer.start_span(name)
+    if attributes:
+        for k, v in attributes.items():
+            try:
+                span.set_attribute(k, v)
+            except Exception:
+                pass
+    try:
+        yield span
+    finally:
+        try:
+            span.end()
+        except Exception:
+            pass
+
+# ContextVar-backed default connection (per-task)
+_default_connection_var: ContextVar[Optional[Union['SurrealEngineAsyncConnection','SurrealEngineSyncConnection']]] = ContextVar("surrealengine_default_connection", default=None)
+
+def set_default_connection(conn: Union['SurrealEngineAsyncConnection','SurrealEngineSyncConnection']) -> None:
+    """Set per-task default connection using ContextVar."""
+    _default_connection_var.set(conn)
+
+def get_default_connection(async_mode: bool = True) -> Union['SurrealEngineAsyncConnection','SurrealEngineSyncConnection']:
+    """Get default connection preferring ContextVar, else global registry.
+    Falls back to ConnectionRegistry.get_default_connection to preserve existing behavior.
+    """
+    conn = _default_connection_var.get()
+    if conn is not None:
+        from .connection import SurrealEngineAsyncConnection, SurrealEngineSyncConnection  # local import to avoid circular
+        if async_mode and isinstance(conn, SurrealEngineAsyncConnection):
+            return conn
+        if not async_mode and isinstance(conn, SurrealEngineSyncConnection):
+            return conn
+    # Fallback to global registry
+    return ConnectionRegistry.get_default_connection(async_mode=async_mode)
 
 class ConnectionPoolBase(ABC):
     """Base class for connection pools.
@@ -64,7 +116,8 @@ class ConnectionPoolBase(ABC):
                  retry_limit: int = 3, 
                  retry_delay: float = 1.0, 
                  retry_backoff: float = 2.0, 
-                 validate_on_borrow: bool = True) -> None:
+                 validate_on_borrow: bool = True,
+                 health_check_interval: int = 30) -> None:
         """Initialize a new ConnectionPoolBase.
 
         Args:
@@ -95,6 +148,7 @@ class ConnectionPoolBase(ABC):
         self.retry_delay = max(0.1, retry_delay)
         self.retry_backoff = max(1.0, retry_backoff)
         self.validate_on_borrow = validate_on_borrow
+        self.health_check_interval = max(0, int(health_check_interval))
 
         # Initialize pool statistics
         self.created_connections = 0
@@ -187,7 +241,8 @@ class SyncConnectionPool(ConnectionPoolBase):
                  retry_limit: int = 3, 
                  retry_delay: float = 1.0, 
                  retry_backoff: float = 2.0, 
-                 validate_on_borrow: bool = True) -> None:
+                 validate_on_borrow: bool = True,
+                 health_check_interval: int = 30) -> None:
         """Initialize a new SyncConnectionPool.
 
         Args:
@@ -208,14 +263,21 @@ class SyncConnectionPool(ConnectionPoolBase):
         super().__init__(
             url, namespace, database, username, password, 
             pool_size, max_idle_time, connect_timeout, operation_timeout, 
-            retry_limit, retry_delay, retry_backoff, validate_on_borrow
+            retry_limit, retry_delay, retry_backoff, validate_on_borrow,
+            health_check_interval=health_check_interval
         )
 
         # Initialize the pool
         self.pool: Queue = Queue(maxsize=self.pool_size)
         self.in_use: Dict['SurrealEngineSyncConnection', float] = {}  # Connection -> timestamp when borrowed
+        self._available_last_used: Dict['SurrealEngineSyncConnection', float] = {}
         self.lock = Lock()
         self.closed = False
+        # Health check config
+        self._stop_event = Event()
+        from threading import Thread
+        self._health_thread = Thread(target=self._health_check_loop, daemon=True)
+        self._health_thread.start()
 
     def create_connection(self) -> 'SurrealEngineSyncConnection':
         """Create a new connection.
@@ -295,7 +357,8 @@ class SyncConnectionPool(ConnectionPoolBase):
         # Try to get a connection from the pool
         try:
             connection = self.pool.get(block=False)
-
+            # Update available last used tracking
+            self._available_last_used.pop(connection, None)
             # Validate the connection if needed
             if self.validate_on_borrow and not self.validate_connection(connection):
                 # Connection is invalid, close it and create a new one
@@ -358,6 +421,7 @@ class SyncConnectionPool(ConnectionPoolBase):
         # Return the connection to the pool
         try:
             self.pool.put(connection, block=False)
+            self._available_last_used[connection] = time.time()
         except Exception:
             # Pool is full, close the connection
             self.close_connection(connection)
@@ -368,6 +432,8 @@ class SyncConnectionPool(ConnectionPoolBase):
             return
 
         self.closed = True
+        # stop health thread
+        self._stop_event.set()
 
         # Close all connections in the pool
         while not self.pool.empty():
@@ -386,6 +452,37 @@ class SyncConnectionPool(ConnectionPoolBase):
         logger.info(f"Connection pool closed. Stats: created={self.created_connections}, "
                    f"borrowed={self.borrowed_connections}, returned={self.returned_connections}, "
                    f"discarded={self.discarded_connections}")
+
+    def _health_check_loop(self) -> None:
+        """Background thread to prune stale available connections and validate pool."""
+        while not self._stop_event.wait(self.health_check_interval):
+            try:
+                self._prune_idle_available()
+            except Exception as e:
+                logger.debug(f"Health check error: {e}")
+
+    def _prune_idle_available(self) -> None:
+        now = time.time()
+        kept: List['SurrealEngineSyncConnection'] = []
+        # Drain all available connections non-blocking
+        while True:
+            try:
+                conn = self.pool.get(block=False)
+                last = self._available_last_used.pop(conn, now)
+                if self.max_idle_time > 0 and (now - last) > self.max_idle_time:
+                    # prune
+                    self.close_connection(conn)
+                else:
+                    kept.append(conn)
+            except Empty:
+                break
+        # Requeue kept
+        for conn in kept:
+            try:
+                self.pool.put(conn, block=False)
+                self._available_last_used[conn] = now
+            except Exception:
+                self.close_connection(conn)
 
 
 class AsyncConnectionPool(ConnectionPoolBase):
@@ -419,7 +516,8 @@ class AsyncConnectionPool(ConnectionPoolBase):
                  retry_limit: int = 3, 
                  retry_delay: float = 1.0, 
                  retry_backoff: float = 2.0, 
-                 validate_on_borrow: bool = True) -> None:
+                 validate_on_borrow: bool = True,
+                 health_check_interval: int = 30) -> None:
         """Initialize a new AsyncConnectionPool.
 
         Args:
@@ -440,15 +538,23 @@ class AsyncConnectionPool(ConnectionPoolBase):
         super().__init__(
             url, namespace, database, username, password, 
             pool_size, max_idle_time, connect_timeout, operation_timeout, 
-            retry_limit, retry_delay, retry_backoff, validate_on_borrow
+            retry_limit, retry_delay, retry_backoff, validate_on_borrow,
+            health_check_interval=health_check_interval
         )
 
         # Initialize the pool
         self.pool: List['SurrealEngineAsyncConnection'] = []
         self.in_use: Dict['SurrealEngineAsyncConnection', float] = {}  # Connection -> timestamp when borrowed
+        self._available_last_used: Dict['SurrealEngineAsyncConnection', float] = {}
         self.lock = asyncio.Lock()
         self.closed = False
         self.connection_waiters: List[asyncio.Future] = []
+        # Health checker
+        try:
+            loop = asyncio.get_event_loop()
+            self._health_task = loop.create_task(self._health_check_loop())
+        except RuntimeError:
+            self._health_task = None
 
     async def create_connection(self) -> 'SurrealEngineAsyncConnection':
         """Create a new connection.
@@ -529,6 +635,8 @@ class AsyncConnectionPool(ConnectionPoolBase):
             # Try to get a connection from the pool
             if self.pool:
                 connection = self.pool.pop()
+                # Update available last used tracking
+                self._available_last_used.pop(connection, None)
 
                 # Validate the connection if needed
                 if self.validate_on_borrow:
@@ -623,6 +731,7 @@ class AsyncConnectionPool(ConnectionPoolBase):
             # Return the connection to the pool
             if len(self.pool) < self.pool_size:
                 self.pool.append(connection)
+                self._available_last_used[connection] = time.time()
             else:
                 # Pool is full, close the connection
                 await self.close_connection(connection)
@@ -634,6 +743,13 @@ class AsyncConnectionPool(ConnectionPoolBase):
 
         async with self.lock:
             self.closed = True
+
+            # Cancel background health task
+            try:
+                if getattr(self, "_health_task", None):
+                    self._health_task.cancel()
+            except Exception:
+                pass
 
             # Cancel all waiters
             for waiter in self.connection_waiters:
@@ -654,6 +770,57 @@ class AsyncConnectionPool(ConnectionPoolBase):
             logger.info(f"Async connection pool closed. Stats: created={self.created_connections}, "
                        f"borrowed={self.borrowed_connections}, returned={self.returned_connections}, "
                        f"discarded={self.discarded_connections}")
+
+    async def _health_check_loop(self) -> None:
+        """Background task to prune stale available connections and validate pool."""
+        try:
+            while not self.closed:
+                try:
+                    await self._prune_idle_available()
+                except Exception as e:
+                    logger.debug(f"Async health check error: {e}")
+                await asyncio.sleep(self.health_check_interval)
+        except asyncio.CancelledError:
+            # Task is being cancelled during shutdown
+            return
+
+    async def _prune_idle_available(self) -> None:
+        now = time.time()
+        kept: List['SurrealEngineAsyncConnection'] = []
+        # We need to pop all currently available connections and decide whether to keep or close
+        async with self.lock:
+            # Drain available list into a temp list to examine without holding them in pool
+            while self.pool:
+                conn = self.pool.pop()
+                last = self._available_last_used.pop(conn, now)
+                # Decide pruning
+                if self.max_idle_time > 0 and (now - last) > self.max_idle_time:
+                    # Exceeded idle time; schedule for close outside of lock
+                    kept.append((conn, False))  # False -> should close
+                else:
+                    kept.append((conn, True))   # True -> keep
+        # Now process closes and requeue kept without holding the lock
+        requeue: List['SurrealEngineAsyncConnection'] = []
+        for conn, keep in kept:
+            if keep:
+                requeue.append(conn)
+            else:
+                try:
+                    await self.close_connection(conn)
+                except Exception:
+                    pass
+        # Requeue kept connections and refresh last used timestamps
+        if requeue:
+            async with self.lock:
+                for conn in requeue:
+                    if len(self.pool) < self.pool_size and not self.closed:
+                        self.pool.append(conn)
+                        self._available_last_used[conn] = now
+                    else:
+                        try:
+                            await self.close_connection(conn)
+                        except Exception:
+                            pass
 
 
 class ConnectionEvent:
@@ -734,7 +901,7 @@ class ConnectionEventEmitter:
 
 
 class OperationQueue:
-    """Queue for operations during reconnection.
+    """Queue for operations during reconnection with backpressure and metrics.
 
     This class manages a queue of operations that are waiting for a connection
     to be reestablished. Once the connection is restored, the operations are
@@ -748,13 +915,25 @@ class OperationQueue:
         async_reconnection_event: Asyncio event that is set when reconnection is complete
     """
 
-    def __init__(self) -> None:
-        """Initialize a new OperationQueue."""
+    def __init__(self, maxsize: int = 0, drop_policy: str = "block") -> None:
+        """Initialize a new OperationQueue.
+        Args:
+            maxsize: Maximum queued operations per list (0 = unbounded)
+            drop_policy: One of 'block' | 'drop_oldest' | 'error'
+        """
         self.sync_operations: List[Tuple[Callable, List, Dict]] = []
         self.async_operations: List[Tuple[Callable, List, Dict]] = []
         self.is_reconnecting = False
         self.reconnection_event = Event()
         self.async_reconnection_event = asyncio.Event()
+        self.maxsize = max(0, int(maxsize))
+        self.drop_policy = drop_policy
+        # Metrics
+        self.metrics = {
+            'queued': 0,
+            'drained': 0,
+            'dropped': 0,
+        }
 
     def start_reconnection(self) -> None:
         """Start the reconnection process.
@@ -789,7 +968,20 @@ class OperationQueue:
         if kwargs is None:
             kwargs = {}
 
+        # Enforce backpressure policy for sync operations
+        if self.maxsize and len(self.sync_operations) >= self.maxsize:
+            if self.drop_policy == "drop_oldest":
+                self.sync_operations.pop(0)
+                self.metrics['dropped'] += 1
+            elif self.drop_policy == "error":
+                self.metrics['dropped'] += 1
+                raise RuntimeError("OperationQueue full (sync) and drop_policy=error")
+            elif self.drop_policy == "block":
+                # Busy-wait simple block until space available
+                while len(self.sync_operations) >= self.maxsize:
+                    time.sleep(0.01)
         self.sync_operations.append((operation, args, kwargs))
+        self.metrics['queued'] += 1
 
     def queue_async_operation(self, operation: Callable, args: List = None, kwargs: Dict = None) -> None:
         """Queue an asynchronous operation.
@@ -804,7 +996,29 @@ class OperationQueue:
         if kwargs is None:
             kwargs = {}
 
+        # Enforce backpressure policy for async operations
+        if self.maxsize and len(self.async_operations) >= self.maxsize:
+            if self.drop_policy == "drop_oldest":
+                self.async_operations.pop(0)
+                self.metrics['dropped'] += 1
+            elif self.drop_policy == "error":
+                self.metrics['dropped'] += 1
+                raise RuntimeError("OperationQueue full (async) and drop_policy=error")
+            elif self.drop_policy == "block":
+                # Busy-wait simple block until space available
+                # Use asyncio.sleep if running in an event loop
+                async def _spin():
+                    while len(self.async_operations) >= self.maxsize:
+                        await asyncio.sleep(0.01)
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_spin()).cancel()  # schedule/cancel just to ensure loop exists
+                except RuntimeError:
+                    # No running loop; fallback to time.sleep
+                    while len(self.async_operations) >= self.maxsize:
+                        time.sleep(0.01)
         self.async_operations.append((operation, args, kwargs))
+        self.metrics['queued'] += 1
 
     def execute_queued_operations(self) -> None:
         """Execute all queued synchronous operations."""
@@ -816,6 +1030,7 @@ class OperationQueue:
                 operation(*args, **kwargs)
             except Exception as e:
                 logger.error(f"Error executing queued operation: {str(e)}")
+        self.metrics['drained'] += len(operations)
 
     async def execute_queued_async_operations(self) -> None:
         """Execute all queued asynchronous operations."""
@@ -827,6 +1042,7 @@ class OperationQueue:
                 await operation(*args, **kwargs)
             except Exception as e:
                 logger.error(f"Error executing queued async operation: {str(e)}")
+        self.metrics['drained'] += len(operations)
 
     def wait_for_reconnection(self, timeout: Optional[float] = None) -> bool:
         """Wait for reconnection to complete.
@@ -1214,11 +1430,12 @@ class ConnectionPoolClient:
         Returns:
             The created record
         """
-        connection = await self.pool.get_connection()
-        try:
-            return await connection.client.create(collection, data)
-        finally:
-            await self.pool.return_connection(connection)
+        with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "create", "db.collection": collection}):
+            connection = await self.pool.get_connection()
+            try:
+                return await connection.client.create(collection, data)
+            finally:
+                await self.pool.return_connection(connection)
 
     async def update(self, id: str, data: Dict[str, Any]) -> Any:
         """Update an existing record in the database.
@@ -1230,11 +1447,12 @@ class ConnectionPoolClient:
         Returns:
             The updated record
         """
-        connection = await self.pool.get_connection()
-        try:
-            return await connection.client.update(id, data)
-        finally:
-            await self.pool.return_connection(connection)
+        with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "update"}):
+            connection = await self.pool.get_connection()
+            try:
+                return await connection.client.update(id, data)
+            finally:
+                await self.pool.return_connection(connection)
 
     async def delete(self, id: str) -> Any:
         """Delete a record from the database.
@@ -1291,11 +1509,12 @@ class ConnectionPoolClient:
         Returns:
             The inserted records
         """
-        connection = await self.pool.get_connection()
-        try:
-            return await connection.client.insert(collection, data)
-        finally:
-            await self.pool.return_connection(connection)
+        with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "insert", "db.collection": collection, "db.row_count": len(data) if isinstance(data, list) else 1}):
+            connection = await self.pool.get_connection()
+            try:
+                return await connection.client.insert(collection, data)
+            finally:
+                await self.pool.return_connection(connection)
 
     async def signin(self, credentials: Dict[str, str]) -> Any:
         """Sign in to the database.
@@ -1546,7 +1765,8 @@ class SurrealEngineAsyncConnection:
                  pool_size: int = 10, max_idle_time: int = 60,
                  connect_timeout: int = 30, operation_timeout: int = 30,
                  retry_limit: int = 3, retry_delay: float = 1.0,
-                 retry_backoff: float = 2.0, validate_on_borrow: bool = True) -> None:
+                 retry_backoff: float = 2.0, validate_on_borrow: bool = True,
+                 health_check_interval: int = 30) -> None:
         """Initialize a new SurrealEngineAsyncConnection.
 
         Args:
@@ -1583,6 +1803,7 @@ class SurrealEngineAsyncConnection:
         self.retry_delay = retry_delay
         self.retry_backoff = retry_backoff
         self.validate_on_borrow = validate_on_borrow
+        self.health_check_interval = health_check_interval
 
         if name:
             ConnectionRegistry.add_async_connection(name, self)
@@ -1645,7 +1866,8 @@ class SurrealEngineAsyncConnection:
                     retry_limit=self.retry_limit,
                     retry_delay=self.retry_delay,
                     retry_backoff=self.retry_backoff,
-                    validate_on_borrow=self.validate_on_borrow
+                    validate_on_borrow=self.validate_on_borrow,
+                    health_check_interval=self.health_check_interval,
                 )
 
                 # Create a client that uses the pool
@@ -1694,17 +1916,18 @@ class SurrealEngineAsyncConnection:
         Raises:
             Exception: If any operation in the transaction fails
         """
-        await self.client.query("BEGIN TRANSACTION;")
-        try:
-            results = []
-            for coro in coroutines:
-                result = await coro
-                results.append(result)
-            await self.client.query("COMMIT TRANSACTION;")
-            return results
-        except Exception as e:
-            await self.client.query("CANCEL TRANSACTION;")
-            raise e
+        with _maybe_span("surreal.transaction", {"db.system": "surrealdb", "db.name": self.database, "db.namespace": self.namespace, "db.operation": "transaction"}):
+            await self.client.query("BEGIN TRANSACTION;")
+            try:
+                results = []
+                for coro in coroutines:
+                    result = await coro
+                    results.append(result)
+                await self.client.query("COMMIT TRANSACTION;")
+                return results
+            except Exception as e:
+                await self.client.query("CANCEL TRANSACTION;")
+                raise e
 
 
 def create_connection(url: Optional[str] = None, namespace: Optional[str] = None, 
@@ -1715,7 +1938,8 @@ def create_connection(url: Optional[str] = None, namespace: Optional[str] = None
                   max_idle_time: int = 60, connect_timeout: int = 30,
                   operation_timeout: int = 30, retry_limit: int = 3,
                   retry_delay: float = 1.0, retry_backoff: float = 2.0,
-                  validate_on_borrow: bool = True, auto_connect: bool = False) -> Union['SurrealEngineAsyncConnection', 'SurrealEngineSyncConnection']:
+                  validate_on_borrow: bool = True, auto_connect: bool = False,
+                  health_check_interval: int = 30) -> Union['SurrealEngineAsyncConnection', 'SurrealEngineSyncConnection']:
     """Factory function to create a connection of the appropriate type.
 
     Args:
@@ -1737,6 +1961,7 @@ def create_connection(url: Optional[str] = None, namespace: Optional[str] = None
         retry_backoff: Backoff multiplier for retry delay
         validate_on_borrow: Whether to validate connections when borrowing from the pool
         auto_connect: Whether to automatically connect the connection
+        health_check_interval: Background health check interval (seconds) for pools
 
     Returns:
         A connection of the requested type
@@ -1752,7 +1977,7 @@ def create_connection(url: Optional[str] = None, namespace: Optional[str] = None
         ...     password="root",
         ...     make_default=True
         ... )
-        >>> await connection.connect()
+        >>> # await connection.connect()  # in async context
 
         Sync connection:
 
@@ -1790,9 +2015,9 @@ def create_connection(url: Optional[str] = None, namespace: Optional[str] = None
         ...     password="root",
         ...     name="test_connection"
         ... )
-        >>> async with connection:
-        ...     # Use connection
-        ...     pass
+        >>> # async with connection:  # in async context
+        ... #     # Use connection
+        ... #     pass
     """
     if async_mode:
         connection = SurrealEngineAsyncConnection(
@@ -1811,7 +2036,8 @@ def create_connection(url: Optional[str] = None, namespace: Optional[str] = None
             retry_limit=retry_limit,
             retry_delay=retry_delay,
             retry_backoff=retry_backoff,
-            validate_on_borrow=validate_on_borrow
+            validate_on_borrow=validate_on_borrow,
+            health_check_interval=health_check_interval
         )
 
         # Auto-connect if requested

@@ -7,6 +7,7 @@ queries programmatically and passing them to objects() and filter() methods.
 
 from typing import Any, Dict, List, Optional, Union
 import json
+from .surrealql import escape_literal
 
 
 class Q:
@@ -19,25 +20,25 @@ class Q:
         Simple query:
 
         >>> q = Q(age__gt=25)
-        >>> users = await User.objects.filter(q).all()
+        >>> users = User.objects.filter(q).all()  # example
 
         Complex AND/OR queries:
 
         >>> q1 = Q(age__gt=25) & Q(active=True)  # AND condition
-        >>> active_older_users = await User.objects.filter(q1).all()
+        >>> active_older_users = User.objects.filter(q1).all()  # example
 
         >>> q2 = Q(age__lt=30) | Q(username="charlie")  # OR condition
-        >>> users_or = await User.objects.filter(q2).all()
+        >>> users_or = User.objects.filter(q2).all()  # example
 
         Using NOT:
 
         >>> q3 = ~Q(active=True)  # NOT active
-        >>> inactive_users = await User.objects.filter(q3).all()
+        >>> inactive_users = User.objects.filter(q3).all()  # example
 
         Raw queries:
 
         >>> q4 = Q.raw("age > 20 AND username CONTAINS 'a'")
-        >>> users_raw = await User.objects.filter(q4).all()
+        >>> users_raw = User.objects.filter(q4).all()  # example
 
         Query operators:
 
@@ -51,12 +52,12 @@ class Q:
         Using with objects() method:
 
         >>> query = Q(published=True) & Q(views__gt=75)
-        >>> popular_posts = await Post.objects(query)
+        >>> popular_posts = Post.objects(query)  # example
 
         Combining with additional filters:
 
         >>> base_query = Q(published=True)
-        >>> high_view_posts = await Post.objects(base_query, views__gt=150)
+        >>> high_view_posts = Post.objects(base_query, views__gt=150)  # example
     """
     
     def __init__(self, **kwargs):
@@ -187,24 +188,19 @@ class Q:
                 # Handle special operators
                 if op in ('CONTAINS', 'STARTSWITH', 'ENDSWITH'):
                     if op == 'CONTAINS':
-                        condition_strs.append(f"string::contains({field}, '{value}')")
+                        condition_strs.append(f"string::contains({field}, {escape_literal(value)})")
                     elif op == 'STARTSWITH':
-                        condition_strs.append(f"string::starts_with({field}, '{value}')")
+                        condition_strs.append(f"string::starts_with({field}, {escape_literal(value)})")
                     elif op == 'ENDSWITH':
-                        condition_strs.append(f"string::ends_with({field}, '{value}')")
+                        condition_strs.append(f"string::ends_with({field}, {escape_literal(value)})")
                 elif op == 'REGEX':
-                    condition_strs.append(f"string::matches({field}, r'{value}')")
+                    condition_strs.append(f"string::matches({field}, {escape_literal(value)})")
                 elif op in ('INSIDE', 'NOT INSIDE'):
-                    value_str = json.dumps(value)
+                    value_str = escape_literal(value)
                     condition_strs.append(f"{field} {op} {value_str}")
                 else:
-                    # Regular operators
-                    if isinstance(value, str) and not (isinstance(value, str) and ':' in value):
-                        # Quote string values
-                        condition_strs.append(f"{field} {op} '{value}'")
-                    else:
-                        # Don't quote numbers, booleans, or record IDs
-                        condition_strs.append(f"{field} {op} {json.dumps(value)}")
+                    # Regular operators with proper escaping
+                    condition_strs.append(f"{field} {op} {escape_literal(value)}")
         
         # Join with operator
         if self.operator == 'AND':
@@ -227,14 +223,14 @@ class QueryExpression:
         QueryExpression with FETCH for dereferencing:
 
         >>> expr = QueryExpression(where=Q(published=True)).fetch("author")
-        >>> posts_with_authors = await Post.objects.filter(expr).all()
+        >>> posts_with_authors = Post.objects.filter(expr).all()  # example
 
         Complex QueryExpression with multiple clauses:
 
         >>> complex_expr = (QueryExpression(where=Q(active=True))
         ...                .order_by("age", "DESC")
         ...                .limit(2))
-        >>> top_users = await User.objects.filter(complex_expr).all()
+        >>> top_users = User.objects.filter(complex_expr).all()  # example
 
         QueryExpression with grouping:
 
@@ -269,6 +265,7 @@ class QueryExpression:
         self.order_by_direction = 'ASC'
         self.limit_value = None
         self.start_value = None
+    
     
     def fetch(self, *fields: str) -> 'QueryExpression':
         """Add FETCH clause to resolve references.

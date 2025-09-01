@@ -30,11 +30,11 @@ Example:
     >>> 
     >>> # Create connection and save user
     >>> connection = create_connection("ws://localhost:8000/rpc")
-    >>> await connection.connect()
+    >>> # await connection.connect()  # in async context
     >>> 
     >>> user = User(name="Alice", age=30)
-    >>> await user.save()
-    >>> print(f"Created user: {user.id}")
+    >>> # await user.save()  # in async context
+    >>> # print(f"Created user: {user.id}")
 
 Modules:
     connection: Database connection management and pooling
@@ -118,6 +118,7 @@ from .query import QuerySet, RelationQuerySet
 from .query_expressions import Q, QueryExpression
 from .aggregation import AggregationPipeline
 from .expr import Expr
+from .surrealql import escape_identifier, escape_literal
 from .record_id_utils import RecordIdUtils
 from .schema import (
     get_document_classes,
@@ -136,7 +137,7 @@ from .datagrid_api import (
 from .relation_update import patch_relation_document
 from .document_update import patch_document
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 __all__ = [
     "SurrealEngine",
     "SurrealEngineAsyncConnection",
@@ -212,7 +213,10 @@ __all__ = [
     "get_grid_data",
     "get_grid_data_sync",
     "parse_datatables_params",
-    "format_datatables_response"
+    "format_datatables_response",
+    # SurrealQL helpers
+    "escape_identifier",
+    "escape_literal",
 ]
 
 # Apply the patch to add update methods to RelationDocument

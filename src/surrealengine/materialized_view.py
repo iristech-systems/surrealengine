@@ -97,17 +97,21 @@ class Max(Aggregation):
         return "math::max()"
 
 
-class ArrayCollect(Aggregation):
-    """Array collect aggregation function.
+class ArrayGroup(Aggregation):
+    """Array group aggregation function.
 
-    This class represents the array::collect() aggregation function in SurrealQL.
+    This class represents the array::group() aggregation function in SurrealQL v2.
     """
 
     def __str__(self) -> str:
-        """Return the SurrealQL representation of the array collect function."""
+        """Return the SurrealQL representation of the array group function."""
         if self.field:
-            return f"array::collect({self.field})"
-        return "array::collect()"
+            return f"array::group({self.field})"
+        return "array::group()"
+
+# Backwards-compat alias to preserve any imports using ArrayCollect
+class ArrayCollect(ArrayGroup):
+    pass
 
 
 class Median(Aggregation):
@@ -175,14 +179,16 @@ class Percentile(Aggregation):
 class Distinct(Aggregation):
     """Distinct aggregation function.
 
-    This class represents the array::distinct() aggregation function in SurrealQL.
+    This class represents a distinct-of-values across grouped rows.
+    Safe for scalar fields by wrapping each row's value in an array first.
     """
 
     def __str__(self) -> str:
         """Return the SurrealQL representation of the distinct function."""
         if self.field:
-            return f"array::distinct(array::collect({self.field}))"
-        return "array::distinct(array::collect())"
+            # Wrap scalar values per-row to satisfy array functions in v2
+            return f"array::group([{self.field}])"
+        return "array::group([])"
 
 
 class GroupConcat(Aggregation):
@@ -204,9 +210,11 @@ class GroupConcat(Aggregation):
 
     def __str__(self) -> str:
         """Return the SurrealQL representation of the group concat function."""
+        # Escape single quotes in separator for safe literal
+        sep = self.separator.replace("'", "''")
         if self.field:
-            return f"array::join(array::collect({self.field}), '{self.separator}')"
-        return f"array::join(array::collect(), '{self.separator}')"
+            return f"array::join(array::group([{self.field}]), '{sep}')"
+        return f"array::join(array::group([]), '{sep}')"
 
 
 class CountIf(Aggregation):
@@ -338,8 +346,11 @@ class DistinctCountIf(Aggregation):
 
     def __str__(self) -> str:
         """Return the SurrealQL representation of the conditional distinct count function."""
-        # Use a simpler approach for conditional distinct count
-        return f"array::len(array::distinct(array::collect(IF {self.condition} THEN {self.field} END)))"
+        # Build row-wise array to satisfy array::group input requirements
+        arr = f"IF {self.condition} THEN [{self.field}] ELSE [] END"
+        grouped = f"array::group({arr})"
+        # array::group flattens and dedupes, so array::len(grouped) yields distinct count
+        return f"array::len({grouped})"
 
 
 class MaterializedView:

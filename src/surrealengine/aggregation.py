@@ -5,6 +5,7 @@ in SurrealEngine. Aggregation pipelines allow for complex data transformations
 and analysis through a series of stages.
 """
 import json
+from .surrealql import escape_literal
 import re
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
@@ -197,34 +198,31 @@ class AggregationPipeline:
                         if '__' in field:
                             field_name, op = field.rsplit('__', 1)
                             if op == 'gt':
-                                where_conditions.append(f"{field_name} > {json.dumps(value)}")
+                                where_conditions.append(f"{field_name} > {escape_literal(value)}")
                             elif op == 'lt':
-                                where_conditions.append(f"{field_name} < {json.dumps(value)}")
+                                where_conditions.append(f"{field_name} < {escape_literal(value)}")
                             elif op == 'gte':
-                                where_conditions.append(f"{field_name} >= {json.dumps(value)}")
+                                where_conditions.append(f"{field_name} >= {escape_literal(value)}")
                             elif op == 'lte':
-                                where_conditions.append(f"{field_name} <= {json.dumps(value)}")
+                                where_conditions.append(f"{field_name} <= {escape_literal(value)}")
                             elif op == 'ne':
-                                where_conditions.append(f"{field_name} != {json.dumps(value)}")
+                                where_conditions.append(f"{field_name} != {escape_literal(value)}")
                             elif op == 'in':
-                                where_conditions.append(f"{field_name} IN {json.dumps(value)}")
+                                where_conditions.append(f"{field_name} IN {escape_literal(value)}")
                             elif op == 'nin':
-                                where_conditions.append(f"{field_name} NOT IN {json.dumps(value)}")
+                                where_conditions.append(f"{field_name} NOT IN {escape_literal(value)}")
                             elif op == 'contains':
-                                where_conditions.append(f"{field_name} CONTAINS {json.dumps(value)}")
+                                where_conditions.append(f"{field_name} CONTAINS {escape_literal(value)}")
                             elif op == 'startswith':
-                                where_conditions.append(f"string::startsWith({field_name}, {json.dumps(value)})")
+                                where_conditions.append(f"string::starts_with({field_name}, {escape_literal(value)})")
                             elif op == 'endswith':
-                                where_conditions.append(f"string::endsWith({field_name}, {json.dumps(value)})")
+                                where_conditions.append(f"string::ends_with({field_name}, {escape_literal(value)})")
                             else:
                                 # Default to equality
-                                where_conditions.append(f"{field_name} = {json.dumps(value)}")
+                                where_conditions.append(f"{field_name} = {escape_literal(value)}")
                         else:
                             # Simple equality
-                            if isinstance(value, str):
-                                where_conditions.append(f"{field} = {json.dumps(value)}")
-                            else:
-                                where_conditions.append(f"{field} = {json.dumps(value)}")
+                            where_conditions.append(f"{field} = {escape_literal(value)}")
                     
                     where_clause = f"WHERE {' AND '.join(where_conditions)}"
                     
@@ -260,24 +258,31 @@ class AggregationPipeline:
                 by_fields = stage['by_fields']
                 aggregations = stage['aggregations']
                 
-                # Build the GROUP BY clause
+                # Build the GROUP BY clause or GROUP ALL
                 if by_fields:
-                    group_by_clause = f"GROUP BY {', '.join(by_fields)}"
-                    
-                    # Check if there's already a GROUP BY clause
-                    if "GROUP BY" in rest_part.upper():
-                        # Replace the existing GROUP BY clause
-                        rest_part = re.sub(r'GROUP BY.*?(?=(ORDER BY|LIMIT|START|$))', group_by_clause, rest_part, flags=re.IGNORECASE)
+                    group_clause = f"GROUP BY {', '.join(by_fields)}"
+                else:
+                    # If no explicit group fields but aggregations exist with array functions,
+                    # we can use GROUP ALL to enable row-collection semantics.
+                    group_clause = "GROUP ALL"
+                
+                if by_fields or aggregations:
+                    # Inject group clause if not already present
+                    upper = rest_part.upper()
+                    if "GROUP BY" in upper or "GROUP ALL" in upper:
+                        # Replace existing group clause
+                        rest_part = re.sub(r'GROUP (?:BY|ALL).*?(?=(ORDER BY|LIMIT|START|$))', group_clause, rest_part, flags=re.IGNORECASE)
                     else:
-                        # Add the GROUP BY clause before ORDER BY, LIMIT, or START
+                        # Add the group clause before ORDER BY, LIMIT, or START
+                        inserted = False
                         for clause in ["ORDER BY", "LIMIT", "START"]:
                             clause_index = rest_part.upper().find(clause)
                             if clause_index != -1:
-                                rest_part = f"{rest_part[:clause_index]}{group_by_clause} {rest_part[clause_index:]}"
+                                rest_part = f"{rest_part[:clause_index]}{group_clause} {rest_part[clause_index:]}"
+                                inserted = True
                                 break
-                        else:
-                            # No ORDER BY, LIMIT, or START, so add to the end
-                            rest_part = f"{rest_part} {group_by_clause}"
+                        if not inserted:
+                            rest_part = f"{rest_part} {group_clause}"
                 
                 # Build the SELECT part with aggregations
                 if aggregations:
@@ -323,25 +328,25 @@ class AggregationPipeline:
                         if '__' in field:
                             field_name, op = field.rsplit('__', 1)
                             if op == 'gt':
-                                having_conditions.append(f"{field_name} > {json.dumps(value)}")
+                                having_conditions.append(f"{field_name} > {escape_literal(value)}")
                             elif op == 'lt':
-                                having_conditions.append(f"{field_name} < {json.dumps(value)}")
+                                having_conditions.append(f"{field_name} < {escape_literal(value)}")
                             elif op == 'gte':
-                                having_conditions.append(f"{field_name} >= {json.dumps(value)}")
+                                having_conditions.append(f"{field_name} >= {escape_literal(value)}")
                             elif op == 'lte':
-                                having_conditions.append(f"{field_name} <= {json.dumps(value)}")
+                                having_conditions.append(f"{field_name} <= {escape_literal(value)}")
                             elif op == 'ne':
-                                having_conditions.append(f"{field_name} != {json.dumps(value)}")
+                                having_conditions.append(f"{field_name} != {escape_literal(value)}")
                             elif op == 'in':
-                                having_conditions.append(f"{field_name} IN {json.dumps(value)}")
+                                having_conditions.append(f"{field_name} IN {escape_literal(value)}")
                             elif op == 'nin':
-                                having_conditions.append(f"{field_name} NOT IN {json.dumps(value)}")
+                                having_conditions.append(f"{field_name} NOT IN {escape_literal(value)}")
                             else:
                                 # Default to equality
-                                having_conditions.append(f"{field_name} = {json.dumps(value)}")
+                                having_conditions.append(f"{field_name} = {escape_literal(value)}")
                         else:
                             # Simple equality
-                            having_conditions.append(f"{field} = {json.dumps(value)}")
+                            having_conditions.append(f"{field} = {escape_literal(value)}")
                     
                     # For SurrealDB, HAVING is implemented as a WHERE clause on the aggregated results
                     # We need to wrap the entire query in a subquery and apply WHERE on it
@@ -452,11 +457,32 @@ class AggregationPipeline:
             connection: Optional connection to use
             
         Returns:
-            The query results
+            A list of result rows (dicts) from the final SELECT statement
         """
         query = self.build_query()
         connection = connection or self.connection or ConnectionRegistry.get_default_connection()
-        return await connection.client.query(query)
+        results = await connection.client.query(query)
+
+        # Normalize RPC response to a list of row dicts, similar to QuerySet.all()
+        if not results:
+            return []
+
+        rows = None
+        if isinstance(results, list):
+            if results and isinstance(results[0], dict):
+                rows = results
+            else:
+                for part in reversed(results):
+                    if isinstance(part, list):
+                        rows = part
+                        break
+        else:
+            rows = results
+        if not rows:
+            return []
+        if isinstance(rows, dict):
+            rows = [rows]
+        return rows
         
     def execute_sync(self, connection=None):
         """Execute the pipeline synchronously.
@@ -465,8 +491,29 @@ class AggregationPipeline:
             connection: Optional connection to use
             
         Returns:
-            The query results
+            A list of result rows (dicts) from the final SELECT statement
         """
         query = self.build_query()
         connection = connection or self.connection or ConnectionRegistry.get_default_connection()
-        return connection.client.query(query)
+        results = connection.client.query(query)
+
+        # Normalize RPC response to a list of row dicts, similar to QuerySet.all_sync()
+        if not results:
+            return []
+
+        rows = None
+        if isinstance(results, list):
+            if results and isinstance(results[0], dict):
+                rows = results
+            else:
+                for part in reversed(results):
+                    if isinstance(part, list):
+                        rows = part
+                        break
+        else:
+            rows = results
+        if not rows:
+            return []
+        if isinstance(rows, dict):
+            rows = [rows]
+        return rows

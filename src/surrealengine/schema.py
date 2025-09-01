@@ -111,16 +111,70 @@ def generate_schema_statements(document_class: Type[Document], schemafull: bool 
             field_type = document_class._get_field_type_for_surreal(field)
             field_stmt = f"DEFINE FIELD {field.db_field} ON {collection_name} TYPE {field_type}"
 
-            # Add constraints
+            # Build constraints
+            exprs: List[str] = []
             if field.required:
-                field_stmt += " ASSERT $value != NONE"
+                exprs.append("$value != NONE")
 
-            # Add comment if available
-            if hasattr(field, '__doc__') and field.__doc__:
-                # Clean up docstring and escape single quotes
-                doc = field.__doc__.strip().replace("'", "''")
-                if doc:
-                    field_stmt += f" COMMENT '{doc}'"
+            try:
+                from .fields.scalar import StringField, NumberField
+                from .fields.specialized import ChoiceField
+            except Exception:
+                StringField = NumberField = ChoiceField = None  # type: ignore
+
+            if StringField and isinstance(field, StringField):
+                if getattr(field, 'min_length', None) is not None:
+                    exprs.append(f"string::len($value) >= {int(field.min_length)}")
+                if getattr(field, 'max_length', None) is not None:
+                    exprs.append(f"string::len($value) <= {int(field.max_length)}")
+                if getattr(field, 'regex_pattern', None):
+                    from .surrealql import escape_literal
+                    pat = field.regex_pattern
+                    exprs.append(f"string::matches($value, {escape_literal(pat)})")
+                if getattr(field, 'choices', None):
+                    vals = []
+                    for v in field.choices:
+                        if isinstance(v, str):
+                            s = v.replace('\\', r'\\').replace('"', r'\"')
+                            vals.append(f'"{s}"')
+                        else:
+                            vals.append(str(v).lower() if isinstance(v, bool) else str(v))
+                    exprs.append(f"$value INSIDE [{', '.join(vals)}]")
+
+            if NumberField and isinstance(field, NumberField):
+                if getattr(field, 'min_value', None) is not None:
+                    exprs.append(f"$value >= {field.min_value}")
+                if getattr(field, 'max_value', None) is not None:
+                    exprs.append(f"$value <= {field.max_value}")
+
+            if ChoiceField and isinstance(field, ChoiceField):
+                vals = []
+                for v in field.values:
+                    if isinstance(v, str):
+                        s = v.replace('\\', r'\\').replace('"', r'\"')
+                        vals.append(f'"{s}"')
+                    else:
+                        vals.append(str(v).lower() if isinstance(v, bool) else str(v))
+                exprs.append(f"$value INSIDE [{', '.join(vals)}]")
+
+            if exprs:
+                field_stmt += " ASSERT " + " AND ".join(exprs)
+
+            # Default
+            if field.default is not None and not callable(field.default):
+                def _literal(val):
+                    if isinstance(val, str):
+                        s = val.replace('\\', r'\\').replace('"', r'\"')
+                        return f'"{s}"'
+                    if isinstance(val, bool):
+                        return 'true' if val else 'false'
+                    return str(val)
+                field_stmt += f" VALUE {_literal(field.default)}"
+
+            # Field comment
+            if getattr(field, 'comment', None):
+                c = field.comment.replace('\\', r'\\').replace('"', r'\"')
+                field_stmt += f" COMMENT \"{c}\""
 
             statements.append(field_stmt + ";")
 

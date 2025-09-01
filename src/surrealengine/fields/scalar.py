@@ -65,6 +65,7 @@ class StringField(Field):
         self.min_length = min_length
         self.max_length = max_length
         self.regex: Optional[Pattern] = re.compile(regex) if regex else None
+        self.regex_pattern: Optional[str] = regex
         self.choices: Optional[list] = choices
         super().__init__(**kwargs)
         self.py_type = str

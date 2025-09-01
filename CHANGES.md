@@ -7,33 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- **Document Update Methods**: Added update() and update_sync() methods to all Document classes
-  - Allows updating specific fields in any document without deleting existing data
-  - Solves the issue with save() method's upsert behavior that would delete fields not included in the update
-  - Preserves all existing document attributes while only modifying the specified fields
-  - Fixes issues with FetchProgress and other Document classes that need partial updates
+## [0.3.0] - 2025-09-01
 
-- **RelationDocument Update Methods**: Added update() and update_sync() methods to RelationDocument
-  - Allows updating specific fields in a relation without deleting existing data
-  - Solves the issue with save() method's upsert behavior that would delete fields not included in the update
-  - Preserves all existing relation attributes while only modifying the specified fields
+### Added
+- Expression and query building
+  - Expr is now a single class with a working CASE builder: `Expr.case().when(...).else_(...).alias(...)`
+  - `Expr.var(name)` for `$vars` and `Expr.raw(...)` for trusted fragments
+  - String functions aligned with SurrealDB v2: `string::starts_with`, `string::ends_with`, `string::contains`, `string::matches`
+- Escaping utilities
+  - Public `escape_literal` and `escape_identifier`; builders use these consistently
+- Aggregation and materialized views
+  - AggregationPipeline: response normalization (returns list of row dicts), safe escaping in `match()`/`having()`, and injects `GROUP BY`/`GROUP ALL` when needed
+  - Materialized functions updated for v2: replaced `array::collect` with `array::group`; hardened `Distinct`, `GroupConcat` for scalar inputs; `DistinctCountIf` now uses `array::len(array::group(IF cond THEN [field] ELSE [] END))`
+- Connection and observability
+  - ContextVar‑backed per‑task default connection: `set_default_connection` / `get_default_connection`
+  - Connection pooling with validation, idle pruning, retries/backoff
+  - OperationQueue with backpressure policies (block | drop_oldest | error) and metrics
+  - Optional OpenTelemetry spans around queries/transactions (enabled if OTEL is installed)
+  - Example script: `example_scripts/connection_and_observability_example.py`
+- Graph and live updates
+  - QuerySet.traverse(path, max_depth=None, unique=True) to project graph traversals
+  - QuerySet.live(...): async generator for LIVE subscriptions (requires direct async ws connection)
+    - Example script: `example_scripts/graph_and_live_example.py`
+- RelationDocument helpers
+  - `RelationDocument.find_by_in_documents(...)` and sync variant for batch inbound lookups
+- Document/Relation updates
+  - Added `update()` and `update_sync()` on Document and RelationDocument for partial updates without data loss
+
+### Changed
+- Centralized escaping in BaseQuerySet, AggregationPipeline, and Expr; removed ad‑hoc json.dumps usage for literals
+- SurrealQL builder ensures `FETCH` is emitted as the last clause to avoid parse errors
+- LIVE subscription path: replaced debug print statements with logger.debug to avoid leaking to stdout and to integrate with standard logging
+- Docstring improvements across key APIs (e.g., QuerySet.live()) for richer IDE hints
 
 ### Fixed
-- **RelationDocument Save Behavior**: Modified Document.save() and save_sync() methods to automatically use update() for RelationDocument instances
-  - Prevents data loss when saving RelationDocument instances with partial updates
-  - Maintains backward compatibility with existing code that uses save() instead of update()
-  - Fixes issues with routes that use ProductURL and other RelationDocument classes
-- **URL Query Escaping**: Fixed issue with URL values in query filters
-  - Ensures proper JSON serialization of URL strings containing spaces and special characters
-  - Prevents SurrealDB parse errors when querying by URL fields
-  - Improves reliability of queries with complex string values
-  - Added special handling for URL detection and proper quoting in filter conditions
-- **Document Update Type Error**: Fixed TypeError in document_update.py's isinstance() check
-  - Corrected the improper use of Document.__subclasses__() in isinstance() check
-  - Changed to use any(isinstance(self, cls) for cls in Document.__subclasses__())
-  - Fixes "isinstance() arg 2 must be a type, a tuple of types, or a union" error
-  - Ensures FetchProgress and other Document classes can be properly updated
+- BaseQuerySet condition building now uses `escape_literal` consistently, including URL handling and arrays; preserves unquoted RecordIDs in INSIDE/NOT INSIDE arrays
+- Materialized array functions migrated to v2 semantics; `DistinctCountIf` produces correct distinct counts without function argument errors
+- Schema regex assertions now use `string::matches($value, pattern)` with proper literal escaping
+- AggregationPipeline results are normalized (no more `'str'.get` errors in examples)
+- Correct formatting for INSIDE/NOT INSIDE arrays containing RecordIDs (record ids unquoted)
+- Document.save() automatically uses `update()` for RelationDocument to prevent unintended field removal
+- Fixed TypeError in document update isinstance check
+
+### Notes
+- LIVE queries currently require a direct async websocket client (pooling client does not support LIVE)
+- `returning=` is supported on `QuerySet.update(...)`; other mutations may follow in a future release
 
 ## [0.2.1] - 2025-07-02
 
@@ -138,15 +156,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transaction support
 - Relation management with graph traversal
 
-## Unreleased
-
-### Fixed
-- SurrealQL builder now emits FETCH as the last clause. This resolves parse errors like `Parse error: Unexpected token ORDER, expected Eof` when chaining `.fetch(...).order_by(...).limit(...)`. The new clause order is: WHERE, GROUP BY, SPLIT, WITH, ORDER BY, LIMIT, START, FETCH.
-- Correct formatting for INSIDE/NOT INSIDE arrays containing RecordIDs: items that are Surreal record IDs (e.g., products:abc123) are no longer quoted inside the array. This yields `in INSIDE [products:1, products:2]` instead of `in INSIDE ["products:1", "products:2"]`. Other non-record-id strings remain properly quoted.
-
-### Added
-- RelationDocument helpers for batch filters by the inbound endpoint:
-  - `RelationDocument.find_by_in_documents(in_docs, **filters)` (async)
-  - `RelationDocument.find_by_in_documents_sync(in_docs, **filters)` (sync)
-  These accept Document instances, RecordID, dicts with `id`, or record ID strings, normalize inputs, and apply an `in__in` filter under the hood.
 

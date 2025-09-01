@@ -25,7 +25,7 @@ class Task(Document):
 def main():
     # Connect to the database using the sync API
     connection = create_connection(
-        url="ws://localhost:8001/rpc",
+        url="ws://db:8000/rpc",
         namespace="test_ns",
         database="test_db",
         username="root",

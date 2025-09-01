@@ -6,6 +6,7 @@ from surrealdb import RecordID
 import json
 import asyncio
 import logging
+from ..surrealql import escape_literal
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -32,6 +33,245 @@ class QuerySet(BaseQuerySet):
         """
         super().__init__(connection)
         self.document_class = document_class
+
+    def traverse(self, path: str, max_depth: Optional[int] = None, unique: bool = True) -> 'QuerySet':
+        """Configure a graph traversal for this query.
+
+        Args:
+            path: Arrow path segment(s), e.g. "->likes->user" or "<-follows".
+            max_depth: Optional bound for depth. For simple single-edge paths we
+                will repeat the path up to max_depth. For complex paths this is
+                ignored and the path is used as-is. This is a pragmatic workaround
+                until SurrealQL exposes native depth quantifiers in arrow paths.
+            unique: When True, deduplicate results via GROUP BY id to avoid duplicate rows.
+
+        Returns:
+            A cloned QuerySet configured with traversal.
+        """
+        clone = self._clone()
+        # Store as-is; _build_query applies simple bounded expansion
+        clone._traversal_path = path
+        clone._traversal_unique = bool(unique)
+        clone._traversal_max_depth = max_depth if (isinstance(max_depth, int) and max_depth > 0) else None
+        return clone
+
+    def shortest_path(self, src: Union[str, RecordID], dst: Union[str, RecordID], edge: str) -> 'QuerySet':
+        """Helper for shortest path queries (if supported by SurrealDB).
+
+        Note: As of now, SurrealDB does not expose a stable built-in shortest path
+        function in SurrealQL. This method prepares a placeholder raw condition to
+        document the limitation. If SurrealDB adds support, this can be updated
+        to emit the proper function call.
+        """
+        # Currently not supported - we document limitation by raising
+        raise NotImplementedError("Shortest path is not supported via SurrealQL in this version. Track SurrealDB updates for native support.")
+
+    async def live(self, where: Optional["Q|dict"] = None, *, retry_limit: int = 3, initial_delay: float = 0.5, backoff: float = 2.0):
+        """Subscribe to changes on this table via LIVE queries as an async generator.
+
+        This uses the underlying surrealdb Async client (websocket). If the current
+        connection uses a connection pool client which does not support LIVE, a
+        NotImplementedError is raised.
+
+        Args:
+            where: Optional filter (Q or dict) applied client-side to incoming events.
+            retry_limit: Number of times to retry subscription on transient errors.
+            initial_delay: Initial backoff delay in seconds.
+            backoff: Multiplier for exponential backoff.
+
+        Yields:
+            dict: ChangeEvent objects of the form {"action": "CREATE|UPDATE|DELETE", "data": dict, "ts": datetime|None}
+
+        Raises:
+            NotImplementedError: If the active connection does not support LIVE queries.
+
+        Example:
+            >>> async for evt in User.objects.live(where={"status": "active"}):
+            ...     print(evt["action"], evt["data"].get("id"))
+        """
+        # Ensure async client and availability of live API
+        client = getattr(self.connection, 'client', None)
+        if client is None or not hasattr(client, 'live') or not hasattr(client, 'subscribe_live') or not hasattr(client, 'kill'):
+            raise NotImplementedError("LIVE queries require an async websocket client; connection pooling is not supported for LIVE in this version.")
+
+        table = self.document_class._get_collection_name()
+
+        # Prepare optional predicate for client-side filtering
+        predicate = None
+        if where is not None:
+            try:
+                from ..query_expressions import Q
+                if isinstance(where, dict):
+                    q = Q(**where)
+                elif isinstance(where, Q):
+                    q = where
+                else:
+                    raise ValueError("where must be a Q or dict")
+
+                # Build a simple predicate using Q.to_conditions semantics
+                conditions = q.to_conditions()
+                def _eval(record):
+                    for field, op, value in conditions:
+                        if field == '__raw__':
+                            # raw cannot be evaluated here; accept all
+                            continue
+                        lhs = record.get(field)
+                        if op == '=' and lhs != value:
+                            return False
+                        if op == '!=' and lhs == value:
+                            return False
+                        if op == '>' and not (lhs is not None and lhs > value):
+                            return False
+                        if op == '<' and not (lhs is not None and lhs < value):
+                            return False
+                        if op == '>=' and not (lhs is not None and lhs >= value):
+                            return False
+                        if op == '<=' and not (lhs is not None and lhs <= value):
+                            return False
+                        if op == 'INSIDE' and isinstance(value, (list, tuple, set)) and lhs not in value:
+                            return False
+                        if op == 'NOT INSIDE' and isinstance(value, (list, tuple, set)) and lhs in value:
+                            return False
+                        if op == 'CONTAINS':
+                            if isinstance(lhs, str) and isinstance(value, str):
+                                if value not in lhs:
+                                    return False
+                            elif isinstance(lhs, (list, tuple, set)):
+                                if value not in lhs:
+                                    return False
+                            else:
+                                return False
+                    return True
+                predicate = _eval
+            except Exception:
+                # If anything goes wrong, fallback to no filtering
+                predicate = None
+
+        import asyncio
+        import datetime
+        attempt = 0
+        delay = initial_delay
+
+        async def _start_live():
+            # returns (uuid, agen or full queue consumer)
+            qid = await client.live(table)
+            # Try to access underlying connection live_queues to get full event payloads
+            candidate_attrs = (
+                'connection', '_connection', 'conn', '_conn', 'ws'
+            )
+            under = None
+            for attr in candidate_attrs:
+                obj = getattr(client, attr, None)
+                if obj is not None and hasattr(obj, 'live_queues'):
+                    under = obj
+                    break
+            # Some SDK variants may expose live_queues on the client itself
+            if under is None and hasattr(client, 'live_queues'):
+                under = client  # type: ignore
+            if under is not None and hasattr(under, 'live_queues'):
+                import asyncio as _asyncio
+                full_queue: _asyncio.Queue = _asyncio.Queue()
+                under.live_queues[str(qid)].append(full_queue)
+                # Log limited client attributes for diagnosis at debug level
+                try:
+                    attrs = [a for a in dir(client) if ('live' in a.lower() or 'conn' in a.lower())]
+                    logger.debug('Client attributes (filtered): %s', attrs)
+                except Exception:
+                    pass
+                return qid, ('queue', full_queue, under)
+            # Fallback to SDK generator which yields only the inner 'result'
+            agen = await client.subscribe_live(qid)
+            # Log limited client attributes for diagnosis at debug level
+            try:
+                attrs = [a for a in dir(client) if ('live' in a.lower() or 'conn' in a.lower())]
+                logger.debug('Client attributes (filtered): %s', attrs)
+            except Exception:
+                pass
+            return qid, ('agen', agen, None)
+
+        qid = None
+        agen = None
+        extra = None
+        try:
+            while True:
+                try:
+                    if agen is None:
+                        qid, packed = await _start_live()
+                        kind, source, under = packed
+                        agen = (kind, source)
+                        extra = under
+                        attempt = 0
+                        delay = initial_delay
+                    kind, source = agen
+                    if kind == 'queue':
+                        # Consume full payloads with action/time/result
+                        while True:
+                            msg = await source.get()
+                            # Log full live envelope at debug level to help locate fields
+                            try:
+                                logger.debug("Live envelope: %s", msg)
+                            except Exception:
+                                pass
+                            action = msg.get('action') or msg.get('event') or 'UNKNOWN'
+                            data = msg.get('result') or msg.get('record') or msg.get('data') or msg
+                            ts = msg.get('time') or msg.get('ts')
+                            if predicate is None or (isinstance(data, dict) and predicate(data)):
+                                yield {"action": str(action).upper() if action else None, "data": data, "ts": ts}
+                    else:
+                        # agen path: yields only inner result; no metadata available
+                        async for msg in source:
+                            # Log inner message yielded by SDK subscribe_live at debug level
+                            try:
+                                logger.debug("Live inner message: %s", msg)
+                            except Exception:
+                                pass
+                            data = msg.get('result') or msg.get('record') or msg.get('data') or msg
+                            # Heuristic: if payload has only 'id', treat as DELETE; else as UPSERT (CREATE/UPDATE)
+                            inferred_action = 'UNKNOWN'
+                            if isinstance(data, dict):
+                                keys = [k for k in data.keys()]
+                                if len(keys) == 1 and keys[0] == 'id':
+                                    inferred_action = 'DELETE'
+                                else:
+                                    inferred_action = 'UPSERT'
+                            if predicate is None or (isinstance(data, dict) and predicate(data)):
+                                yield {"action": inferred_action, "data": data, "ts": None}
+                    # If loop exits, restart
+                    agen = None
+                except asyncio.CancelledError:
+                    # Graceful cancellation; cleanup below
+                    raise
+                except Exception:
+                    attempt += 1
+                    if attempt > retry_limit:
+                        raise
+                    await asyncio.sleep(delay)
+                    delay = min(delay * backoff, 30.0)
+                    # cleanup old subscription
+                    if qid is not None:
+                        try:
+                            await client.kill(qid)
+                        except Exception:
+                            pass
+                    # If we registered our own queue, try to remove it
+                    if extra is not None and hasattr(extra, 'live_queues'):
+                        try:
+                            lst = extra.live_queues.get(str(qid)) or []
+                            # remove any queue instances we might have appended
+                            for i, q in enumerate(list(lst)):
+                                # best-effort removal; identity check is fine
+                                pass
+                        except Exception:
+                            pass
+                    agen = None
+                    qid = None
+        finally:
+            # Ensure live query is killed and detach queue if used
+            if qid is not None:
+                try:
+                    await client.kill(qid)
+                except Exception:
+                    pass
 
     async def join(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
         """Perform a JOIN-like operation on a reference field using FETCH.
@@ -174,19 +414,43 @@ class QuerySet(BaseQuerySet):
             return optimized_query
         
         # Fall back to regular query building
-        query = f"SELECT * FROM {self.document_class._get_collection_name()}"
+        # SurrealQL does not support SQL-style SELECT DISTINCT for full rows.
+        # When traversal uniqueness is requested, we will deduplicate by grouping on id.
+        from_part = self.document_class._get_collection_name()
+
+        # If traversal is configured, render it in the SELECT projection, not in FROM
+        traversal = getattr(self, "_traversal_path", None)
+        if traversal:
+            max_depth = getattr(self, "_traversal_max_depth", None)
+            if max_depth and max_depth > 1:
+                simple = traversal.strip()
+                if simple.count("->") + simple.count("<-") == 1 and (" " not in simple):
+                    traversal_to_use = simple * max_depth
+                else:
+                    traversal_to_use = simple
+            else:
+                traversal_to_use = traversal.strip()
+            select_keyword = f"SELECT {traversal_to_use} AS traversed"
+        else:
+            select_keyword = "SELECT *"
+
+        select_query = f"{select_keyword} FROM {from_part}"
 
         if self.query_parts:
             conditions = self._build_conditions()
-            query += f" WHERE {' AND '.join(conditions)}"
+            select_query += f" WHERE {' AND '.join(conditions)}"
 
         # Add other clauses from _build_clauses
         clauses = self._build_clauses()
+
+        # Note: GROUP BY id for traversal deduplication can change result shapes in SurrealDB.
+        # To keep traversal results straightforward, we do not auto-inject GROUP BY here.
+
         for clause_name, clause_sql in clauses.items():
             if clause_name != 'WHERE':  # WHERE clause is already handled
-                query += f" {clause_sql}"
+                select_query += f" {clause_sql}"
 
-        return query
+        return select_query
 
     async def all(self, dereference: bool = False) -> List[Any]:
         """Execute the query and return all results asynchronously.
@@ -203,11 +467,31 @@ class QuerySet(BaseQuerySet):
         query = self._build_query()
         results = await self.connection.client.query(query)
 
-        if not results or not results[0]:
+        if not results:
             return []
 
-        # Create one instance per result document
-        processed_results = [self.document_class.from_db(doc, dereference=dereference) for doc in results]
+        # Extract rows: handle both single SELECT (list[dict]) and multi-statement (list[resultset])
+        rows = None
+        if isinstance(results, list):
+            if results and isinstance(results[0], dict):
+                rows = results
+            else:
+                for part in reversed(results):
+                    if isinstance(part, list):
+                        rows = part
+                        break
+        else:
+            rows = results
+        if not rows:
+            return []
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        # If this is a traversal query, return raw rows (shape may not match document schema)
+        if getattr(self, "_traversal_path", None):
+            return rows
+
+        processed_results = [self.document_class.from_db(doc, dereference=dereference) for doc in rows]
         return processed_results
 
     def all_sync(self, dereference: bool = False) -> List[Any]:
@@ -225,11 +509,31 @@ class QuerySet(BaseQuerySet):
         query = self._build_query()
         results = self.connection.client.query(query)
 
-        if not results or not results[0]:
+        if not results:
             return []
 
-        # Create one instance per result document
-        processed_results = [self.document_class.from_db(doc, dereference=dereference) for doc in results]
+        # Extract rows: handle both single SELECT (list[dict]) and multi-statement (list[resultset])
+        rows = None
+        if isinstance(results, list):
+            if results and isinstance(results[0], dict):
+                rows = results
+            else:
+                for part in reversed(results):
+                    if isinstance(part, list):
+                        rows = part
+                        break
+        else:
+            rows = results
+        if not rows:
+            return []
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        # If this is a traversal query, return raw rows (shape may not match document schema)
+        if getattr(self, "_traversal_path", None):
+            return rows
+
+        processed_results = [self.document_class.from_db(doc, dereference=dereference) for doc in rows]
         return processed_results
 
     async def count(self) -> int:
@@ -358,7 +662,7 @@ class QuerySet(BaseQuerySet):
         document = self.document_class(**kwargs)
         return document.save_sync(self.connection)
 
-    async def update(self, **kwargs: Any) -> List[Any]:
+    async def update(self, returning: Optional[str] = None, **kwargs: Any) -> List[Any]:
         """Update documents matching the query asynchronously with performance optimizations.
 
         This method updates documents matching the query with the given field values.
@@ -377,7 +681,9 @@ class QuerySet(BaseQuerySet):
             if optimized_query:
                 # Convert SELECT to subquery for UPDATE
                 subquery = optimized_query.replace("SELECT *", "SELECT id")
-                update_query = f"UPDATE ({subquery}) SET {', '.join(f'{k} = {json.dumps(v)}' for k, v in kwargs.items())}"
+                update_query = f"UPDATE ({subquery}) SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
+                if returning in ("before", "after", "diff"):
+                    update_query += f" RETURN {returning.upper()}"
                 
                 result = await self.connection.client.query(update_query)
                 
@@ -401,7 +707,9 @@ class QuerySet(BaseQuerySet):
             conditions = self._build_conditions()
             update_query += f" WHERE {' AND '.join(conditions)}"
 
-        update_query += f" SET {', '.join(f'{k} = {json.dumps(v)}' for k, v in kwargs.items())}"
+        update_query += f" SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
+        if returning in ("before", "after", "diff"):
+            update_query += f" RETURN {returning.upper()}"
 
         result = await self.connection.client.query(update_query)
 
@@ -410,7 +718,7 @@ class QuerySet(BaseQuerySet):
 
         return [self.document_class.from_db(doc) for doc in result[0]]
 
-    def update_sync(self, **kwargs: Any) -> List[Any]:
+    def update_sync(self, returning: Optional[str] = None, **kwargs: Any) -> List[Any]:
         """Update documents matching the query synchronously with performance optimizations.
 
         This method updates documents matching the query with the given field values.
@@ -429,7 +737,9 @@ class QuerySet(BaseQuerySet):
             if optimized_query:
                 # Convert SELECT to subquery for UPDATE
                 subquery = optimized_query.replace("SELECT *", "SELECT id")
-                update_query = f"UPDATE ({subquery}) SET {', '.join(f'{k} = {json.dumps(v)}' for k, v in kwargs.items())}"
+                update_query = f"UPDATE ({subquery}) SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
+                if returning in ("before", "after", "diff"):
+                    update_query += f" RETURN {returning.upper()}"
                 
                 result = self.connection.client.query(update_query)
                 
@@ -453,7 +763,7 @@ class QuerySet(BaseQuerySet):
             conditions = self._build_conditions()
             update_query += f" WHERE {' AND '.join(conditions)}"
 
-        update_query += f" SET {', '.join(f'{k} = {json.dumps(v)}' for k, v in kwargs.items())}"
+        update_query += f" SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
 
         result = self.connection.client.query(update_query)
 

@@ -4,6 +4,7 @@ from .exceptions import MultipleObjectsReturned, DoesNotExist
 from surrealdb import RecordID
 from .pagination import PaginationResult
 from .record_id_utils import RecordIdUtils
+from .surrealql import escape_literal
 
 # Import these at runtime to avoid circular imports
 def _get_connection_classes():
@@ -44,6 +45,10 @@ class BaseQuerySet:
         self.split_fields: List[str] = []
         self.fetch_fields: List[str] = []
         self.with_index: Optional[str] = None
+        # Graph traversal state
+        self._traversal_path: Optional[str] = None
+        self._traversal_unique: bool = True
+        self._traversal_max_depth: Optional[int] = None
         # Performance optimization attributes
         self._bulk_id_selection: Optional[List[Any]] = None
         self._id_range_selection: Optional[Tuple[Any, Any, bool]] = None
@@ -406,7 +411,7 @@ class BaseQuerySet:
                         if normalized:
                             conditions.append(f"{field} {op} {normalized}")
                         else:
-                            conditions.append(f"{field} {op} {json.dumps(value)}")
+                            conditions.append(f"{field} {op} {escape_literal(value)}")
                 # Special handling for INSIDE and NOT INSIDE operators
                 elif isinstance(value, RecordID):
                     conditions.append(f"{field} {op} {str(value)}")
@@ -424,8 +429,8 @@ class BaseQuerySet:
                         # String record id
                         if _is_record_id_str(item):
                             return item
-                        # Fallback to JSON for proper quoting/escaping
-                        return json.dumps(item)
+                        # Fallback to escape_literal for proper quoting/escaping
+                        return escape_literal(item)
                     if isinstance(value, (list, tuple, set)):
                         items = ', '.join(_format_literal(v) for v in value)
                         value_str = f"[{items}]"
@@ -434,31 +439,25 @@ class BaseQuerySet:
                         value_str = _format_literal(value)
                     conditions.append(f"{field} {op} {value_str}")
                 elif op == 'STARTSWITH':
-                    # Use json.dumps to properly escape the string value
-                    escaped_value = json.dumps(value)[1:-1]  # Remove the outer quotes
-                    conditions.append(f"string::starts_with({field}, '{escaped_value}')")
+                    conditions.append(f"string::starts_with({field}, {escape_literal(value)})")
                 elif op == 'ENDSWITH':
-                    # Use json.dumps to properly escape the string value
-                    escaped_value = json.dumps(value)[1:-1]  # Remove the outer quotes
-                    conditions.append(f"string::ends_with({field}, '{escaped_value}')")
+                    conditions.append(f"string::ends_with({field}, {escape_literal(value)})")
                 elif op == 'CONTAINS':
                     if isinstance(value, str):
-                        # Use json.dumps to properly escape the string value
-                        escaped_value = json.dumps(value)[1:-1]  # Remove the outer quotes
-                        conditions.append(f"string::contains({field}, '{escaped_value}')")
+                        conditions.append(f"string::contains({field}, {escape_literal(value)})")
                     else:
-                        conditions.append(f"{field} CONTAINS {json.dumps(value)}")
+                        conditions.append(f"{field} CONTAINS {escape_literal(value)}")
                 # Special handling for URL values
                 elif isinstance(value, dict) and '__url_value__' in value:
                     # Extract the URL value and ensure it's properly quoted
                     url_value = value['__url_value__']
-                    conditions.append(f"{field} {op} {json.dumps(url_value)}")
+                    conditions.append(f"{field} {op} {escape_literal(url_value)}")
                 else:
                     # Convert value to database format if we have field information
                     db_value = self._convert_value_for_query(field, value)
-                    # Always use json.dumps to ensure proper escaping of all values
-                    # This is especially important for URLs and strings with special characters
-                    conditions.append(f"{field} {op} {json.dumps(db_value)}")
+                    # Always use escape_literal to ensure proper escaping of all values
+                    # This is especially important for URLs, strings with special characters, Expr vars, and RecordIDs
+                    conditions.append(f"{field} {op} {escape_literal(db_value)}")
         return conditions
 
     def _convert_value_for_query(self, field_name: str, value: Any) -> Any:
@@ -990,5 +989,9 @@ class BaseQuerySet:
         clone._bulk_id_selection = self._bulk_id_selection
         clone._id_range_selection = self._id_range_selection
         clone._prefer_direct_access = self._prefer_direct_access
+        # Copy traversal state
+        clone._traversal_path = self._traversal_path
+        clone._traversal_unique = self._traversal_unique
+        clone._traversal_max_depth = self._traversal_max_depth
 
         return clone

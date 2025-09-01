@@ -131,7 +131,7 @@ async def test_database_queries():
     
     # Try different connection possibilities
     connection_configs = [
-        {"url": "ws://localhost:8000/rpc", "port": 8000},
+        {"url": "ws://db:8000/rpc", "port": 8000},
         {"url": "ws://127.0.0.1:8000/rpc", "port": 8000},
         {"url": "ws://localhost:8001/rpc", "port": 8001},
         {"url": "ws://127.0.0.1:8001/rpc", "port": 8001},

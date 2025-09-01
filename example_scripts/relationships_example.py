@@ -17,10 +17,12 @@ class Author(Document):
     name = StringField(required=True)
     bio = StringField()
 
-    co_authors = Document.relate_to('co_author')
-
     class Meta:
         collection = "authors"
+
+# Optional: attach a class-level relation helper after the class is defined
+# Use Author.co_authors() to build a RelationQuerySet bound to the Author class
+Author.co_authors = Author.relates("co_author")
 
 class Category(Document):
     """Category document model."""
@@ -38,6 +40,8 @@ class Book(Document):
     summary = StringField()
     price = FloatField(required=True)
     page_count = IntField()
+    published_year = IntField()  # Optional here to align with other examples using this field
+    isbn = StringField()  # Optional here to be compatible with other examples that may require it
 
     # Reference to the primary author
     primary_author = ReferenceField(Author)
@@ -63,6 +67,15 @@ async def main():
     print("Connected to SurrealDB")
 
     try:
+        # Ensure tables exist (schemafull) to avoid conflicts and have predictable schema
+        try:
+            await Author.create_table()
+            await Category.create_table()
+            await Book.create_table()
+        except Exception as e:
+            # Tables might already exist
+            pass
+        
         # Create authors
         author1 = Author(name="Jane Doe", bio="Bestselling author of fiction novels")
         author2 = Author(name="John Smith", bio="Award-winning science writer")
@@ -85,6 +98,8 @@ async def main():
             summary="An epic journey through unknown lands",
             price=14.99,
             page_count=320,
+            published_year=2021,
+            isbn="978-0-00-000000-1",
             primary_author=author1,
             categories=[fiction]
         )
@@ -94,6 +109,8 @@ async def main():
             summary="The future of interstellar travel",
             price=19.99,
             page_count=420,
+            published_year=2023,
+            isbn="978-0-00-000000-2",
             primary_author=author2,
             categories=[fiction, scifi]
         )
@@ -124,15 +141,18 @@ async def main():
         print(f"Books by co-authors of {author1.name}: {[book.get('title') for book in books_by_coauthors]}")
 
     finally:
-        # Clean up - delete all created documents
-        for book in [book1, book2]:
-            await book.delete()
+        # Clean up - delete all created documents (guard against unsaved instances)
+        for book in [locals().get('book1'), locals().get('book2')]:
+            if book is not None and getattr(book, 'id', None):
+                await book.delete()
 
-        for category in [fiction, scifi]:
-            await category.delete()
+        for category in [locals().get('fiction'), locals().get('scifi')]:
+            if category is not None and getattr(category, 'id', None):
+                await category.delete()
 
-        for author in [author1, author2]:
-            await author.delete()
+        for author in [locals().get('author1'), locals().get('author2')]:
+            if author is not None and getattr(author, 'id', None):
+                await author.delete()
 
         # Disconnect from the database
         await connection.disconnect()

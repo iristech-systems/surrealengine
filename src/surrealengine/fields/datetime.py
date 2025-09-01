@@ -62,59 +62,59 @@ class DateTimeField(Field):
     def to_db(self, value: Any) -> Optional[Any]:
         """Convert Python datetime to database representation.
 
-        This method converts a Python datetime object to a SurrealDB datetime format
-        for storage in the database. Returns ISO string format for JSON serialization
-        compatibility in queries.
-
-        Args:
-            value: The Python datetime to convert
-
-        Returns:
-            ISO format string that can be JSON serialized
+        This method converts a Python datetime object (or ISO-like string) to a SurrealDB datetime
+        type using the SDK's IsoDateTimeWrapper so that schemafull TYPE datetime is satisfied.
+        If a naive datetime is provided, assume UTC to avoid ambiguity.
         """
-        if value is not None:
-            if isinstance(value, str):
-                try:
-                    value = datetime.datetime.fromisoformat(value)
-                except ValueError:
-                    return value
-            if isinstance(value, datetime.datetime):
-                # Return ISO string format for JSON serialization compatibility
-                return value.isoformat()
+        if value is None:
+            return None
+        # Coerce from string when possible
+        if isinstance(value, str):
+            try:
+                # Normalize trailing Z to +00:00 for fromisoformat
+                value = datetime.datetime.fromisoformat(value.replace('Z', '+00:00'))
+            except ValueError:
+                # Let SDK try to handle unknown string as-is (unlikely)
+                return value
+        if isinstance(value, datetime.datetime):
+            # Ensure timezone-aware; default to UTC if naive
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=datetime.timezone.utc)
+            # Prefer passing the ISO string to wrapper; wrapper also accepts dt in some SDKs
+            return IsoDateTimeWrapper(value.isoformat())
         return value
 
     def from_db(self, value: Any) -> Optional[datetime.datetime]:
         """Convert database value to Python datetime.
 
-        This method converts a value from the database to a Python datetime object.
-        It handles both string representations and IsoDateTimeWrapper instances.
-
-        Args:
-            value: The database value to convert
-
-        Returns:
-            The Python datetime object
+        Accepts IsoDateTimeWrapper, Surreal d'...' literal strings, ISO strings (with optional Z),
+        or datetime instances. Returns a Python datetime (timezone-aware if source has offset).
         """
-        if value is not None:
-            # Handle IsoDateTimeWrapper instances
-            if isinstance(value, IsoDateTimeWrapper):
+        if value is None:
+            return None
+        # SDK wrapper: value.dt may be an ISO string
+        if isinstance(value, IsoDateTimeWrapper):
+            s = value.dt
+            if isinstance(s, str):
                 try:
-                    return datetime.datetime.fromisoformat(value.dt)
+                    return datetime.datetime.fromisoformat(s.replace('Z', '+00:00'))
                 except ValueError:
-                    pass
-            # Handle string representations
-            elif isinstance(value, str):
-                # Remove `d` prefix if present (SurrealDB format)
-                if value.startswith("d'") and value.endswith("'"):
-                    value = value[2:-1]
-                try:
-                    return datetime.datetime.fromisoformat(value)
-                except ValueError:
-                    pass
-            # Handle datetime objects directly
-            elif isinstance(value, datetime.datetime):
-                return value
-        return value
+                    return None
+            if isinstance(s, datetime.datetime):
+                return s
+            return None
+        # Surreal datetime literal like d'2025-08-31T12:34:56Z'
+        if isinstance(value, str):
+            s = value
+            if s.startswith("d'") and s.endswith("'"):
+                s = s[2:-1]
+            try:
+                return datetime.datetime.fromisoformat(s.replace('Z', '+00:00'))
+            except ValueError:
+                return None
+        if isinstance(value, datetime.datetime):
+            return value
+        return None
 
 
 class TimeSeriesField(DateTimeField):

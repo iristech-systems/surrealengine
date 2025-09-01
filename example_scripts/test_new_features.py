@@ -63,7 +63,7 @@ class Order(Document):
 async def main():
     # Connect to SurrealDB
     db = create_connection(
-        url="ws://localhost:8001/rpc",
+        url="ws://db:8000/rpc",
         namespace="test_ns",
         database="test_db",
         username="root",
