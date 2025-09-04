@@ -1,7 +1,14 @@
 import datetime
 from typing import Any, Optional
 
-from surrealdb.data.types.datetime import IsoDateTimeWrapper
+# Robust import for SDK wrapper across versions
+try:
+    from surrealdb.data.types.datetime import IsoDateTimeWrapper  # new path
+except Exception:  # pragma: no cover
+    try:
+        from surrealdb.types import IsoDateTimeWrapper  # possible older path
+    except Exception:
+        IsoDateTimeWrapper = None  # Fallback handled at runtime
 
 from .base import Field
 
@@ -39,25 +46,63 @@ class DateTimeField(Field):
     def validate(self, value: Any) -> Optional[datetime.datetime]:
         """Validate the datetime value.
 
-        This method checks if the value is a valid datetime or can be
-        converted to a datetime from an ISO format string.
-
-        Args:
-            value: The value to validate
-
-        Returns:
-            The validated datetime value
-
-        Raises:
-            TypeError: If the value cannot be converted to a datetime
+        Accepts datetime, IsoDateTimeWrapper, ISO strings (with optional Z or space separator),
+        Surreal d'...' literals, and epoch seconds/milliseconds (int/float).
         """
         value = super().validate(value)
-        if value is not None and not isinstance(value, datetime.datetime):
+        if value is None:
+            return None
+
+        # Already a datetime
+        if isinstance(value, datetime.datetime):
+            return value
+
+        # SDK wrapper instance provided directly
+        if IsoDateTimeWrapper is not None and isinstance(value, IsoDateTimeWrapper):
+            inner = getattr(value, 'dt', None)
+            if isinstance(inner, datetime.datetime):
+                return inner
+            if isinstance(inner, str):
+                try:
+                    return datetime.datetime.fromisoformat(inner.replace('Z', '+00:00'))
+                except ValueError:
+                    pass
+            inner_iso = getattr(value, 'iso', None)
+            if isinstance(inner_iso, str):
+                try:
+                    return datetime.datetime.fromisoformat(inner_iso.replace('Z', '+00:00'))
+                except ValueError:
+                    pass
+            # If wrapper can't be unpacked, treat as invalid
+            raise TypeError(f"Expected datetime-compatible value for field '{self.name}', got IsoDateTimeWrapper with unknown payload")
+
+        # Epoch seconds or milliseconds
+        if isinstance(value, (int, float)):
+            seconds = value / 1000.0 if value >= 1_000_000_000_000 else float(value)
             try:
-                return datetime.datetime.fromisoformat(value)
-            except (TypeError, ValueError):
-                raise TypeError(f"Expected datetime for field '{self.name}', got {type(value)}")
-        return value
+                return datetime.datetime.fromtimestamp(seconds, tz=datetime.timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                raise TypeError(f"Numeric value for '{self.name}' is not a valid epoch timestamp")
+
+        # Strings (ISO, Surreal literal, with spaces, with Z)
+        if isinstance(value, str):
+            s = value.strip()
+            if s.startswith("d'") and s.endswith("'"):
+                s = s[2:-1]
+            s_norm = s.replace('Z', '+00:00')
+            try:
+                return datetime.datetime.fromisoformat(s_norm)
+            except ValueError:
+                pass
+            if ' ' in s_norm and 'T' not in s_norm:
+                try:
+                    return datetime.datetime.fromisoformat(s_norm.replace(' ', 'T', 1))
+                except ValueError:
+                    pass
+            raise TypeError(f"String value for '{self.name}' is not a valid datetime: {value!r}")
+
+        # Unknown type
+        raise TypeError(f"Expected datetime for field '{self.name}', got {type(value)}")
 
     def to_db(self, value: Any) -> Optional[Any]:
         """Convert Python datetime to database representation.
@@ -76,12 +121,31 @@ class DateTimeField(Field):
             except ValueError:
                 # Let SDK try to handle unknown string as-is (unlikely)
                 return value
+        # Direct wrapper passthrough
+        if IsoDateTimeWrapper is not None and isinstance(value, IsoDateTimeWrapper):
+            return value
+        if isinstance(value, (int, float)):
+            # treat as epoch seconds or milliseconds
+            seconds = value / 1000.0 if value >= 1_000_000_000_000 else float(value)
+            try:
+                value = datetime.datetime.fromtimestamp(seconds, tz=datetime.timezone.utc)
+            except Exception:
+                return value
         if isinstance(value, datetime.datetime):
             # Ensure timezone-aware; default to UTC if naive
             if value.tzinfo is None:
                 value = value.replace(tzinfo=datetime.timezone.utc)
-            # Prefer passing the ISO string to wrapper; wrapper also accepts dt in some SDKs
-            return IsoDateTimeWrapper(value.isoformat())
+            # Prefer SDK wrapper when available
+            if IsoDateTimeWrapper is not None:
+                try:
+                    return IsoDateTimeWrapper(value)  # some SDKs accept dt directly
+                except Exception:
+                    try:
+                        return IsoDateTimeWrapper(value.isoformat())
+                    except Exception:
+                        pass
+            # Fallback to Surreal literal
+            return f"d'{value.isoformat().replace('+00:00','Z')}'"
         return value
 
     def from_db(self, value: Any) -> Optional[datetime.datetime]:
@@ -93,8 +157,8 @@ class DateTimeField(Field):
         if value is None:
             return None
         # SDK wrapper: value.dt may be an ISO string
-        if isinstance(value, IsoDateTimeWrapper):
-            s = value.dt
+        if IsoDateTimeWrapper is not None and isinstance(value, IsoDateTimeWrapper):
+            s = getattr(value, 'dt', None)
             if isinstance(s, str):
                 try:
                     return datetime.datetime.fromisoformat(s.replace('Z', '+00:00'))
@@ -102,6 +166,13 @@ class DateTimeField(Field):
                     return None
             if isinstance(s, datetime.datetime):
                 return s
+            # Some SDKs may use 'iso'
+            s2 = getattr(value, 'iso', None)
+            if isinstance(s2, str):
+                try:
+                    return datetime.datetime.fromisoformat(s2.replace('Z', '+00:00'))
+                except ValueError:
+                    return None
             return None
         # Surreal datetime literal like d'2025-08-31T12:34:56Z'
         if isinstance(value, str):
