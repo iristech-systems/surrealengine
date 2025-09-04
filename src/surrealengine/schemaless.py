@@ -275,6 +275,8 @@ class SchemalessQuerySet(BaseQuerySet):
             batch = documents[i:i + batch_size]
 
             # Construct optimized bulk insert query
+            from .document_update import serialize_http_safe
+            batch = [serialize_http_safe(doc) for doc in batch]
             query = f"INSERT INTO {self.table_name} {json.dumps(batch)};"
 
             # Execute batch insert
@@ -330,6 +332,8 @@ class SchemalessQuerySet(BaseQuerySet):
             batch = documents[i:i + batch_size]
 
             # Construct optimized bulk insert query
+            from .document_update import serialize_http_safe
+            batch = [serialize_http_safe(doc) for doc in batch]
             query = f"INSERT INTO {self.table_name} {json.dumps(batch)};"
 
             # Execute batch insert
@@ -535,7 +539,8 @@ class SchemalessTable:
         if filters:
             conditions = []
             for field, value in filters.items():
-                conditions.append(f"{field} = {json.dumps(value)}")
+                from .surrealql import escape_literal
+                conditions.append(f"{field} = {escape_literal(value)}")
 
             if target_table:
                 query += f" AND {' AND '.join(conditions)}"
@@ -598,7 +603,8 @@ class SchemalessTable:
         if filters:
             conditions = []
             for field, value in filters.items():
-                conditions.append(f"{field} = {json.dumps(value)}")
+                from .surrealql import escape_literal
+                conditions.append(f"{field} = {escape_literal(value)}")
 
             if target_table:
                 query += f" AND {' AND '.join(conditions)}"
@@ -660,7 +666,8 @@ class SchemalessTable:
                 to_record = f"{self.name}:{to_id}"
 
         # Query the relation first
-        relation_query = f"SELECT id FROM {relation} WHERE in = {json.dumps(from_record)} AND out = {json.dumps(to_record)}"
+        from .surrealql import escape_literal
+        relation_query = f"SELECT id FROM {relation} WHERE in = {escape_literal(from_record)} AND out = {escape_literal(to_record)}"
         relation_result = await self.connection.client.query(relation_query)
 
         if not relation_result or not relation_result[0]:
@@ -725,7 +732,8 @@ class SchemalessTable:
                 to_record = f"{self.name}:{to_id}"
 
         # Query the relation first
-        relation_query = f"SELECT id FROM {relation} WHERE in = {json.dumps(from_record)} AND out = {json.dumps(to_record)}"
+        from .surrealql import escape_literal
+        relation_query = f"SELECT id FROM {relation} WHERE in = {escape_literal(from_record)} AND out = {escape_literal(to_record)}"
         relation_result = self.connection.client.query(relation_query)
 
         if not relation_result or not relation_result[0]:
@@ -791,10 +799,12 @@ class SchemalessTable:
                     to_record = f"{self.name}:{to_id}"
 
             # Delete specific relation
-            query = f"DELETE FROM {relation} WHERE in = {json.dumps(from_record)} AND out = {json.dumps(to_record)}"
+            from .surrealql import escape_literal
+            query = f"DELETE FROM {relation} WHERE in = {escape_literal(from_record)} AND out = {escape_literal(to_record)}"
         else:
             # Delete all relations from this record
-            query = f"DELETE FROM {relation} WHERE in = {json.dumps(from_record)}"
+            from .surrealql import escape_literal
+            query = f"DELETE FROM {relation} WHERE in = {escape_literal(from_record)}"
 
         result = await self.connection.client.query(query)
 
@@ -843,10 +853,12 @@ class SchemalessTable:
                     to_record = f"{self.name}:{to_id}"
 
             # Delete specific relation
-            query = f"DELETE FROM {relation} WHERE in = {json.dumps(from_record)} AND out = {json.dumps(to_record)}"
+            from .surrealql import escape_literal
+            query = f"DELETE FROM {relation} WHERE in = {escape_literal(from_record)} AND out = {escape_literal(to_record)}"
         else:
             # Delete all relations from this record
-            query = f"DELETE FROM {relation} WHERE in = {json.dumps(from_record)}"
+            from .surrealql import escape_literal
+            query = f"DELETE FROM {relation} WHERE in = {escape_literal(from_record)}"
 
         result = self.connection.client.query(query)
 

@@ -42,10 +42,11 @@ async def update_relation_document(relation_doc: RelationDocument,
     
     # Add attributes
     updates = []
+    from .document_update import _serialize_for_surreal as _ser
     for key, value in attrs.items():
         # Update the instance
         setattr(relation_doc, key, value)
-        updates.append(f" {key} = {json.dumps(value)}")
+        updates.append(f" {key} = {_ser(value)}")
         
     if not updates:
         return relation_doc
@@ -97,10 +98,11 @@ def update_relation_document_sync(relation_doc: RelationDocument,
     
     # Add attributes
     updates = []
+    from .document_update import _serialize_for_surreal as _ser
     for key, value in attrs.items():
         # Update the instance
         setattr(relation_doc, key, value)
-        updates.append(f" {key} = {json.dumps(value)}")
+        updates.append(f" {key} = {_ser(value)}")
         
     if not updates:
         return relation_doc

@@ -1690,7 +1690,8 @@ class Document(metaclass=DocumentMetaclass):
         if filters:
             conditions = []
             for field, value in filters.items():
-                conditions.append(f"{field} = {json.dumps(value)}")
+                from .surrealql import escape_literal
+                conditions.append(f"{field} = {escape_literal(value)}")
 
             if target_document:
                 query += f" AND {' AND '.join(conditions)}"
@@ -1747,7 +1748,8 @@ class Document(metaclass=DocumentMetaclass):
         if filters:
             conditions = []
             for field, value in filters.items():
-                conditions.append(f"{field} = {json.dumps(value)}")
+                from .surrealql import escape_literal
+                conditions.append(f"{field} = {escape_literal(value)}")
 
             if target_document:
                 query += f" AND {' AND '.join(conditions)}"

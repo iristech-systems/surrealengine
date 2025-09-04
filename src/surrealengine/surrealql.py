@@ -14,8 +14,18 @@ from __future__ import annotations
 
 import json
 import re
+import datetime
 from typing import Any
 from .record_id_utils import RecordIdUtils
+
+# Robust optional import for SDK wrapper
+try:
+    from surrealdb.data.types.datetime import IsoDateTimeWrapper  # type: ignore
+except Exception:  # pragma: no cover
+    try:
+        from surrealdb.types import IsoDateTimeWrapper  # type: ignore
+    except Exception:
+        IsoDateTimeWrapper = None  # type: ignore
 
 _record_id_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*:[^\s]+$")
 
@@ -45,15 +55,30 @@ def escape_identifier(name: str) -> str:
     return f"`{safe}`"
 
 
+def _iso_from_wrapper(w: Any) -> str:
+    s = getattr(w, "dt", None)
+    if isinstance(s, datetime.datetime):
+        if s.tzinfo is None:
+            s = s.replace(tzinfo=datetime.timezone.utc)
+        return s.isoformat().replace("+00:00", "Z")
+    if isinstance(s, str):
+        return s.replace("+00:00", "Z")
+    s2 = getattr(w, "iso", None)
+    if isinstance(s2, str):
+        return s2.replace("+00:00", "Z")
+    return str(w)
+
+
 def escape_literal(value: Any) -> str:
     """Escape a literal value for SurrealQL.
 
-    - Strings/numbers/bools/null: json.dumps
-    - RecordIDs (str like table:id or RecordID objects): unquoted as-is
-    - dicts with 'id' that looks like RecordID: use that id
-    - lists/tuples/sets: JSON array with each element escaped recursively where
-      appropriate (record ids without quotes, others json-dumped)
-    - Expr values: render their string representation as-is (used for $vars and raw expressions)
+    Handles:
+    - Strings/numbers/bools/null via json.dumps (with Surreal datetime literal passthrough)
+    - RecordIDs as-unquoted
+    - datetime and IsoDateTimeWrapper -> Surreal literal d'...Z'
+    - lists/tuples/sets -> recurse
+    - dicts: if has 'id' that is a record id, use that; else serialize as map with escaped values
+    - Expr: render raw
     """
     # Avoid import cycle: compare by name to tolerate optional import
     try:
@@ -68,14 +93,39 @@ def escape_literal(value: Any) -> str:
     if is_record_id(value):
         return str(value)
 
+    # Datetime wrapper
+    if IsoDateTimeWrapper is not None and isinstance(value, IsoDateTimeWrapper):
+        iso = _iso_from_wrapper(value)
+        return f"d'{iso}'"
+
+    # Python datetime
+    if isinstance(value, datetime.datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=datetime.timezone.utc)
+        iso = dt.isoformat().replace("+00:00", "Z")
+        return f"d'{iso}'"
+
+    # Strings: pass Surreal datetime literal through unchanged
+    if isinstance(value, str):
+        s = value.strip()
+        if s.startswith("d'") and s.endswith("'"):
+            return s
+        return json.dumps(value)
+
     # dict with 'id' that is a record id
     if isinstance(value, dict) and 'id' in value and is_record_id(value['id']):
         return str(value['id'])
 
-    # collections -> try to preserve record ids
+    # collections -> preserve record ids and dt literals
     if isinstance(value, (list, tuple, set)):
         parts = [escape_literal(v) for v in value]
         return f"[{', '.join(parts)}]"
+
+    # General dict: escape each value
+    if isinstance(value, dict):
+        items = []
+        for k, v in value.items():
+            items.append(json.dumps(str(k)) + ": " + escape_literal(v))
+        return "{" + ", ".join(items) + "}"
 
     # Fallback: JSON
     return json.dumps(value)

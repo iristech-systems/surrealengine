@@ -219,9 +219,10 @@ class RelationQuerySet:
         if filters:
             conditions = []
             for field, value in filters.items():
-                conditions.append(f"{field} = {json.dumps(value)}")
+                from ..surrealql import escape_literal
+                conditions.append(f"{field} = {escape_literal(value)}")
             query += f" WHERE {' AND '.join(conditions)}"
-
+        
         result = await self.connection.client.query(query)
         if not result or not result[0]:
             return []
@@ -278,9 +279,10 @@ class RelationQuerySet:
         if filters:
             conditions = []
             for field, value in filters.items():
-                conditions.append(f"{field} = {json.dumps(value)}")
+                from ..surrealql import escape_literal
+                conditions.append(f"{field} = {escape_literal(value)}")
             query += f" WHERE {' AND '.join(conditions)}"
-
+        
         result = self.connection.client.query(query)
 
         if not result or not result[0]:
@@ -331,7 +333,8 @@ class RelationQuerySet:
             to_id = f"{to_class._get_collection_name()}:{to_instance.id}"
 
         # Query the relation first
-        relation_query = f"SELECT id FROM {relation} WHERE in = {json.dumps(from_id)} AND out = {json.dumps(to_id)}"
+        from ..surrealql import escape_literal
+        relation_query = f"SELECT id FROM {relation} WHERE in = {escape_literal(from_id)} AND out = {escape_literal(to_id)}"
         relation_result = await self.connection.client.query(relation_query)
 
         if not relation_result or not relation_result[0]:
@@ -393,7 +396,8 @@ class RelationQuerySet:
             to_id = f"{to_class._get_collection_name()}:{to_instance.id}"
 
         # Query the relation first
-        relation_query = f"SELECT id FROM {relation} WHERE in = {json.dumps(from_id)} AND out = {json.dumps(to_id)}"
+        from ..surrealql import escape_literal
+        relation_query = f"SELECT id FROM {relation} WHERE in = {escape_literal(from_id)} AND out = {escape_literal(to_id)}"
         relation_result = self.connection.client.query(relation_query)
 
         if not relation_result or not relation_result[0]:
@@ -461,10 +465,12 @@ class RelationQuerySet:
                 to_id = f"{to_class._get_collection_name()}:{to_instance.id}"
 
             # Delete specific relation
-            query = f"DELETE FROM {relation} WHERE in = {json.dumps(from_id)} AND out = {json.dumps(to_id)}"
+            from ..surrealql import escape_literal
+            query = f"DELETE FROM {relation} WHERE in = {escape_literal(from_id)} AND out = {escape_literal(to_id)}"
         else:
             # Delete all relations from this instance
-            query = f"DELETE FROM {relation} WHERE in = {json.dumps(from_id)}"
+            from ..surrealql import escape_literal
+            query = f"DELETE FROM {relation} WHERE in = {escape_literal(from_id)}"
 
         result = await self.connection.client.query(query)
 
@@ -516,10 +522,12 @@ class RelationQuerySet:
                 to_id = f"{to_class._get_collection_name()}:{to_instance.id}"
 
             # Delete specific relation
-            query = f"DELETE FROM {relation} WHERE in = {json.dumps(from_id)} AND out = {json.dumps(to_id)}"
+            from ..surrealql import escape_literal
+            query = f"DELETE FROM {relation} WHERE in = {escape_literal(from_id)} AND out = {escape_literal(to_id)}"
         else:
             # Delete all relations from this instance
-            query = f"DELETE FROM {relation} WHERE in = {json.dumps(from_id)}"
+            from ..surrealql import escape_literal
+            query = f"DELETE FROM {relation} WHERE in = {escape_literal(from_id)}"
 
         result = self.connection.client.query(query)
 

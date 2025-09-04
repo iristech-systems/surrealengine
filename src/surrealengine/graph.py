@@ -121,7 +121,8 @@ class GraphQuery:
                 # Add start filters
                 start_conditions = []
                 for field, value in self.start_filters.items():
-                    start_conditions.append(f"{field} = {json.dumps(value)}")
+                    from .surrealql import escape_literal
+                    start_conditions.append(f"{field} = {escape_literal(value)}")
 
                 if start_conditions:
                     path_query += f"({collection} WHERE {' AND '.join(start_conditions)})"
@@ -131,12 +132,14 @@ class GraphQuery:
                 where_clauses.append(path_query)
             else:
                 for field, value in self.start_filters.items():
-                    where_clauses.append(f"{field} = {json.dumps(value)}")
+                    from .surrealql import escape_literal
+                    where_clauses.append(f"{field} = {escape_literal(value)}")
 
         # Add end filters
         if hasattr(self, 'end_filters') and self.end_filters:
             for field, value in self.end_filters.items():
-                where_clauses.append(f"{field} = {json.dumps(value)}")
+                from .surrealql import escape_literal
+                where_clauses.append(f"{field} = {escape_literal(value)}")
 
         # Complete the query
         if where_clauses:
