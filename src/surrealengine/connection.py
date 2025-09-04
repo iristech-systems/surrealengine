@@ -1433,6 +1433,8 @@ class ConnectionPoolClient:
         with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "create", "db.collection": collection}):
             connection = await self.pool.get_connection()
             try:
+                from .document_update import serialize_http_safe
+                data = serialize_http_safe(data)
                 return await connection.client.create(collection, data)
             finally:
                 await self.pool.return_connection(connection)
@@ -1450,6 +1452,8 @@ class ConnectionPoolClient:
         with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "update"}):
             connection = await self.pool.get_connection()
             try:
+                from .document_update import serialize_http_safe
+                data = serialize_http_safe(data)
                 return await connection.client.update(id, data)
             finally:
                 await self.pool.return_connection(connection)
@@ -1512,6 +1516,8 @@ class ConnectionPoolClient:
         with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "insert", "db.collection": collection, "db.row_count": len(data) if isinstance(data, list) else 1}):
             connection = await self.pool.get_connection()
             try:
+                from .document_update import serialize_http_safe
+                data = [serialize_http_safe(d) for d in data] if isinstance(data, list) else serialize_http_safe(data)
                 return await connection.client.insert(collection, data)
             finally:
                 await self.pool.return_connection(connection)

@@ -91,7 +91,8 @@ class RelationQuerySet:
                 else:
                     processed_attrs[k] = v
             
-            attrs_str = ", ".join([f"{k}: {json.dumps(v)}" for k, v in processed_attrs.items()])
+            from ..document_update import _serialize_for_surreal as _ser
+            attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in processed_attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
         result = await self.connection.client.query(query)
@@ -162,7 +163,8 @@ class RelationQuerySet:
                 else:
                     processed_attrs[k] = v
             
-            attrs_str = ", ".join([f"{k}: {json.dumps(v)}" for k, v in processed_attrs.items()])
+            from ..document_update import _serialize_for_surreal as _ser
+            attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in processed_attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
         result = self.connection.client.query(query)
@@ -341,8 +343,9 @@ class RelationQuerySet:
 
         # Add attributes
         updates = []
+        from ..document_update import _serialize_for_surreal as _ser
         for key, value in attrs.items():
-            updates.append(f" {key} = {json.dumps(value)}")
+            updates.append(f" {key} = {_ser(value)}")
 
         update_query += ",".join(updates)
 
@@ -402,8 +405,9 @@ class RelationQuerySet:
 
         # Add attributes
         updates = []
+        from ..document_update import _serialize_for_surreal as _ser
         for key, value in attrs.items():
-            updates.append(f" {key} = {json.dumps(value)}")
+            updates.append(f" {key} = {_ser(value)}")
 
         update_query += ",".join(updates)
 

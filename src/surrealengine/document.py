@@ -969,6 +969,44 @@ class Document(metaclass=DocumentMetaclass):
             )
         else:
             # Create new document - use full data
+            # Ensure HTTP-safe serialization (Fix B)
+            try:
+                from .utils import serialize_http_safe  # type: ignore
+            except Exception:
+                # Local fallback if utils not available
+                def serialize_http_safe(v):
+                    try:
+                        from surrealdb.data.types.datetime import IsoDateTimeWrapper as _Iso
+                    except Exception:
+                        try:
+                            from surrealdb.types import IsoDateTimeWrapper as _Iso
+                        except Exception:
+                            _Iso = ()
+                    import datetime as _dt
+                    if v is None or isinstance(v, (str, int, float, bool)):
+                        return v
+                    if isinstance(v, _dt.datetime):
+                        if v.tzinfo is None:
+                            v = v.replace(tzinfo=_dt.timezone.utc)
+                        return v.isoformat().replace('+00:00','Z')
+                    if _Iso and isinstance(v, _Iso):
+                        inner = getattr(v, 'dt', None)
+                        if isinstance(inner, _dt.datetime):
+                            if inner.tzinfo is None:
+                                inner = inner.replace(tzinfo=_dt.timezone.utc)
+                            return inner.isoformat().replace('+00:00','Z')
+                        if isinstance(inner, str):
+                            return inner.replace('+00:00','Z')
+                        inner2 = getattr(v, 'iso', None)
+                        if isinstance(inner2, str):
+                            return inner2.replace('+00:00','Z')
+                        return str(v)
+                    if isinstance(v, list):
+                        return [serialize_http_safe(x) for x in v]
+                    if isinstance(v, dict):
+                        return {k: serialize_http_safe(x) for k,x in v.items()}
+                    return v
+            data = serialize_http_safe(data)
             result = await connection.client.create(
                 self._get_collection_name(),
                 data
@@ -1061,6 +1099,43 @@ class Document(metaclass=DocumentMetaclass):
             )
         else:
             # Create new document - use full data
+            # Ensure HTTP-safe serialization (Fix B)
+            try:
+                from .utils import serialize_http_safe  # type: ignore
+            except Exception:
+                def serialize_http_safe(v):
+                    try:
+                        from surrealdb.data.types.datetime import IsoDateTimeWrapper as _Iso
+                    except Exception:
+                        try:
+                            from surrealdb.types import IsoDateTimeWrapper as _Iso
+                        except Exception:
+                            _Iso = ()
+                    import datetime as _dt
+                    if v is None or isinstance(v, (str, int, float, bool)):
+                        return v
+                    if isinstance(v, _dt.datetime):
+                        if v.tzinfo is None:
+                            v = v.replace(tzinfo=_dt.timezone.utc)
+                        return v.isoformat().replace('+00:00','Z')
+                    if _Iso and isinstance(v, _Iso):
+                        inner = getattr(v, 'dt', None)
+                        if isinstance(inner, _dt.datetime):
+                            if inner.tzinfo is None:
+                                inner = inner.replace(tzinfo=_dt.timezone.utc)
+                            return inner.isoformat().replace('+00:00','Z')
+                        if isinstance(inner, str):
+                            return inner.replace('+00:00','Z')
+                        inner2 = getattr(v, 'iso', None)
+                        if isinstance(inner2, str):
+                            return inner2.replace('+00:00','Z')
+                        return str(v)
+                    if isinstance(v, list):
+                        return [serialize_http_safe(x) for x in v]
+                    if isinstance(v, dict):
+                        return {k: serialize_http_safe(x) for k,x in v.items()}
+                    return v
+            data = serialize_http_safe(data)
             result = connection.client.create(
                 self._get_collection_name(),
                 data

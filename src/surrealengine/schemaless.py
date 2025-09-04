@@ -426,7 +426,8 @@ class SchemalessTable:
 
         # Add attributes if provided
         if attrs:
-            attrs_str = ", ".join([f"{k}: {json.dumps(v)}" for k, v in attrs.items()])
+            from .document_update import _serialize_for_surreal as _ser
+            attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
         result = await self.connection.client.query(query)
@@ -482,7 +483,8 @@ class SchemalessTable:
 
         # Add attributes if provided
         if attrs:
-            attrs_str = ", ".join([f"{k}: {json.dumps(v)}" for k, v in attrs.items()])
+            from .document_update import _serialize_for_surreal as _ser
+            attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
         result = self.connection.client.query(query)
@@ -671,8 +673,9 @@ class SchemalessTable:
 
         # Add attributes
         updates = []
+        from .document_update import _serialize_for_surreal as _ser
         for key, value in attrs.items():
-            updates.append(f" {key} = {json.dumps(value)}")
+            updates.append(f" {key} = {_ser(value)}")
 
         update_query += ",".join(updates)
 
@@ -735,8 +738,9 @@ class SchemalessTable:
 
         # Add attributes
         updates = []
+        from .document_update import _serialize_for_surreal as _ser
         for key, value in attrs.items():
-            updates.append(f" {key} = {json.dumps(value)}")
+            updates.append(f" {key} = {_ser(value)}")
 
         update_query += ",".join(updates)
 

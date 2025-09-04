@@ -21,6 +21,41 @@ except Exception:  # pragma: no cover
 from .document import Document
 from .connection import ConnectionRegistry
 
+# Universal HTTP-safe serializer for outgoing payloads (Fix B)
+def serialize_http_safe(value: Any):
+    """Recursively convert datetime and IsoDateTimeWrapper into ISO Z strings for JSON HTTP payloads."""
+    try:
+        from surrealdb.data.types.datetime import IsoDateTimeWrapper as _Iso
+    except Exception:
+        try:
+            from surrealdb.types import IsoDateTimeWrapper as _Iso
+        except Exception:
+            _Iso = ()
+    import datetime as _dt
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, _dt.datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=_dt.timezone.utc)
+        return value.isoformat().replace('+00:00','Z')
+    if _Iso and isinstance(value, _Iso):
+        inner = getattr(value, 'dt', None)
+        if isinstance(inner, _dt.datetime):
+            if inner.tzinfo is None:
+                inner = inner.replace(tzinfo=_dt.timezone.utc)
+            return inner.isoformat().replace('+00:00','Z')
+        if isinstance(inner, str):
+            return inner.replace('+00:00','Z')
+        inner2 = getattr(value, 'iso', None)
+        if isinstance(inner2, str):
+            return inner2.replace('+00:00','Z')
+        return str(value)
+    if isinstance(value, list):
+        return [serialize_http_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: serialize_http_safe(v) for k, v in value.items()}
+    return value
+
 
 def _iso_from_wrapper(w) -> str:
     if w is None:
@@ -212,30 +247,64 @@ def patch_document():
     
     # Define new save methods that use update for existing documents
     async def new_save(self, connection=None):
-        """Enhanced save method that uses update for existing documents."""
+        """Enhanced save method that uses update for existing or HTTP-safe create for new documents."""
         # If document exists and has changes, use update instead of upsert
-        # We want to use update for all Document instances, including FetchProgress
         if self.id and self._changed_fields:
-            # Get only the changed data
             data = self.get_changed_data_for_update()
             if data:
                 return await self.update(**data)
-        
-        # Otherwise use the original save method
-        return await original_save(self, connection)
+        # New document: perform HTTP-safe create
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Full data for create
+        data = self.to_db()
+        safe_data = serialize_http_safe(data)
+        # Execute create
+        result = await connection.client.create(
+            self._get_collection_name(),
+            safe_data
+        )
+        # Apply result to instance (mirrors original save)
+        if result:
+            doc_data = result[0] if isinstance(result, list) and result else result
+            if isinstance(doc_data, dict):
+                self._data.update(doc_data)
+                if 'id' in doc_data:
+                    self._data['id'] = doc_data['id']
+                for field_name, field in self._fields.items():
+                    if field_name in doc_data:
+                        self._data[field_name] = field.from_db(doc_data[field_name])
+        # Mark clean
+        if hasattr(self, 'mark_clean'):
+            self.mark_clean()
+        return self
     
     def new_save_sync(self, connection=None):
-        """Enhanced sync save method that uses update for existing documents."""
-        # If document exists and has changes, use update instead of upsert
-        # We want to use update for all Document instances, including FetchProgress
+        """Enhanced sync save method that uses update for existing or HTTP-safe create for new documents."""
         if self.id and self._changed_fields:
-            # Get only the changed data
             data = self.get_changed_data_for_update()
             if data:
                 return self.update_sync(**data)
-        
-        # Otherwise use the original save method
-        return original_save_sync(self, connection)
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        data = self.to_db()
+        safe_data = serialize_http_safe(data)
+        result = connection.client.create(
+            self._get_collection_name(),
+            safe_data
+        )
+        if result:
+            doc_data = result[0] if isinstance(result, list) and result else result
+            if isinstance(doc_data, dict):
+                self._data.update(doc_data)
+                if 'id' in doc_data:
+                    self._data['id'] = doc_data['id']
+                for field_name, field in self._fields.items():
+                    if field_name in doc_data:
+                        self._data[field_name] = field.from_db(doc_data[field_name])
+        if hasattr(self, 'mark_clean'):
+            self.mark_clean()
+        return self
     
     # Replace save methods
     Document.save = new_save
