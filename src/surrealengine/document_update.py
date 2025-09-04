@@ -6,10 +6,77 @@ that allow updating specific fields without deleting existing data.
 """
 
 import json
+import datetime
 from typing import Any, Optional, Dict, Type
+
+# Robust import for SDK datetime wrapper
+try:
+    from surrealdb.data.types.datetime import IsoDateTimeWrapper  # new path
+except Exception:  # pragma: no cover
+    try:
+        from surrealdb.types import IsoDateTimeWrapper  # older path
+    except Exception:
+        IsoDateTimeWrapper = None
 
 from .document import Document
 from .connection import ConnectionRegistry
+
+
+def _iso_from_wrapper(w) -> str:
+    if w is None:
+        return ""
+    s = getattr(w, "dt", None)
+    if isinstance(s, datetime.datetime):
+        return s.isoformat()
+    if isinstance(s, str):
+        return s
+    s2 = getattr(w, "iso", None)
+    if isinstance(s2, str):
+        return s2
+    return str(w)
+
+
+def _serialize_for_surreal(value: Any) -> str:
+    """Serialize Python values to SurrealDB-friendly literal strings.
+    - IsoDateTimeWrapper or datetime -> d'...'
+    - Strings: pass through if already a Surreal literal; else JSON-quote
+    - None -> none
+    - Lists/Tuples/Dicts: recursive serialization
+    - Primitives -> json.dumps
+    """
+    # Datetime wrappers and datetime objects
+    if IsoDateTimeWrapper is not None and isinstance(value, IsoDateTimeWrapper):
+        iso = _iso_from_wrapper(value).replace("+00:00", "Z")
+        return f"d'{iso}'"
+    if isinstance(value, datetime.datetime):
+        # Ensure timezone awareness defaulting to UTC
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=datetime.timezone.utc)
+        iso = dt.isoformat().replace("+00:00", "Z")
+        return f"d'{iso}'"
+
+    # Already a Surreal datetime literal
+    if isinstance(value, str):
+        if value.startswith("d'") and value.endswith("'"):
+            return value
+        return json.dumps(value)
+
+    if value is None:
+        return "none"
+
+    if isinstance(value, list):
+        return '[' + ', '.join(_serialize_for_surreal(v) for v in value) + ']'
+    if isinstance(value, tuple):
+        return '[' + ', '.join(_serialize_for_surreal(v) for v in value) + ']'
+    if isinstance(value, dict):
+        items = []
+        for k, v in value.items():
+            items.append(json.dumps(str(k)) + ": " + _serialize_for_surreal(v))
+        return '{' + ', '.join(items) + '}'
+
+    try:
+        return json.dumps(value)
+    except TypeError:
+        return json.dumps(str(value))
 
 
 async def update_document(doc: Document, 
@@ -45,7 +112,10 @@ async def update_document(doc: Document,
     for key, value in attrs.items():
         # Update the instance
         setattr(doc, key, value)
-        updates.append(f" {key} = {json.dumps(value)}")
+        # Use field's to_db if available before serialization
+        field_obj = getattr(doc, '_fields', {}).get(key)
+        db_value = field_obj.to_db(value) if field_obj is not None else value
+        updates.append(f" {key} = {_serialize_for_surreal(db_value)}")
         
     if not updates:
         return doc
@@ -100,7 +170,9 @@ def update_document_sync(doc: Document,
     for key, value in attrs.items():
         # Update the instance
         setattr(doc, key, value)
-        updates.append(f" {key} = {json.dumps(value)}")
+        field_obj = getattr(doc, '_fields', {}).get(key)
+        db_value = field_obj.to_db(value) if field_obj is not None else value
+        updates.append(f" {key} = {_serialize_for_surreal(db_value)}")
         
     if not updates:
         return doc
