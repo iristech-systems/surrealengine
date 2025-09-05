@@ -27,11 +27,14 @@ except Exception:  # pragma: no cover
     except Exception:
         IsoDateTimeWrapper = None  # type: ignore
 
-_record_id_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*:[^\s]+$")
+_record_id_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*:(?!/)[^\s]+$")
 
 
 def is_record_id(value: Any) -> bool:
     if isinstance(value, str):
+        # Reject URL schemes and whitespace
+        if '://' in value or any(ch.isspace() for ch in value):
+            return False
         return bool(_record_id_re.match(value))
     try:
         # Some SDKs expose RecordID objects with string repr

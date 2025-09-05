@@ -145,33 +145,29 @@ class RecordIdUtils:
         Returns:
             True if valid RecordID format, False otherwise
             
-        Examples:
-            >>> RecordIdUtils.is_valid_record_id("user:123")
-            True
-            
-            >>> RecordIdUtils.is_valid_record_id("user123")
-            False
-            
-            >>> RecordIdUtils.is_valid_record_id("user:")
-            False
+        Notes / caveats:
+        - Reject URL-like strings (those containing '://').
+        - Reject cases where the id part starts with '/' (e.g., 'http:/path').
+        - Disallow any whitespace in the token.
+        - Be conservative: require exactly one ':' and a valid table identifier.
         """
         if not isinstance(record_id, str) or not record_id:
             return False
-            
-        # Basic format check: must contain exactly one colon
+        # Fast rejects
+        if '://' in record_id:
+            return False
+        if any(ch.isspace() for ch in record_id):
+            return False
+        # Must contain exactly one colon
         if record_id.count(':') != 1:
             return False
-            
         table, id_part = record_id.split(':', 1)
-        
-        # Table name must be valid identifier
+        # Table name must be a valid identifier
         if not table or not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', table):
             return False
-            
-        # ID part must not be empty
-        if not id_part:
+        # ID part must exist and must not begin with '/'
+        if not id_part or id_part.startswith('/'):
             return False
-            
         return True
     
     @classmethod

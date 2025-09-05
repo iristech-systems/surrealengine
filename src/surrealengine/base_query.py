@@ -395,8 +395,20 @@ class BaseQuerySet:
             elif op == '=' and isinstance(field, str) and '::' in field:
                 conditions.append(f"{field}")
             else:
-                # Special handling for RecordIDs - use normalized format
-                if field == 'id' or (isinstance(value, str) and RecordIdUtils.is_valid_record_id(value)):
+                # Determine if field is a RecordID field
+                def _field_is_record_id(field_name: str) -> bool:
+                    document_class = getattr(self, 'document_class', None)
+                    if not document_class or not hasattr(document_class, '_fields'):
+                        return False
+                    field_obj = document_class._fields.get(field_name)
+                    try:
+                        from .fields.id import RecordIDField  # type: ignore
+                        return isinstance(field_obj, RecordIDField)
+                    except Exception:
+                        return False
+
+                # Special handling for RecordIDs - only for id or RecordIDField or RecordID object
+                if field == 'id' or _field_is_record_id(field) or isinstance(value, RecordID):
                     # Ensure RecordID is properly formatted
                     if isinstance(value, str) and RecordIdUtils.is_valid_record_id(value):
                         conditions.append(f"{field} {op} {value}")
@@ -408,26 +420,25 @@ class BaseQuerySet:
                         if hasattr(self, 'document_class') and self.document_class:
                             table_name = self.document_class._get_collection_name()
                         normalized = RecordIdUtils.normalize_record_id(value, table_name)
-                        if normalized:
+                        if normalized and RecordIdUtils.is_valid_record_id(normalized):
                             conditions.append(f"{field} {op} {normalized}")
                         else:
                             conditions.append(f"{field} {op} {escape_literal(value)}")
                 # Special handling for INSIDE and NOT INSIDE operators
-                elif isinstance(value, RecordID):
-                    conditions.append(f"{field} {op} {str(value)}")
                 elif op in ('INSIDE', 'NOT INSIDE'):
-                    # Special handling for array RHS: emit record IDs without quotes
+                    # Only treat list items as record IDs if the field is a RecordID field
+                    treat_items_as_ids = _field_is_record_id(field)
                     def _is_record_id_str(s):
                         return isinstance(s, str) and RecordIdUtils.is_valid_record_id(s)
                     def _format_literal(item):
                         # Accept dicts with 'id'
-                        if isinstance(item, dict) and 'id' in item and _is_record_id_str(item['id']):
+                        if isinstance(item, dict) and 'id' in item and _is_record_id_str(item['id']) and treat_items_as_ids:
                             return item['id']
                         # RecordID object
-                        if isinstance(item, RecordID):
+                        if isinstance(item, RecordID) and treat_items_as_ids:
                             return str(item)
                         # String record id
-                        if _is_record_id_str(item):
+                        if _is_record_id_str(item) and treat_items_as_ids:
                             return item
                         # Fallback to escape_literal for proper quoting/escaping
                         return escape_literal(item)
@@ -438,6 +449,9 @@ class BaseQuerySet:
                         # Single non-iterable value - still format appropriately
                         value_str = _format_literal(value)
                     conditions.append(f"{field} {op} {value_str}")
+                elif isinstance(value, RecordID):
+                    # If value is a RecordID object but field is not RecordID-typed, quote it to be safe
+                    conditions.append(f"{field} {op} {escape_literal(str(value))}")
                 elif op == 'STARTSWITH':
                     conditions.append(f"string::starts_with({field}, {escape_literal(value)})")
                 elif op == 'ENDSWITH':
