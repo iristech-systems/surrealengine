@@ -1,6 +1,9 @@
 import re
 import uuid
 import decimal
+import base64
+import socket
+import urllib.parse
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Pattern, Type, Union
 
@@ -69,7 +72,6 @@ class BytesField(Field):
         if isinstance(value, bytes):
             # Convert bytes to SurrealDB bytes format
             # SurrealDB uses <bytes>"base64_encoded_string" format
-            import base64
             encoded = base64.b64encode(value).decode('ascii')
             return f'<bytes>"{encoded}"'
 
@@ -96,7 +98,6 @@ class BytesField(Field):
                 return value
             if isinstance(value, str) and value.startswith('<bytes>"') and value.endswith('"'):
                 # Extract the base64-encoded string from <bytes>"..." format
-                import base64
                 encoded = value[8:-1]  # Remove <bytes>" and "
                 return base64.b64decode(encoded)
         return value
@@ -251,22 +252,23 @@ class DecimalField(NumberField):
                 raise TypeError(f"Expected decimal for field '{self.name}', got {type(value)}")
         return value
 
-    def to_db(self, value: Any) -> Optional[float]:
+    def to_db(self, value: Any) -> Optional[str]:
         """Convert Python decimal to database representation.
 
-        This method converts a Python Decimal object to a float for storage in the database.
+        This method converts a Python Decimal object to a string for storage in the database
+        to preserve precision.
 
         Args:
             value: The Python Decimal to convert
 
         Returns:
-            The float representation for the database
+            The string representation for the database
         """
         if value is not None:
             if isinstance(value, Decimal):
-                return float(value)
+                return str(value)
             try:
-                return float(Decimal(str(value)))
+                return str(Decimal(str(value)))
             except (TypeError, ValueError, decimal.InvalidOperation):
                 pass
         return value
@@ -520,8 +522,9 @@ class EmailField(StringField):
         Args:
             **kwargs: Additional arguments to pass to the parent class
         """
-        # Add a regex pattern to validate email addresses
-        kwargs['regex'] = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        # Add a more comprehensive regex pattern to validate email addresses
+        # This pattern allows more valid email characters and formats
+        kwargs['regex'] = r'^[a-zA-Z0-9.!#$%&\'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'
         super().__init__(**kwargs)
 
     def validate(self, value: Any) -> Optional[str]:
@@ -556,48 +559,270 @@ class EmailField(StringField):
 
 
 class URLField(StringField):
-    """URL field type.
+    """Enhanced URL field type with urllib integration.
 
-    This field type stores URLs and provides validation to ensure
-    the value is a valid URL.
+    This field type stores URLs and provides validation using urllib.parse.
+    It also provides convenient access to URL components and allows flexible
+    URL formats including host-only URLs.
+
+    Features:
+    - Access URL components via properties (.scheme, .host, .path, .query, etc.)
+    - Allow host-only URLs (automatically adds scheme)
+    - Robust URL validation using urllib.parse
+    - Flexible scheme handling (http/https/ftp/etc.)
 
     Example:
         ```python
         class Website(Document):
-            url = URLField(required=True)
+            url = URLField(default_scheme='https', allow_host_only=True)
+
+        # Usage examples:
+        site = Website()
+        site.url = "example.com"  # Auto-converts to "https://example.com"
+        print(site.url.host)      # "example.com"
+        print(site.url.scheme)    # "https"
+        print(site.url.port)      # None
+        
+        site.url = "https://api.example.com:8080/v1/users?active=true"
+        print(site.url.host)      # "api.example.com"
+        print(site.url.port)      # 8080
+        print(site.url.path)      # "/v1/users"
+        print(site.url.query)     # "active=true"
         ```
     """
 
-    def __init__(self, **kwargs: Any) -> None:
-        """Initialize a new URLField.
+    def __init__(self, 
+                 default_scheme: str = 'https',
+                 allow_host_only: bool = True,
+                 allowed_schemes: Optional[List[str]] = None,
+                 **kwargs: Any) -> None:
+        """Initialize a new enhanced URLField.
 
         Args:
+            default_scheme: Default scheme to use for host-only URLs
+            allow_host_only: Whether to allow host-only URLs (will add default_scheme)
+            allowed_schemes: List of allowed schemes (None = allow all)
             **kwargs: Additional arguments to pass to the parent class
         """
-        # Add a regex pattern to validate URLs
-        kwargs['regex'] = r'^(https?|ftp)://[^\s/$.?#].[^\s]*$'
+        self.default_scheme = default_scheme
+        self.allow_host_only = allow_host_only
+        self.allowed_schemes = allowed_schemes or ['http', 'https', 'ftp', 'ftps']
+        
+        # Remove the basic regex validation from parent
+        if 'regex' in kwargs:
+            del kwargs['regex']
+        
         super().__init__(**kwargs)
+        self._parsed_url = None
 
     def validate(self, value: Any) -> Optional[str]:
-        """Validate the URL.
+        """Validate and normalize the URL.
 
-        This method checks if the value is a valid URL.
+        This method uses urllib.parse for robust URL validation and
+        automatically adds schemes to host-only URLs if allowed.
 
         Args:
             value: The value to validate
 
         Returns:
-            The validated URL
+            The validated and normalized URL
 
         Raises:
             ValueError: If the URL is invalid
         """
-        value = super().validate(value)
+        # First run parent validation (handles None, basic string checks)
+        value = super(StringField, self).validate(value)  # Skip StringField's regex
+        
         if value is not None:
-            # Additional validation specific to URLs
-            if not value.startswith(('http://', 'https://', 'ftp://')):
-                raise ValueError(f"Invalid URL for field '{self.name}': must start with http://, https://, or ftp://")
+            original_value = value
+            
+            # Handle host-only URLs
+            if self.allow_host_only and '://' not in value:
+                # Check if it looks like a valid hostname/domain
+                if self._is_valid_hostname(value):
+                    value = f"{self.default_scheme}://{value}"
+                else:
+                    raise ValueError(f"Invalid hostname for field '{self.name}': {original_value}")
+            
+            # Parse and validate the URL
+            try:
+                parsed = urllib.parse.urlparse(value)
+                self._parsed_url = parsed
+                
+                # Validate scheme
+                if parsed.scheme not in self.allowed_schemes:
+                    allowed_str = ', '.join(self.allowed_schemes)
+                    raise ValueError(f"Invalid URL scheme for field '{self.name}': '{parsed.scheme}'. Allowed: {allowed_str}")
+                
+                # Validate that we have at least a netloc (host)
+                if not parsed.netloc:
+                    raise ValueError(f"Invalid URL for field '{self.name}': missing host")
+                
+                # Reconstruct the URL to ensure it's properly formatted
+                return urllib.parse.urlunparse(parsed)
+                
+            except Exception as e:
+                raise ValueError(f"Invalid URL for field '{self.name}': {str(e)}")
+        
         return value
+
+    def _is_valid_hostname(self, hostname: str) -> bool:
+        """Check if a string is a valid hostname/domain.
+        
+        Args:
+            hostname: The hostname to validate
+            
+        Returns:
+            True if valid hostname, False otherwise
+        """
+        # Basic hostname validation
+        hostname_pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$'
+        
+        # Allow localhost and IP addresses
+        if hostname in ['localhost', '127.0.0.1'] or hostname.startswith('192.168.') or hostname.startswith('10.'):
+            return True
+            
+        return bool(re.match(hostname_pattern, hostname)) and len(hostname) <= 253
+
+    # URL Component Properties
+    @property
+    def scheme(self) -> Optional[str]:
+        """Get the URL scheme (protocol)."""
+        if self._parsed_url:
+            return self._parsed_url.scheme
+        return None
+
+    @property
+    def host(self) -> Optional[str]:
+        """Get the URL host/domain."""
+        if self._parsed_url:
+            return self._parsed_url.hostname
+        return None
+
+    @property
+    def hostname(self) -> Optional[str]:
+        """Alias for host property."""
+        return self.host
+
+    @property
+    def port(self) -> Optional[int]:
+        """Get the URL port."""
+        if self._parsed_url:
+            return self._parsed_url.port
+        return None
+
+    @property
+    def path(self) -> str:
+        """Get the URL path."""
+        if self._parsed_url:
+            return self._parsed_url.path
+        return ""
+
+    @property
+    def query(self) -> str:
+        """Get the URL query string."""
+        if self._parsed_url:
+            return self._parsed_url.query
+        return ""
+
+    @property
+    def fragment(self) -> str:
+        """Get the URL fragment (hash)."""
+        if self._parsed_url:
+            return self._parsed_url.fragment
+        return ""
+
+    @property
+    def netloc(self) -> str:
+        """Get the network location (host:port)."""
+        if self._parsed_url:
+            return self._parsed_url.netloc
+        return ""
+
+    @property
+    def params(self) -> str:
+        """Get the URL parameters."""
+        if self._parsed_url:
+            return self._parsed_url.params
+        return ""
+
+    def get_query_params(self) -> Dict[str, str]:
+        """Parse query string into a dictionary.
+        
+        Returns:
+            Dictionary of query parameters
+        """
+        if self._parsed_url and self._parsed_url.query:
+            return dict(urllib.parse.parse_qsl(self._parsed_url.query))
+        return {}
+
+    def get_query_param(self, param_name: str, default: Any = None) -> Any:
+        """Get a specific query parameter value.
+        
+        Args:
+            param_name: Name of the parameter to get
+            default: Default value if parameter not found
+            
+        Returns:
+            Parameter value or default
+        """
+        params = self.get_query_params()
+        return params.get(param_name, default)
+
+    def is_secure(self) -> bool:
+        """Check if the URL uses a secure scheme (https/ftps)."""
+        if self._parsed_url:
+            return self._parsed_url.scheme in ['https', 'ftps']
+        return False
+
+    def get_base_url(self) -> str:
+        """Get the base URL (scheme + netloc).
+        
+        Returns:
+            Base URL string
+        """
+        if self._parsed_url:
+            return f"{self._parsed_url.scheme}://{self._parsed_url.netloc}"
+        return ""
+
+    def to_db(self, value: Any) -> Optional[str]:
+        """Convert Python URL to database representation.
+
+        Args:
+            value: The Python URL to convert
+
+        Returns:
+            The string representation for the database
+        """
+        # The validated value is already a proper URL string
+        return value
+
+    def from_db(self, value: Any) -> Optional[str]:
+        """Convert database value to Python URL.
+
+        Args:
+            value: The database value to convert
+
+        Returns:
+            The Python URL string with parsed components available
+        """
+        if value is not None:
+            # Re-validate and parse the URL from database
+            try:
+                return self.validate(value)
+            except ValueError:
+                pass
+        return value
+
+    def __str__(self) -> str:
+        """String representation of the URL."""
+        if self._parsed_url:
+            return urllib.parse.urlunparse(self._parsed_url)
+        return super().__str__()
+
+    def __repr__(self) -> str:
+        """Detailed representation of the URL."""
+        return f"URLField('{self.__str__()}')"
 
 
 class IPAddressField(StringField):
@@ -666,16 +891,19 @@ class IPAddressField(StringField):
                 if re.match(ipv4_pattern, value):
                     # Check that each octet is in the valid range
                     octets = value.split('.')
-                    if all(0 <= int(octet) <= 255 for octet in octets):
-                        return value
-                    if self.ipv4_only:
-                        raise ValueError(f"Invalid IPv4 address for field '{self.name}': octets must be between 0 and 255")
+                    try:
+                        if all(0 <= int(octet) <= 255 for octet in octets):
+                            return value
+                        if self.ipv4_only:
+                            raise ValueError(f"Invalid IPv4 address for field '{self.name}': octets must be between 0 and 255")
+                    except ValueError:
+                        if self.ipv4_only:
+                            raise ValueError(f"Invalid IPv4 address for field '{self.name}': octets must be numeric")
 
             # Validate IPv6 address
             if self.ipv6_only or not self.ipv4_only:
                 try:
                     # Use socket.inet_pton to validate IPv6 address
-                    import socket
                     socket.inet_pton(socket.AF_INET6, value)
                     return value
                 except (socket.error, ValueError):

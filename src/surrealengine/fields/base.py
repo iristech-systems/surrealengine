@@ -196,3 +196,36 @@ class Field:
             post_from_db.send(self.__class__, field=self, value=result)
 
         return result
+
+    def get_surreal_type(self) -> str:
+        """Return the SurrealQL type name for this field.
+
+        This method returns the appropriate SurrealQL type name that corresponds
+        to this field type. Subclasses should override this method to provide
+        their specific SurrealQL type.
+
+        Returns:
+            The SurrealQL type name as a string
+
+        Examples:
+            >>> field = Field()
+            >>> field.get_surreal_type()
+            'any'
+        """
+        return 'any'
+
+    def cast_to_surreal_type(self) -> str:
+        """Return SurrealQL type casting syntax.
+        
+        This method returns the SurrealQL type casting syntax for this field,
+        which can be used in queries to explicitly cast values to the correct type.
+
+        Returns:
+            The SurrealQL type casting syntax
+
+        Examples:
+            >>> field = Field()
+            >>> field.cast_to_surreal_type()
+            '<any>'
+        """
+        return f"<{self.get_surreal_type()}>"

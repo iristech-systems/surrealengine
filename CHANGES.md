@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Enhanced
+- **Field Improvements**: Major enhancements to specialized field types for better validation, performance, and functionality
+  - **URLField**: Complete rewrite with urllib integration for robust URL validation and component access
+    - Added URL component properties: `.scheme`, `.host`, `.port`, `.path`, `.query`, `.fragment`, `.netloc`
+    - Added query parameter helpers: `get_query_params()` and `get_query_param()`
+    - Added utility methods: `is_secure()` and `get_base_url()`
+    - Support for host-only URLs with automatic scheme addition (e.g., "example.com" → "https://example.com")
+    - Configurable allowed schemes and default scheme settings
+  - **EmailField**: Improved email validation with more comprehensive regex pattern
+    - Enhanced regex pattern allows more valid email characters and formats following RFC standards
+    - Added additional validation checks for @ symbol count, empty local/domain parts, and domain structure
+  - **DecimalField**: Fixed precision loss issues in database operations
+    - Database values now stored as strings to preserve exact decimal precision
+    - Proper handling of Decimal objects in `to_db()` and `from_db()` methods
+  - **IPAddressField**: Fixed validation bug with non-numeric IPv4 octets
+    - Added proper error handling for non-numeric octets in IPv4 validation
+    - Improved error messages for different validation failure scenarios
+  - **BytesField**: Optimized import performance
+    - Moved `base64` import from method level to module level for better performance
+    - Reduced import overhead in frequently called methods
+
+### Fixed
+- Fixed IPv4 address validation crash when octets contain non-numeric values
+- Fixed decimal precision loss when converting between Python Decimal and database storage
+- Improved email validation to accept more RFC-compliant email addresses
+
 ## [0.3.0] - 2025-09-01
 
 ### Added

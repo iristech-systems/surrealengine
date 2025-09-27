@@ -13,14 +13,20 @@ class ListField(Field):
         field_type: The field type for items in the list
     """
 
-    def __init__(self, field_type: Optional[Field] = None, **kwargs: Any) -> None:
+    def __init__(self, field_type: Optional[Field] = None,
+                 max_items: Optional[int] = None,
+                 surreal_functions: Optional[List[str]] = None, **kwargs: Any) -> None:
         """Initialize a new ListField.
 
         Args:
             field_type: The field type for items in the list
+            max_items: Maximum number of items allowed in the list
+            surreal_functions: List of SurrealQL array functions to apply (array::sort, array::unique, etc.)
             **kwargs: Additional arguments to pass to the parent class
         """
         self.field_type = field_type
+        self.max_items = max_items
+        self.surreal_functions = surreal_functions or []
         super().__init__(**kwargs)
         self.py_type = list
 
@@ -38,12 +44,16 @@ class ListField(Field):
 
         Raises:
             TypeError: If the value is not a list
-            ValueError: If an item in the list fails validation
+            ValueError: If an item in the list fails validation or max_items is exceeded
         """
         value = super().validate(value)
         if value is not None:
             if not isinstance(value, list):
                 raise TypeError(f"Expected list for field '{self.name}', got {type(value)}")
+
+            # Check max_items constraint
+            if self.max_items is not None and len(value) > self.max_items:
+                raise ValueError(f"List field '{self.name}' exceeds max_items limit of {self.max_items}, got {len(value)} items")
 
             if self.field_type:
                 for i, item in enumerate(value):
@@ -98,22 +108,26 @@ class DictField(Field):
         field_type: The field type for values in the dictionary
     """
 
-    def __init__(self, field_type: Optional[Field] = None, **kwargs: Any) -> None:
+    def __init__(self, field_type: Optional[Field] = None, 
+                 schema: Optional[Dict[str, Field]] = None, **kwargs: Any) -> None:
         """Initialize a new DictField.
 
         Args:
             field_type: The field type for values in the dictionary
+            schema: Optional schema defining specific field types for dictionary keys
             **kwargs: Additional arguments to pass to the parent class
         """
         self.field_type = field_type
+        self.schema = schema
         super().__init__(**kwargs)
         self.py_type = dict
 
-    def validate(self, value: Any) -> Optional[Dict[str, Any]]:
+    def validate(self, value: Any) -> Any:
         """Validate the dictionary value.
 
         This method checks if the value is a valid dictionary and validates each
-        value in the dictionary using the field_type if provided.
+        value in the dictionary using the field_type if provided, or using
+        specific field types from schema if available.
 
         Args:
             value: The value to validate
@@ -125,19 +139,29 @@ class DictField(Field):
             TypeError: If the value is not a dictionary
             ValueError: If a value in the dictionary fails validation
         """
-        value = super().validate(value)
-        if value is not None:
-            if not isinstance(value, dict):
-                raise TypeError(f"Expected dict for field '{self.name}', got {type(value)}")
+        validated = super().validate(value)
+        if validated is not None:
+            if not isinstance(validated, dict):
+                raise TypeError(f"Expected dict for field '{self.name}', got {type(validated)}")
 
-            if self.field_type:
-                for key, item in value.items():
-                    if isinstance(self.field_type, Field):
+            # Use schema-based validation if schema is provided
+            if validated and self.schema:
+                for key, field in self.schema.items():
+                    if key in validated:
                         try:
-                            value[key] = self.field_type.validate(item)
+                            validated[key] = field.validate(validated[key])
                         except (TypeError, ValueError) as e:
                             raise ValueError(f"Error validating key '{key}' in dict field '{self.name}': {str(e)}")
-        return value
+            # Fall back to field_type validation for all keys if no schema
+            elif self.field_type:
+                for key, item in validated.items():
+                    if isinstance(self.field_type, Field):
+                        try:
+                            validated[key] = self.field_type.validate(item)
+                        except (TypeError, ValueError) as e:
+                            raise ValueError(f"Error validating key '{key}' in dict field '{self.name}': {str(e)}")
+        
+        return validated
 
     def to_db(self, value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Convert Python dictionary to database representation.

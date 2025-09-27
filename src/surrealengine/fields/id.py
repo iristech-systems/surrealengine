@@ -20,14 +20,16 @@ class RecordIDField(Field):
         ```
     """
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, table_name: Optional[str] = None, **kwargs: Any) -> None:
         """Initialize a new RecordIDField.
 
         Args:
+            table_name: Optional table name to enforce for this field
             **kwargs: Additional arguments to pass to the parent class
         """
         super().__init__(**kwargs)
         self.py_type = str
+        self.table_name = table_name
 
     def validate(self, value: Any) -> Optional[str]:
         """Validate the record ID.
@@ -44,24 +46,30 @@ class RecordIDField(Field):
             TypeError: If the value cannot be converted to a record ID
             ValueError: If the record ID format is invalid
         """
-        value = super().validate(value)
-        if value is not None:
-            if isinstance(value, RecordID):
-                return str(value)
-            elif isinstance(value, str):
+        validated = super().validate(value)
+        if validated is not None:
+            if isinstance(validated, RecordID):
+                validated = str(validated)
+            elif isinstance(validated, str):
                 # Check if it's in the format "table:id"
-                if ':' not in value:
+                if ':' not in validated:
                     raise ValueError(f"Invalid record ID format for field '{self.name}', expected 'table:id'")
-                return value
-            elif isinstance(value, (list, tuple)) and len(value) == 2:
+            elif isinstance(validated, (list, tuple)) and len(validated) == 2:
                 # Convert [table, id] to "table:id"
-                table, id_val = value
+                table, id_val = validated
                 if not isinstance(table, str) or not table:
                     raise ValueError(f"Invalid table name in record ID for field '{self.name}'")
-                return f"{table}:{id_val}"
+                validated = f"{table}:{id_val}"
             else:
-                raise TypeError(f"Expected record ID string or [table, id] list/tuple for field '{self.name}', got {type(value)}")
-        return value
+                raise TypeError(f"Expected record ID string or [table, id] list/tuple for field '{self.name}', got {type(validated)}")
+            
+            # Check table name constraint if specified
+            if validated and self.table_name:
+                table, _ = validated.split(':', 1)
+                if table != self.table_name:
+                    raise ValueError(f"RecordID must be from table '{self.table_name}', got '{table}'")
+        
+        return validated
 
     def to_db(self, value: Any) -> Optional[str]:
         """Convert Python value to database representation.
