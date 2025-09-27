@@ -24,9 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **IPAddressField**: Fixed validation bug with non-numeric IPv4 octets
     - Added proper error handling for non-numeric octets in IPv4 validation
     - Improved error messages for different validation failure scenarios
-  - **BytesField**: Optimized import performance
-    - Moved `base64` import from method level to module level for better performance
-    - Reduced import overhead in frequently called methods
+  - **BytesField**: Enhanced with comprehensive file-like interface and optimized performance
+    - **BytesFieldWrapper**: New file-like wrapper class providing standard Python file operations (read, write, seek, tell, flush, close)
+    - **Context Manager Support**: Full `with` statement compatibility for safe resource handling
+    - **File Operations**: Direct file loading/saving with `load_from_file()` and `save_to_file()` methods
+    - **Stream Operations**: Stream copying with `copy_to_stream()` and `copy_from_stream()` for large file handling
+    - **Metadata Support**: File metadata including filename, content_type, and custom metadata dictionary
+    - **Text Operations**: Convenient `read_text()` and `write_text()` methods with encoding support
+    - **Size Limits**: Configurable maximum size validation with proper error handling
+    - **Database Integration**: Seamless conversion to/from SurrealDB bytes format with base64 encoding
+    - **Performance Optimization**: Moved `base64` import from method level to module level
+    - **Memory Efficient**: Chunked reading/writing for large files to manage memory usage
+    - **Developer Experience**: Intuitive API matching standard Python file objects for easy adoption
 
 ### Fixed
 - Fixed IPv4 address validation crash when octets contain non-numeric values

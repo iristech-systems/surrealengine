@@ -4,34 +4,366 @@ import decimal
 import base64
 import socket
 import urllib.parse
+import io
+import os
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Pattern, Type, Union
+from typing import Any, Dict, List, Optional, Pattern, Type, Union, BinaryIO
 
 from .base import Field
 from .scalar import StringField, NumberField
 from ..exceptions import ValidationError
 
-class BytesField(Field):
-    """Bytes field type.
+class BytesFieldWrapper:
+    """File-like wrapper for BytesField data.
+    
+    Provides standard Python file operations for binary data stored in BytesField,
+    making it easy to work with files, images, documents, and other binary content.
+    
+    Features:
+    - Standard file operations: read(), write(), seek(), tell()
+    - Context manager support (with statement)
+    - Multiple read modes: read all, read chunks, readline for text
+    - Write operations with automatic size tracking
+    - File metadata support (filename, content_type, size)
+    - Stream operations for large files
+    """
+    
+    def __init__(self, data: bytes = b'', filename: Optional[str] = None, 
+                 content_type: Optional[str] = None, metadata: Optional[dict] = None):
+        """Initialize the file-like wrapper.
+        
+        Args:
+            data: Initial binary data
+            filename: Original filename (if any)
+            content_type: MIME content type
+            metadata: Additional file metadata
+        """
+        self._buffer = io.BytesIO(data)
+        self.filename = filename
+        self.content_type = content_type
+        self.metadata = metadata or {}
+        self._closed = False
+        
+    @property
+    def closed(self) -> bool:
+        """Check if the file is closed."""
+        return self._closed
+    
+    @property
+    def size(self) -> int:
+        """Get the size of the data in bytes."""
+        current_pos = self._buffer.tell()
+        self._buffer.seek(0, io.SEEK_END)
+        size = self._buffer.tell()
+        self._buffer.seek(current_pos)
+        return size
+    
+    def read(self, size: int = -1) -> bytes:
+        """Read and return up to size bytes.
+        
+        Args:
+            size: Number of bytes to read. If -1, read all remaining data.
+            
+        Returns:
+            Bytes data
+        """
+        if self._closed:
+            raise ValueError("I/O operation on closed file")
+        return self._buffer.read(size)
+    
+    def read_text(self, encoding: str = 'utf-8', errors: str = 'strict') -> str:
+        """Read the entire content as text.
+        
+        Args:
+            encoding: Text encoding to use
+            errors: How to handle encoding errors
+            
+        Returns:
+            Text content
+        """
+        data = self.read()
+        return data.decode(encoding, errors)
+    
+    def readline(self, size: int = -1) -> bytes:
+        """Read and return one line as bytes.
+        
+        Args:
+            size: Maximum number of bytes to read
+            
+        Returns:
+            Line data as bytes
+        """
+        if self._closed:
+            raise ValueError("I/O operation on closed file")
+        return self._buffer.readline(size)
+    
+    def readlines(self, hint: int = -1) -> List[bytes]:
+        """Read and return a list of lines.
+        
+        Args:
+            hint: Hint for number of bytes to read
+            
+        Returns:
+            List of line bytes
+        """
+        if self._closed:
+            raise ValueError("I/O operation on closed file")
+        return self._buffer.readlines(hint)
+    
+    def write(self, data: Union[bytes, str]) -> int:
+        """Write data to the buffer.
+        
+        Args:
+            data: Data to write (bytes or string)
+            
+        Returns:
+            Number of bytes written
+        """
+        if self._closed:
+            raise ValueError("I/O operation on closed file")
+        
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        
+        return self._buffer.write(data)
+    
+    def writelines(self, lines: List[Union[bytes, str]]) -> None:
+        """Write a list of lines to the buffer.
+        
+        Args:
+            lines: List of lines to write
+        """
+        if self._closed:
+            raise ValueError("I/O operation on closed file")
+        
+        for line in lines:
+            self.write(line)
+    
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        """Change stream position.
+        
+        Args:
+            offset: Stream position
+            whence: How to interpret offset (SEEK_SET, SEEK_CUR, SEEK_END)
+            
+        Returns:
+            New absolute position
+        """
+        if self._closed:
+            raise ValueError("I/O operation on closed file")
+        return self._buffer.seek(offset, whence)
+    
+    def tell(self) -> int:
+        """Get current stream position.
+        
+        Returns:
+            Current position
+        """
+        if self._closed:
+            raise ValueError("I/O operation on closed file")
+        return self._buffer.tell()
+    
+    def flush(self) -> None:
+        """Flush write buffers (no-op for BytesIO)."""
+        if self._closed:
+            raise ValueError("I/O operation on closed file")
+        self._buffer.flush()
+    
+    def truncate(self, size: Optional[int] = None) -> int:
+        """Truncate file to at most size bytes.
+        
+        Args:
+            size: Size to truncate to. If None, use current position.
+            
+        Returns:
+            New size
+        """
+        if self._closed:
+            raise ValueError("I/O operation on closed file")
+        return self._buffer.truncate(size)
+    
+    def close(self) -> None:
+        """Close the file."""
+        if not self._closed:
+            self._buffer.close()
+            self._closed = True
+    
+    def getvalue(self) -> bytes:
+        """Get the entire contents as bytes.
+        
+        Returns:
+            All data as bytes
+        """
+        if self._closed:
+            raise ValueError("I/O operation on closed file")
+        current_pos = self._buffer.tell()
+        self._buffer.seek(0)
+        data = self._buffer.read()
+        self._buffer.seek(current_pos)
+        return data
+    
+    def save_to_file(self, filepath: str, chunk_size: int = 8192) -> None:
+        """Save content to a file on disk.
+        
+        Args:
+            filepath: Path to save the file
+            chunk_size: Size of chunks to write
+        """
+        with open(filepath, 'wb') as f:
+            self.seek(0)
+            while True:
+                chunk = self.read(chunk_size)
+                if not chunk:
+                    break
+                f.write(chunk)
+    
+    def load_from_file(self, filepath: str, chunk_size: int = 8192) -> None:
+        """Load content from a file on disk.
+        
+        Args:
+            filepath: Path to load from
+            chunk_size: Size of chunks to read
+        """
+        self._buffer = io.BytesIO()
+        self.filename = os.path.basename(filepath)
+        
+        with open(filepath, 'rb') as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                self._buffer.write(chunk)
+        self._buffer.seek(0)
+    
+    def copy_to_stream(self, stream: BinaryIO, chunk_size: int = 8192) -> int:
+        """Copy content to another stream.
+        
+        Args:
+            stream: Target stream to copy to
+            chunk_size: Size of chunks to copy
+            
+        Returns:
+            Number of bytes copied
+        """
+        total_bytes = 0
+        self.seek(0)
+        while True:
+            chunk = self.read(chunk_size)
+            if not chunk:
+                break
+            stream.write(chunk)
+            total_bytes += len(chunk)
+        return total_bytes
+    
+    def copy_from_stream(self, stream: BinaryIO, chunk_size: int = 8192) -> int:
+        """Copy content from another stream.
+        
+        Args:
+            stream: Source stream to copy from
+            chunk_size: Size of chunks to copy
+            
+        Returns:
+            Number of bytes copied
+        """
+        self._buffer = io.BytesIO()
+        total_bytes = 0
+        while True:
+            chunk = stream.read(chunk_size)
+            if not chunk:
+                break
+            self._buffer.write(chunk)
+            total_bytes += len(chunk)
+        self._buffer.seek(0)
+        return total_bytes
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.close()
+    
+    def __len__(self) -> int:
+        """Get the size of the data."""
+        return self.size
+    
+    def __bool__(self) -> bool:
+        """Check if there's any data."""
+        return self.size > 0
+    
+    def __repr__(self) -> str:
+        """String representation."""
+        status = "closed" if self._closed else "open"
+        return f"BytesFieldWrapper(size={self.size}, filename='{self.filename}', {status})"
 
-    This field type stores binary data as byte arrays and provides validation and
-    conversion between Python bytes objects and SurrealDB bytes format.
+
+class BytesField(Field):
+    """Enhanced Bytes field type with file-like interface.
+
+    This field type stores binary data as byte arrays and provides validation,
+    conversion between Python bytes objects and SurrealDB bytes format, plus
+    a file-like interface for easy manipulation of binary data.
+    
+    Features:
+    - Standard Python bytes validation and conversion
+    - File-like interface with read(), write(), seek(), tell() operations
+    - Context manager support for safe resource handling
+    - File metadata support (filename, content_type, custom metadata)
+    - Stream operations for large files
+    - Direct file loading/saving capabilities
+    
+    Example:
+        ```python
+        class Document(SurrealDocument):
+            file_data = BytesField(max_size=1024*1024)  # 1MB limit
+            
+        # Usage examples:
+        doc = Document()
+        
+        # File-like operations
+        with doc.file_data.open() as f:
+            f.write(b"Hello, World!")
+            f.seek(0)
+            content = f.read()
+        
+        # Load from file
+        doc.file_data.load_from_file("/path/to/image.jpg")
+        print(f"Loaded {len(doc.file_data)} bytes")
+        
+        # Access file properties
+        print(f"Filename: {doc.file_data.filename}")
+        print(f"Size: {doc.file_data.size} bytes")
+        
+        # Save to file
+        doc.file_data.save_to_file("/path/to/output.jpg")
+        
+        # Text operations (for text files)
+        doc.file_data.write_text("Hello, World!")
+        text_content = doc.file_data.read_text()
+        ```
     """
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, max_size: Optional[int] = None, 
+                 allowed_types: Optional[List[str]] = None, **kwargs: Any) -> None:
         """Initialize a new BytesField.
 
         Args:
+            max_size: Maximum size in bytes (None for unlimited)
+            allowed_types: List of allowed content types/extensions
             **kwargs: Additional arguments to pass to the parent class
         """
         super().__init__(**kwargs)
         self.py_type = bytes
+        self.max_size = max_size
+        self.allowed_types = allowed_types or []
+        self._wrapper = None
 
     def validate(self, value: Any) -> Optional[bytes]:
         """Validate the bytes value.
 
         This method checks if the value is a valid bytes object or can be
-        converted to bytes.
+        converted to bytes, and enforces size and type restrictions.
 
         Args:
             value: The value to validate
@@ -41,16 +373,35 @@ class BytesField(Field):
 
         Raises:
             TypeError: If the value cannot be converted to bytes
+            ValueError: If the value exceeds size limits or type restrictions
         """
         value = super().validate(value)
         if value is not None:
+            # Handle BytesFieldWrapper
+            if isinstance(value, BytesFieldWrapper):
+                value = value.getvalue()
+            
             if isinstance(value, bytes):
+                # Check size limit
+                if self.max_size and len(value) > self.max_size:
+                    raise ValueError(
+                        f"Data size {len(value)} bytes exceeds maximum {self.max_size} bytes "
+                        f"for field '{self.name}'"
+                    )
                 return value
+            
             if isinstance(value, str):
                 try:
-                    return value.encode('utf-8')
+                    data = value.encode('utf-8')
+                    if self.max_size and len(data) > self.max_size:
+                        raise ValueError(
+                            f"Data size {len(data)} bytes exceeds maximum {self.max_size} bytes "
+                            f"for field '{self.name}'"
+                        )
+                    return data
                 except UnicodeEncodeError:
                     pass
+            
             raise TypeError(f"Expected bytes for field '{self.name}', got {type(value)}")
         return value
 
@@ -69,6 +420,10 @@ class BytesField(Field):
         if value is None:
             return None
 
+        # Handle BytesFieldWrapper
+        if isinstance(value, BytesFieldWrapper):
+            value = value.getvalue()
+
         if isinstance(value, bytes):
             # Convert bytes to SurrealDB bytes format
             # SurrealDB uses <bytes>"base64_encoded_string" format
@@ -81,26 +436,168 @@ class BytesField(Field):
 
         raise TypeError(f"Cannot convert {type(value)} to bytes")
 
-    def from_db(self, value: Any) -> Optional[bytes]:
-        """Convert database value to Python bytes.
+    def from_db(self, value: Any) -> Optional[BytesFieldWrapper]:
+        """Convert database value to Python BytesFieldWrapper.
 
         This method converts a SurrealDB bytes format from the database to a
-        Python bytes object.
+        BytesFieldWrapper object with file-like capabilities.
 
         Args:
             value: The database value to convert
 
         Returns:
-            The Python bytes object
+            The BytesFieldWrapper object
         """
         if value is not None:
+            data = None
+            
             if isinstance(value, bytes):
-                return value
-            if isinstance(value, str) and value.startswith('<bytes>"') and value.endswith('"'):
+                data = value
+            elif isinstance(value, str) and value.startswith('<bytes>"') and value.endswith('"'):
                 # Extract the base64-encoded string from <bytes>"..." format
                 encoded = value[8:-1]  # Remove <bytes>" and "
-                return base64.b64decode(encoded)
+                data = base64.b64decode(encoded)
+            
+            if data is not None:
+                return BytesFieldWrapper(data)
+        
         return value
+
+    def open(self, data: Optional[bytes] = None, **kwargs) -> BytesFieldWrapper:
+        """Open a file-like interface for the bytes data.
+        
+        Args:
+            data: Initial data (if None, uses empty bytes)
+            **kwargs: Additional arguments for BytesFieldWrapper
+            
+        Returns:
+            BytesFieldWrapper instance
+        """
+        return BytesFieldWrapper(data or b'', **kwargs)
+
+    def load_from_file(self, filepath: str, **metadata) -> BytesFieldWrapper:
+        """Load data from a file and return a BytesFieldWrapper.
+        
+        Args:
+            filepath: Path to the file to load
+            **metadata: Additional metadata for the wrapper
+            
+        Returns:
+            BytesFieldWrapper with loaded data
+        """
+        # Extract specific metadata fields for constructor
+        filename = metadata.get('filename')
+        content_type = metadata.get('content_type')
+        remaining_metadata = {k: v for k, v in metadata.items() if k not in ['filename', 'content_type']}
+        
+        wrapper = BytesFieldWrapper(
+            filename=filename,
+            content_type=content_type,
+            metadata=remaining_metadata
+        )
+        wrapper.load_from_file(filepath)
+        return wrapper
+
+    def from_stream(self, stream: BinaryIO, **metadata) -> BytesFieldWrapper:
+        """Create a BytesFieldWrapper from a stream.
+        
+        Args:
+            stream: Source stream to read from
+            **metadata: Additional metadata for the wrapper
+            
+        Returns:
+            BytesFieldWrapper with stream data
+        """
+        # Extract specific metadata fields for constructor
+        filename = metadata.get('filename')
+        content_type = metadata.get('content_type')
+        remaining_metadata = {k: v for k, v in metadata.items() if k not in ['filename', 'content_type']}
+        
+        wrapper = BytesFieldWrapper(
+            filename=filename,
+            content_type=content_type,
+            metadata=remaining_metadata
+        )
+        wrapper.copy_from_stream(stream)
+        return wrapper
+
+    # Convenience methods for the field instance
+    @property
+    def size(self) -> int:
+        """Get the current size of stored data."""
+        if self._wrapper:
+            return self._wrapper.size
+        return 0
+
+    @property
+    def filename(self) -> Optional[str]:
+        """Get the filename of stored data."""
+        if self._wrapper:
+            return self._wrapper.filename
+        return None
+
+    @property
+    def content_type(self) -> Optional[str]:
+        """Get the content type of stored data."""
+        if self._wrapper:
+            return self._wrapper.content_type
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        """Read data from the field (convenience method)."""
+        if self._wrapper:
+            return self._wrapper.read(size)
+        return b''
+
+    def write(self, data: Union[bytes, str]) -> int:
+        """Write data to the field (convenience method)."""
+        if not self._wrapper:
+            self._wrapper = BytesFieldWrapper()
+        return self._wrapper.write(data)
+
+    def write_text(self, text: str, encoding: str = 'utf-8') -> int:
+        """Write text data to the field.
+        
+        Args:
+            text: Text to write
+            encoding: Text encoding to use
+            
+        Returns:
+            Number of bytes written
+        """
+        return self.write(text.encode(encoding))
+
+    def read_text(self, encoding: str = 'utf-8', errors: str = 'strict') -> str:
+        """Read data as text.
+        
+        Args:
+            encoding: Text encoding to use
+            errors: How to handle encoding errors
+            
+        Returns:
+            Text content
+        """
+        if self._wrapper:
+            # Reset position to read all data
+            current_pos = self._wrapper.tell()
+            self._wrapper.seek(0)
+            data = self._wrapper.read()
+            self._wrapper.seek(current_pos)
+            return data.decode(encoding, errors)
+        return ""
+
+    def save_to_file(self, filepath: str) -> None:
+        """Save current data to a file."""
+        if self._wrapper:
+            self._wrapper.save_to_file(filepath)
+
+    def __len__(self) -> int:
+        """Get the size of stored data."""
+        return self.size
+
+    def __bool__(self) -> bool:
+        """Check if there's any stored data."""
+        return self.size > 0
 
 
 class RegexField(Field):
