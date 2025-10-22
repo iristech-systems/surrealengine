@@ -23,37 +23,47 @@ from .connection import ConnectionRegistry
 
 # Universal HTTP-safe serializer for outgoing payloads (Fix B)
 def serialize_http_safe(value: Any):
-    """Recursively convert datetime and IsoDateTimeWrapper into ISO Z strings for JSON HTTP payloads."""
+    """Recursively process values for SurrealDB SDK.
+
+    Convert IsoDateTimeWrapper back to raw datetime - the SDK handles that better.
+    """
+    import datetime as _dt
+
     try:
         from surrealdb.data.types.datetime import IsoDateTimeWrapper as _Iso
     except Exception:
         try:
             from surrealdb.types import IsoDateTimeWrapper as _Iso
         except Exception:
-            _Iso = ()
-    import datetime as _dt
-    if value is None or isinstance(value, (str, int, float, bool)):
+            _Iso = None
+
+    # Pass through primitives and datetime unchanged
+    if value is None or isinstance(value, (str, int, float, bool, _dt.datetime)):
         return value
-    if isinstance(value, _dt.datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=_dt.timezone.utc)
-        return value.isoformat().replace('+00:00','Z')
+
+    # Convert IsoDateTimeWrapper back to datetime - SDK handles raw datetime better
     if _Iso and isinstance(value, _Iso):
-        inner = getattr(value, 'dt', None)
-        if isinstance(inner, _dt.datetime):
-            if inner.tzinfo is None:
-                inner = inner.replace(tzinfo=_dt.timezone.utc)
-            return inner.isoformat().replace('+00:00','Z')
-        if isinstance(inner, str):
-            return inner.replace('+00:00','Z')
-        inner2 = getattr(value, 'iso', None)
-        if isinstance(inner2, str):
-            return inner2.replace('+00:00','Z')
-        return str(value)
+        # Extract the datetime from the wrapper
+        dt_val = getattr(value, 'dt', None)
+        if isinstance(dt_val, _dt.datetime):
+            return dt_val
+        # Try parsing from iso string
+        iso_val = getattr(value, 'iso', None)
+        if isinstance(iso_val, str):
+            try:
+                return _dt.datetime.fromisoformat(iso_val.replace('Z', '+00:00'))
+            except:
+                pass
+        # Fallback: return as-is
+        return value
+
+    # Recursively handle collections
     if isinstance(value, list):
         return [serialize_http_safe(v) for v in value]
     if isinstance(value, dict):
         return {k: serialize_http_safe(v) for k, v in value.items()}
+
+    # Pass through everything else unchanged (RecordID, etc.)
     return value
 
 

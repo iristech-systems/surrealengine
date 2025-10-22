@@ -7,40 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-09-05
+
 ### Enhanced
-- **Field Improvements**: Major enhancements to specialized field types for better validation, performance, and functionality
-  - **URLField**: Complete rewrite with urllib integration for robust URL validation and component access
-    - Added URL component properties: `.scheme`, `.host`, `.port`, `.path`, `.query`, `.fragment`, `.netloc`
-    - Added query parameter helpers: `get_query_params()` and `get_query_param()`
-    - Added utility methods: `is_secure()` and `get_base_url()`
-    - Support for host-only URLs with automatic scheme addition (e.g., "example.com" → "https://example.com")
-    - Configurable allowed schemes and default scheme settings
-  - **EmailField**: Improved email validation with more comprehensive regex pattern
-    - Enhanced regex pattern allows more valid email characters and formats following RFC standards
-    - Added additional validation checks for @ symbol count, empty local/domain parts, and domain structure
-  - **DecimalField**: Fixed precision loss issues in database operations
-    - Database values now stored as strings to preserve exact decimal precision
-    - Proper handling of Decimal objects in `to_db()` and `from_db()` methods
-  - **IPAddressField**: Fixed validation bug with non-numeric IPv4 octets
-    - Added proper error handling for non-numeric octets in IPv4 validation
-    - Improved error messages for different validation failure scenarios
-  - **BytesField**: Enhanced with comprehensive file-like interface and optimized performance
-    - **BytesFieldWrapper**: New file-like wrapper class providing standard Python file operations (read, write, seek, tell, flush, close)
-    - **Context Manager Support**: Full `with` statement compatibility for safe resource handling
-    - **File Operations**: Direct file loading/saving with `load_from_file()` and `save_to_file()` methods
-    - **Stream Operations**: Stream copying with `copy_to_stream()` and `copy_from_stream()` for large file handling
-    - **Metadata Support**: File metadata including filename, content_type, and custom metadata dictionary
-    - **Text Operations**: Convenient `read_text()` and `write_text()` methods with encoding support
-    - **Size Limits**: Configurable maximum size validation with proper error handling
-    - **Database Integration**: Seamless conversion to/from SurrealDB bytes format with base64 encoding
-    - **Performance Optimization**: Moved `base64` import from method level to module level
-    - **Memory Efficient**: Chunked reading/writing for large files to manage memory usage
-    - **Developer Experience**: Intuitive API matching standard Python file objects for easy adoption
+- **Immutable Filtering**: `BaseQuerySet.filter()` now returns a new queryset instance, preventing accidental mutation of the original queryset.
+- **Advanced `Q` Object Handling**: The `filter` method now correctly handles complex, nested `Q` objects for more powerful and intuitive query construction.
+- **Combined Queries**: `filter()` now supports passing both a `Q` object and keyword arguments simultaneously, allowing for more flexible query building.
+- **Robust `to_where_clause`**: The `Q.to_where_clause()` method has been rewritten to correctly handle nested `Q` objects and generate valid `WHERE` clauses for complex queries.
 
 ### Fixed
-- Fixed IPv4 address validation crash when octets contain non-numeric values
-- Fixed decimal precision loss when converting between Python Decimal and database storage
-- Improved email validation to accept more RFC-compliant email addresses
+- Corrected the `VALUE` keyword to `DEFAULT` in the schema generation for document fields.
+- Improved the `serialize_http_safe` function to correctly handle `IsoDateTimeWrapper` objects, preventing potential issues with datetime serialization.
 
 ## [0.3.0] - 2025-09-01
 
@@ -190,5 +167,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Connection management with connection registry
 - Transaction support
 - Relation management with graph traversal
-
-

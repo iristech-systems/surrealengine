@@ -88,56 +88,57 @@ class BaseQuerySet:
             **kwargs: Field names and values to filter by
 
         Returns:
-            The query set instance for method chaining
+            A new queryset instance for method chaining
 
         Raises:
             ValueError: If an unknown operator is provided
         """
+        # Clone first to avoid mutating the original queryset
+        result = self if (query is None and not kwargs) else self._clone()
+
         # Handle Q objects and QueryExpressions
         if query is not None:
             # Import here to avoid circular imports
             try:
                 from .query_expressions import Q, QueryExpression
-                
+
                 if isinstance(query, Q):
-                    # Convert Q object to conditions
-                    conditions = query.to_conditions()
-                    for field, op, value in conditions:
-                        if field == '__raw__':
-                            # Handle raw query conditions
-                            self.query_parts.append(('__raw__', '=', value))
-                        else:
-                            self.query_parts.append((field, op, value))
-                    return self
-                
+                    # Use to_where_clause() to properly handle both simple and compound Q objects
+                    where_clause = query.to_where_clause()
+                    if where_clause:
+                        result.query_parts.append(('__raw__', '=', where_clause))
+                    # Don't return early - continue to process kwargs if provided
+
                 elif isinstance(query, QueryExpression):
                     # Apply QueryExpression to this queryset
-                    return query.apply_to_queryset(self)
-                
+                    return query.apply_to_queryset(result)
+
                 else:
                     raise ValueError(f"Unsupported query type: {type(query)}")
-                    
+
             except ImportError:
                 raise ValueError("Query expressions not available")
-        
-        # Continue with existing kwargs processing if no query object
+
+        # Process kwargs (either standalone or combined with a Q object)
+        if not kwargs:
+            return result
+
+        # Continue with existing kwargs processing
         # PERFORMANCE OPTIMIZATION: Check for bulk ID operations
         if len(kwargs) == 1 and 'id__in' in kwargs:
-            clone = self._clone()
-            clone._bulk_id_selection = kwargs['id__in']
-            return clone
-        
-        # PERFORMANCE OPTIMIZATION: Check for ID range operations  
+            result._bulk_id_selection = kwargs['id__in']
+            return result
+
+        # PERFORMANCE OPTIMIZATION: Check for ID range operations
         id_range_keys = {k for k in kwargs.keys() if k.startswith('id__') and k.endswith(('gte', 'lte', 'gt', 'lt'))}
         if len(kwargs) == 2 and len(id_range_keys) == 2:
-            clone = self._clone()
             if 'id__gte' in kwargs and 'id__lte' in kwargs:
-                clone._id_range_selection = (kwargs['id__gte'], kwargs['id__lte'], True)  # inclusive
-                return clone
+                result._id_range_selection = (kwargs['id__gte'], kwargs['id__lte'], True)  # inclusive
+                return result
             elif 'id__gt' in kwargs and 'id__lt' in kwargs:
-                clone._id_range_selection = (kwargs['id__gt'], kwargs['id__lt'], False)  # exclusive
-                return clone
-        
+                result._id_range_selection = (kwargs['id__gt'], kwargs['id__lt'], False)  # exclusive
+                return result
+
         # Fall back to regular filtering for non-optimizable queries
         for k, v in kwargs.items():
             if k == 'id':
@@ -145,19 +146,19 @@ class BaseQuerySet:
                 table_name = None
                 if hasattr(self, 'document_class') and self.document_class:
                     table_name = self.document_class._get_collection_name()
-                
+
                 normalized_id = RecordIdUtils.normalize_record_id(v, table_name)
                 if normalized_id:
-                    self.query_parts.append((k, '=', normalized_id))
+                    result.query_parts.append((k, '=', normalized_id))
                 else:
                     # Fall back to original value if normalization fails
-                    self.query_parts.append((k, '=', str(v)))
+                    result.query_parts.append((k, '=', str(v)))
                 continue
-            
+
             # Special handling for URL fields - mark them with a special tag
             if k == 'url' or (isinstance(v, str) and (v.startswith('http://') or v.startswith('https://'))):
                 # Add a special tag to indicate this is a URL that needs quoting
-                self.query_parts.append((k, '=', {'__url_value__': v}))
+                result.query_parts.append((k, '=', {'__url_value__': v}))
                 continue
 
             parts = k.split('__')
@@ -167,31 +168,31 @@ class BaseQuerySet:
             if len(parts) > 1:
                 op = parts[1]
                 if op == 'gt':
-                    self.query_parts.append((field, '>', v))
+                    result.query_parts.append((field, '>', v))
                 elif op == 'lt':
-                    self.query_parts.append((field, '<', v))
+                    result.query_parts.append((field, '<', v))
                 elif op == 'gte':
-                    self.query_parts.append((field, '>=', v))
+                    result.query_parts.append((field, '>=', v))
                 elif op == 'lte':
-                    self.query_parts.append((field, '<=', v))
+                    result.query_parts.append((field, '<=', v))
                 elif op == 'ne':
-                    self.query_parts.append((field, '!=', v))
+                    result.query_parts.append((field, '!=', v))
                 elif op == 'in':
                     # Note: id__in is handled by optimization above
-                    self.query_parts.append((field, 'INSIDE', v))
+                    result.query_parts.append((field, 'INSIDE', v))
                 elif op == 'nin':
-                    self.query_parts.append((field, 'NOT INSIDE', v))
+                    result.query_parts.append((field, 'NOT INSIDE', v))
                 elif op == 'contains':
                     if isinstance(v, str):
-                        self.query_parts.append((f"string::contains({field}, '{v}')", '=', True))
+                        result.query_parts.append((f"string::contains({field}, '{v}')", '=', True))
                     else:
-                        self.query_parts.append((field, 'CONTAINS', v))
+                        result.query_parts.append((field, 'CONTAINS', v))
                 elif op == 'startswith':
-                    self.query_parts.append((f"string::starts_with({field}, '{v}')", '=', True))
+                    result.query_parts.append((f"string::starts_with({field}, '{v}')", '=', True))
                 elif op == 'endswith':
-                    self.query_parts.append((f"string::ends_with({field}, '{v}')", '=', True))
+                    result.query_parts.append((f"string::ends_with({field}, '{v}')", '=', True))
                 elif op == 'regex':
-                    self.query_parts.append((f"string::matches({field}, r'{v}')", '=', True))
+                    result.query_parts.append((f"string::matches({field}, r'{v}')", '=', True))
                 else:
                     # Handle nested field access for DictFields
                     document_class = getattr(self, 'document_class', None)
@@ -200,16 +201,16 @@ class BaseQuerySet:
                             from .fields import DictField
                             if isinstance(document_class._fields[field], DictField):
                                 nested_field = f"{field}.{op}"
-                                self.query_parts.append((nested_field, '=', v))
+                                result.query_parts.append((nested_field, '=', v))
                                 continue
 
                     # If we get here, it's an unknown operator
                     raise ValueError(f"Unknown operator: {op}")
             else:
                 # Simple equality
-                self.query_parts.append((field, '=', v))
+                result.query_parts.append((field, '=', v))
 
-        return self
+        return result
 
     def limit(self, value: int) -> 'BaseQuerySet':
         """Set the maximum number of results to return.

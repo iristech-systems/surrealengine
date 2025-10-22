@@ -936,7 +936,7 @@ class Document(metaclass=DocumentMetaclass):
             connection = ConnectionRegistry.get_default_connection(async_mode=True)
 
         self.validate()
-        
+
         # Smart save: use only changed fields for existing documents
         is_new = not self.id
         if is_new:
@@ -2397,7 +2397,7 @@ class Document(metaclass=DocumentMetaclass):
                         if isinstance(val, bool):
                             return 'true' if val else 'false'
                         return str(val)
-                    field_query += f" VALUE {_literal(field.default)}"
+                    field_query += f" DEFAULT {_literal(field.default)}"
 
                 # Field comment
                 if getattr(field, 'comment', None):
@@ -2526,7 +2526,7 @@ class Document(metaclass=DocumentMetaclass):
                         if isinstance(val, bool):
                             return 'true' if val else 'false'
                         return str(val)
-                    field_query += f" VALUE {_literal(field.default)}"
+                    field_query += f" DEFAULT {_literal(field.default)}"
 
                 # Field comment
                 if getattr(field, 'comment', None):

@@ -122,7 +122,8 @@ class Q:
         if not self.conditions:
             return []
         
-        # If conditions are simple (field, value) tuples, return them
+        # This method is now only safe for leaf nodes.
+        # It does not handle nested Q objects.
         if all(isinstance(cond, tuple) and len(cond) == 2 for cond in self.conditions):
             result = []
             for field, value in self.conditions:
@@ -153,18 +154,7 @@ class Q:
                     result.append((field, '=', value))
             return result
         
-        # For complex nested conditions, we need to handle recursively
-        # This is a simplified implementation - for full support we'd need
-        # more sophisticated query tree building
-        all_conditions = []
-        for cond in self.conditions:
-            if isinstance(cond, Q):
-                all_conditions.extend(cond.to_conditions())
-            elif isinstance(cond, tuple) and len(cond) == 2:
-                field, value = cond
-                all_conditions.append((field, '=', value))
-        
-        return all_conditions
+        return []
     
     def to_where_clause(self) -> str:
         """Convert this Q object to a WHERE clause string.
@@ -174,42 +164,51 @@ class Q:
         """
         if self.raw_query:
             return self.raw_query
-        
-        conditions = self.to_conditions()
-        if not conditions:
+
+        if not self.conditions:
             return ""
+
+        # Check if this is an internal node (created with & or | or ~)
+        is_internal_node = any(isinstance(c, Q) for c in self.conditions)
+
+        if is_internal_node:
+            # Recursively build clauses for children
+            child_clauses = []
+            for c in self.conditions:
+                if isinstance(c, Q):
+                    child_clauses.append(f"({c.to_where_clause()})")
+
+            if self.operator == 'NOT':
+                return f"NOT {child_clauses[0]}"
+            
+            return f" {self.operator} ".join(child_clauses)
         
-        # Build condition strings
-        condition_strs = []
-        for field, op, value in conditions:
-            if field == '__raw__':
-                condition_strs.append(value)
-            else:
-                # Handle special operators
-                if op in ('CONTAINS', 'STARTSWITH', 'ENDSWITH'):
-                    if op == 'CONTAINS':
-                        condition_strs.append(f"string::contains({field}, {escape_literal(value)})")
-                    elif op == 'STARTSWITH':
-                        condition_strs.append(f"string::starts_with({field}, {escape_literal(value)})")
-                    elif op == 'ENDSWITH':
-                        condition_strs.append(f"string::ends_with({field}, {escape_literal(value)})")
-                elif op == 'REGEX':
-                    condition_strs.append(f"string::matches({field}, {escape_literal(value)})")
-                elif op in ('INSIDE', 'NOT INSIDE'):
-                    value_str = escape_literal(value)
-                    condition_strs.append(f"{field} {op} {value_str}")
-                else:
-                    # Regular operators with proper escaping
-                    condition_strs.append(f"{field} {op} {escape_literal(value)}")
-        
-        # Join with operator
-        if self.operator == 'AND':
-            return ' AND '.join(condition_strs)
-        elif self.operator == 'OR':
-            return ' OR '.join(condition_strs)
-        elif self.operator == 'NOT':
-            return f"NOT ({' AND '.join(condition_strs)})"
         else:
+            # This is a leaf node (e.g., Q(age__gt=25, active=True))
+            # All conditions inside a single Q object are ANDed together.
+            conditions = self.to_conditions()
+            condition_strs = []
+            for field, op, value in conditions:
+                if field == '__raw__':
+                    condition_strs.append(value)
+                else:
+                    # Handle special operators
+                    if op in ('CONTAINS', 'STARTSWITH', 'ENDSWITH'):
+                        if op == 'CONTAINS':
+                            condition_strs.append(f"string::contains({field}, {escape_literal(value)})")
+                        elif op == 'STARTSWITH':
+                            condition_strs.append(f"string::starts_with({field}, {escape_literal(value)})")
+                        elif op == 'ENDSWITH':
+                            condition_strs.append(f"string::ends_with({field}, {escape_literal(value)})")
+                    elif op == 'REGEX':
+                        condition_strs.append(f"string::matches({field}, {escape_literal(value)})")
+                    elif op in ('INSIDE', 'NOT INSIDE'):
+                        value_str = escape_literal(value)
+                        condition_strs.append(f"{field} {op} {value_str}")
+                    else:
+                        # Regular operators with proper escaping
+                        condition_strs.append(f"{field} {op} {escape_literal(value)}")
+            
             return ' AND '.join(condition_strs)
 
 
@@ -338,15 +337,11 @@ class QueryExpression:
         Returns:
             Modified queryset
         """
-        # Apply WHERE conditions
+        # Apply WHERE conditions using the corrected to_where_clause method
         if self.where:
-            conditions = self.where.to_conditions()
-            for field, op, value in conditions:
-                if field == '__raw__':
-                    # Add raw condition - this would need special handling in BaseQuerySet
-                    queryset.query_parts.append(('__raw__', '=', value))
-                else:
-                    queryset.query_parts.append((field, op, value))
+            where_clause = self.where.to_where_clause()
+            if where_clause:
+                queryset.query_parts.append(('__raw__', '=', where_clause))
         
         # Apply FETCH
         if self.fetch_fields:
