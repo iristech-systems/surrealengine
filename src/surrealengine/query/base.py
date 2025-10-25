@@ -431,6 +431,8 @@ class QuerySet(BaseQuerySet):
             else:
                 traversal_to_use = traversal.strip()
             select_keyword = f"SELECT {traversal_to_use} AS traversed"
+        elif self.select_fields:
+            select_keyword = f"SELECT {', '.join(self.select_fields)}"
         else:
             select_keyword = "SELECT *"
 
@@ -491,7 +493,8 @@ class QuerySet(BaseQuerySet):
         if getattr(self, "_traversal_path", None):
             return rows
 
-        processed_results = [self.document_class.from_db(doc, dereference=dereference) for doc in rows]
+        is_partial = self.select_fields is not None
+        processed_results = [self.document_class.from_db(doc, dereference=dereference, partial=is_partial) for doc in rows]
         return processed_results
 
     def all_sync(self, dereference: bool = False) -> List[Any]:
@@ -533,7 +536,8 @@ class QuerySet(BaseQuerySet):
         if getattr(self, "_traversal_path", None):
             return rows
 
-        processed_results = [self.document_class.from_db(doc, dereference=dereference) for doc in rows]
+        is_partial = self.select_fields is not None
+        processed_results = [self.document_class.from_db(doc, dereference=dereference, partial=is_partial) for doc in rows]
         return processed_results
 
     async def count(self) -> int:
@@ -596,9 +600,9 @@ class QuerySet(BaseQuerySet):
             DoesNotExist: If no matching document is found
             MultipleObjectsReturned: If multiple matching documents are found
         """
-        self.filter(**kwargs)
-        self.limit_value = 2  # Get 2 to check for multiple
-        results = await self.all(dereference=dereference)
+        queryset = self.filter(**kwargs)
+        queryset.limit_value = 2  # Get 2 to check for multiple
+        results = await queryset.all(dereference=dereference)
 
         if not results:
             raise DoesNotExist(f"{self.document_class.__name__} matching query does not exist.")
@@ -623,9 +627,9 @@ class QuerySet(BaseQuerySet):
             DoesNotExist: If no matching document is found
             MultipleObjectsReturned: If multiple matching documents are found
         """
-        self.filter(**kwargs)
-        self.limit_value = 2  # Get 2 to check for multiple
-        results = self.all_sync(dereference=dereference)
+        queryset = self.filter(**kwargs)
+        queryset.limit_value = 2  # Get 2 to check for multiple
+        results = queryset.all_sync(dereference=dereference)
 
         if not results:
             raise DoesNotExist(f"{self.document_class.__name__} matching query does not exist.")

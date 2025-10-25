@@ -114,6 +114,7 @@ from .materialized_view import (
     MaxIf,
     DistinctCountIf
 )
+from .meta import DocumentMetaOptions
 from .query import QuerySet, RelationQuerySet
 from .query_expressions import Q, QueryExpression
 from .aggregation import AggregationPipeline
@@ -147,6 +148,7 @@ __all__ = [
     "create_connection",
     "ConnectionRegistry",
     "Document",
+    "DocumentMetaOptions",
     "RelationDocument",
     "DoesNotExist",
     "MultipleObjectsReturned",

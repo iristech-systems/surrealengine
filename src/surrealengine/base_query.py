@@ -45,6 +45,7 @@ class BaseQuerySet:
         self.split_fields: List[str] = []
         self.fetch_fields: List[str] = []
         self.with_index: Optional[str] = None
+        self.select_fields: Optional[List[str]] = None
         # Graph traversal state
         self._traversal_path: Optional[str] = None
         self._traversal_unique: bool = True
@@ -211,6 +212,25 @@ class BaseQuerySet:
                 result.query_parts.append((field, '=', v))
 
         return result
+
+    def only(self, *fields: str) -> 'BaseQuerySet':
+        """Select only the specified fields.
+
+        This method sets the fields to be selected in the query.
+        It automatically includes the 'id' field.
+
+        Args:
+            *fields: Field names to select
+
+        Returns:
+            The query set instance for method chaining
+        """
+        clone = self._clone()
+        select_fields = list(fields)
+        if 'id' not in select_fields:
+            select_fields.append('id')
+        clone.select_fields = select_fields
+        return clone
 
     def limit(self, value: int) -> 'BaseQuerySet':
         """Set the maximum number of results to return.
@@ -1000,6 +1020,7 @@ class BaseQuerySet:
         clone.split_fields = self.split_fields.copy()
         clone.fetch_fields = self.fetch_fields.copy()
         clone.with_index = self.with_index
+        clone.select_fields = self.select_fields
         # Copy performance optimization attributes
         clone._bulk_id_selection = self._bulk_id_selection
         clone._id_range_selection = self._id_range_selection

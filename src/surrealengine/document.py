@@ -459,40 +459,32 @@ class Document(metaclass=DocumentMetaclass):
         Returns:
             Dictionary of field values including ID
         """
-        # Start with the ID if it exists
         result = {}
-        if self.id is not None:
-            # Convert RecordID to string if needed
-            result['id'] = str(self.id) if isinstance(self.id, RecordID) else self.id
-
-        # Add all other fields with proper conversion
         for k, v in self._data.items():
-            if k in self._fields:
-                # Convert RecordID objects to strings
-                if isinstance(v, RecordID):
-                    result[k] = str(v)
-                # Handle embedded documents by recursively calling to_dict()
-                elif hasattr(v, 'to_dict') and callable(v.to_dict):
-                    result[k] = v.to_dict()
-                # Handle lists that might contain RecordIDs or embedded documents
-                elif isinstance(v, list):
-                    result[k] = [
-                        item.to_dict() if hasattr(item, 'to_dict') and callable(item.to_dict)
-                        else str(item) if isinstance(item, RecordID)
-                        else item
-                        for item in v
-                    ]
-                # Handle dicts that might contain RecordIDs or embedded documents
-                elif isinstance(v, dict):
-                    result[k] = {
-                        key: val.to_dict() if hasattr(val, 'to_dict') and callable(val.to_dict)
-                        else str(val) if isinstance(val, RecordID)
-                        else val
-                        for key, val in v.items()
-                    }
-                else:
-                    result[k] = v
-
+            # Convert RecordID objects to strings
+            if isinstance(v, RecordID):
+                result[k] = str(v)
+            # Handle embedded documents by recursively calling to_dict()
+            elif hasattr(v, 'to_dict') and callable(v.to_dict):
+                result[k] = v.to_dict()
+            # Handle lists that might contain RecordIDs or embedded documents
+            elif isinstance(v, list):
+                result[k] = [
+                    item.to_dict() if hasattr(item, 'to_dict') and callable(item.to_dict)
+                    else str(item) if isinstance(item, RecordID)
+                    else item
+                    for item in v
+                ]
+            # Handle dicts that might contain RecordIDs or embedded documents
+            elif isinstance(v, dict):
+                result[k] = {
+                    key: val.to_dict() if hasattr(val, 'to_dict') and callable(val.to_dict)
+                    else str(val) if isinstance(val, RecordID)
+                    else val
+                    for key, val in v.items()
+                }
+            else:
+                result[k] = v
         return result
 
     def to_db(self) -> Dict[str, Any]:
@@ -514,12 +506,13 @@ class Document(metaclass=DocumentMetaclass):
         return result
 
     @classmethod
-    def from_db(cls, data: Any, dereference: bool = False) -> 'Document':
+    def from_db(cls, data: Any, dereference: bool = False, partial: bool = False) -> 'Document':
         """Create a document instance from database data.
 
         Args:
             data: Data from the database (dictionary, string, RecordID, etc.)
             dereference: Whether to dereference references (default: False)
+            partial: Whether the data is a partial document (default: False)
 
         Returns:
             A new document instance
@@ -536,12 +529,13 @@ class Document(metaclass=DocumentMetaclass):
         if 'id' not in instance._fields:
             instance._fields['id'] = RecordIDField()
 
-        # Set default values
-        for field_name, field in instance._fields.items():
-            value = field.default
-            if callable(value):
-                value = value()
-            instance._data[field_name] = value
+        # If not partial, set default values
+        if not partial:
+            for field_name, field in instance._fields.items():
+                value = field.default
+                if callable(value):
+                    value = value()
+                instance._data[field_name] = value
 
         # If data is a dictionary, update with database values
         if isinstance(data, dict):
@@ -3017,3 +3011,4 @@ class RelationDocument(Document):
 
         # Return the current value if resolution failed
         return self.out_document
+''
