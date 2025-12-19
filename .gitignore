@@ -9,3 +9,11 @@ notebooks/*.ipynb_checkpoints/
 archive_*/
 *_archive/
 /external_docs/
+surrealdb_documentation/
+test_data/
+
+
+# Build artifacts
+*.egg-info/
+dist/
+build/

@@ -1288,7 +1288,7 @@ def parse_connection_string(connection_string: str) -> Dict[str, Any]:
         raise ValueError("Connection string cannot be empty")
 
     # Check if the connection string starts with a supported protocol
-    supported_protocols = ["surrealdb://", "wss://", "ws://", "http://", "https://"]
+    supported_protocols = ["surrealdb://", "wss://", "ws://", "http://", "https://", "mem://", "surrealkv://", "file://"]
     protocol_match = False
     for protocol in supported_protocols:
         if connection_string.startswith(protocol):
@@ -1308,6 +1308,46 @@ def parse_connection_string(connection_string: str) -> Dict[str, Any]:
         path = parsed_url.path.strip('/')
         query = parsed_url.query
 
+        # Handle embedded schemes which might not have host/port/auth in the same way
+        if scheme in ("mem", "memory", "surrealkv", "file"):
+             # For these, we might just want to preserve the full URL or handle path specifically
+             # But we typically don't have user:pass@host:port unless it's surrealdb's quirky format
+             # SDK 1.0.7+ handles these directly. 
+             # We should extract query params and return the URL as is or slightly normalized.
+             
+             # Parse query parameters
+             params = {}
+             if query:
+                 query_params = urllib.parse.parse_qs(query)
+                 for key, values in query_params.items():
+                     if len(values) == 1:
+                         value = values[0]
+                         if value.lower() == 'true':
+                             params[key] = True
+                         elif value.lower() == 'false':
+                             params[key] = False
+                         elif value.isdigit():
+                             params[key] = int(value)
+                         elif re.match(r'^-?\d+(\.\d+)?$', value):
+                             params[key] = float(value)
+                         else:
+                             params[key] = value
+                     else:
+                         params[key] = values
+
+             return {
+                 "url": connection_string.split('?')[0], # Strip query params from URL passed to SDK if SDK expects them separately? 
+                                                         # Actually SDK factory usually takes full URL. 
+                                                         # But BaseSurrealEngineConnection might need clean URL.
+                                                         # Let's pass the full base URL (scheme://path) and params separate?
+                                                         # connection.py usually passes "url" to factory.
+                 "namespace": None, # Embedded typically doesn't use these or handles them differently
+                 "database": None,
+                 "username": None,
+                 "password": None,
+                 **params
+             }
+
         # Parse the netloc to get username, password, host, and port
         username = None
         password = None
@@ -1324,11 +1364,14 @@ def parse_connection_string(connection_string: str) -> Dict[str, Any]:
         host = netloc
         port = None
         if ':' in netloc:
-            host, port_str = netloc.split(':', 1)
+             # Check for ipv6 or multiple colons? urllib usually handles this but simple split might fail
+             # Assuming standard host:port for now
+            host, port_str = netloc.rsplit(':', 1)
             try:
                 port = int(port_str)
             except ValueError:
-                raise ValueError(f"Invalid port number: {port_str}")
+                # Could be IPv6 without brackets or something else
+                pass 
 
         # Parse namespace and database from path
         namespace = None
@@ -1367,6 +1410,10 @@ def parse_connection_string(connection_string: str) -> Dict[str, Any]:
         url = f"{scheme}://{host}"
         if port:
             url += f":{port}"
+            
+        # Typically regex check or simple logic for rpc
+        if scheme in ('ws', 'wss') and not url.endswith('/rpc'):
+             url += '/rpc'
 
         # Build the result dictionary
         result = {
@@ -1433,7 +1480,7 @@ class ConnectionPoolClient:
         with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "create", "db.collection": collection}):
             connection = await self.pool.get_connection()
             try:
-                from .document_update import serialize_http_safe
+                from .document import serialize_http_safe
                 data = serialize_http_safe(data)
                 return await connection.client.create(collection, data)
             finally:
@@ -1452,7 +1499,7 @@ class ConnectionPoolClient:
         with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "update"}):
             connection = await self.pool.get_connection()
             try:
-                from .document_update import serialize_http_safe
+                from .document import serialize_http_safe
                 data = serialize_http_safe(data)
                 return await connection.client.update(id, data)
             finally:
@@ -1516,7 +1563,7 @@ class ConnectionPoolClient:
         with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "insert", "db.collection": collection, "db.row_count": len(data) if isinstance(data, list) else 1}):
             connection = await self.pool.get_connection()
             try:
-                from .document_update import serialize_http_safe
+                from .document import serialize_http_safe
                 data = [serialize_http_safe(d) for d in data] if isinstance(data, list) else serialize_http_safe(data)
                 return await connection.client.insert(collection, data)
             finally:

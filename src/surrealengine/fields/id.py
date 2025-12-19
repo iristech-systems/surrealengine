@@ -28,7 +28,7 @@ class RecordIDField(Field):
             **kwargs: Additional arguments to pass to the parent class
         """
         super().__init__(**kwargs)
-        self.py_type = str
+        self.py_type = (str, RecordID)
         self.table_name = table_name
 
     def validate(self, value: Any) -> Optional[str]:
@@ -49,23 +49,28 @@ class RecordIDField(Field):
         validated = super().validate(value)
         if validated is not None:
             if isinstance(validated, RecordID):
-                validated = str(validated)
+                pass
             elif isinstance(validated, str):
                 # Check if it's in the format "table:id"
                 if ':' not in validated:
                     raise ValueError(f"Invalid record ID format for field '{self.name}', expected 'table:id'")
             elif isinstance(validated, (list, tuple)) and len(validated) == 2:
-                # Convert [table, id] to "table:id"
+                # Convert [table, id] to RecordID
                 table, id_val = validated
                 if not isinstance(table, str) or not table:
-                    raise ValueError(f"Invalid table name in record ID for field '{self.name}'")
-                validated = f"{table}:{id_val}"
+                     raise ValueError(f"Invalid table name in record ID for field '{self.name}'")
+                validated = RecordID(table, id_val)
             else:
-                raise TypeError(f"Expected record ID string or [table, id] list/tuple for field '{self.name}', got {type(validated)}")
+                raise TypeError(f"Expected record ID object, string or [table, id] list/tuple for field '{self.name}', got {type(validated)}")
             
             # Check table name constraint if specified
+            # Check table name constraint if specified
             if validated and self.table_name:
-                table, _ = validated.split(':', 1)
+                if isinstance(validated, RecordID):
+                    table = validated.table
+                else:
+                    table, _ = validated.split(':', 1)
+
                 if table != self.table_name:
                     raise ValueError(f"RecordID must be from table '{self.table_name}', got '{table}'")
         
@@ -86,12 +91,13 @@ class RecordIDField(Field):
             return None
 
         if isinstance(value, RecordID):
-            return str(value)
-        elif isinstance(value, str) and ':' in value:
             return value
+        elif isinstance(value, str) and ':' in value:
+             table, id_val = value.split(':', 1)
+             return RecordID(table, id_val)
         elif isinstance(value, (list, tuple)) and len(value) == 2:
             table, id_val = value
-            return f"{table}:{id_val}"
+            return RecordID(table, id_val)
 
         return str(value)
 

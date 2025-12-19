@@ -32,7 +32,10 @@ class GeometryField(Field):
             **kwargs: Additional field options to be passed to the parent Field class.
         """
         super().__init__(required=required, **kwargs)
-        self.py_type = dict
+        super().__init__(required=required, **kwargs)
+        from surrealdb import Geometry
+        from surrealdb.data.types.geometry import GeometryCollection
+        self.py_type = (dict, Geometry, GeometryCollection)
 
     def validate(self, value):
         """Validate geometry data.
@@ -56,15 +59,17 @@ class GeometryField(Field):
                 raise ValidationError("This field is required")
             return None
 
-        # Handle GeometryPoint and other Geometry objects
+        # Handle SDK Geometry objects
+        from surrealdb import Geometry
+        # Try to import GeometryCollection if not available top level? 
+        # Actually standard import from submodules is better
+        from surrealdb.data.types.geometry import GeometryCollection
+        if isinstance(value, (Geometry, GeometryCollection)):
+            return value
+
+        # Handle GeometryPoint and other Geometry objects with to_json
         if hasattr(value, 'to_json'):
             return value.to_json()
-        
-        # Handle GeometryPoint from surrealdb.data
-        if hasattr(value, 'get_coordinates') and hasattr(value, 'longitude') and hasattr(value, 'latitude'):
-            coords = value.get_coordinates()
-            # Use simple tuple format as preferred by SurrealDB
-            return list(coords)  # Convert tuple to list for JSON serialization
 
         # Handle simple coordinate arrays for Point geometry (longitude, latitude)
         if isinstance(value, (list, tuple)) and len(value) == 2:
@@ -92,11 +97,25 @@ class GeometryField(Field):
         elif value["type"] in ("LineString", "MultiPoint"):
             if not all(isinstance(point, list) and len(point) == 2 for point in value["coordinates"]):
                 raise ValidationError("LineString/MultiPoint coordinates must be a list of [x,y] points")
-        elif value["type"] in ("Polygon", "MultiLineString"):
+        elif value["type"] == "MultiLineString":
             if not all(isinstance(line, list) and
                        all(isinstance(point, list) and len(point) == 2 for point in line)
                        for line in value["coordinates"]):
-                raise ValidationError("Polygon/MultiLineString must be a list of coordinate arrays")
+                raise ValidationError("MultiLineString must be a list of coordinate arrays")
+
+        elif value["type"] == "Polygon":
+            if not all(isinstance(line, list) and
+                       all(isinstance(point, list) and len(point) == 2 for point in line)
+                       for line in value["coordinates"]):
+                raise ValidationError("Polygon must be a list of coordinate arrays")
+            
+            # Enforce closed linear rings
+            for ring in value["coordinates"]:
+                if len(ring) < 4:
+                    raise ValidationError("Polygon linear ring must have at least 4 positions")
+                if ring[0] != ring[-1]:
+                    raise ValidationError("Polygon linear ring must be closed (first and last positions must be identical)")
+
         elif value["type"] == "MultiPolygon":
             if not all(isinstance(polygon, list) and
                        all(isinstance(line, list) and
@@ -104,5 +123,13 @@ class GeometryField(Field):
                            for line in polygon)
                        for polygon in value["coordinates"]):
                 raise ValidationError("MultiPolygon must be a list of polygon arrays")
+            
+            # Enforce closed linear rings for all polygons
+            for polygon in value["coordinates"]:
+                for ring in polygon:
+                    if len(ring) < 4:
+                        raise ValidationError("Polygon linear ring must have at least 4 positions")
+                    if ring[0] != ring[-1]:
+                        raise ValidationError("Polygon linear ring must be closed (first and last positions must be identical)")
 
         return value

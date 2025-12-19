@@ -275,7 +275,7 @@ class SchemalessQuerySet(BaseQuerySet):
             batch = documents[i:i + batch_size]
 
             # Construct optimized bulk insert query
-            from .document_update import serialize_http_safe
+            from .document import serialize_http_safe
             batch = [serialize_http_safe(doc) for doc in batch]
             query = f"INSERT INTO {self.table_name} {json.dumps(batch)};"
 
@@ -332,7 +332,7 @@ class SchemalessQuerySet(BaseQuerySet):
             batch = documents[i:i + batch_size]
 
             # Construct optimized bulk insert query
-            from .document_update import serialize_http_safe
+            from .document import serialize_http_safe
             batch = [serialize_http_safe(doc) for doc in batch]
             query = f"INSERT INTO {self.table_name} {json.dumps(batch)};"
 
@@ -430,7 +430,7 @@ class SchemalessTable:
 
         # Add attributes if provided
         if attrs:
-            from .document_update import _serialize_for_surreal as _ser
+            from .document import _serialize_for_surreal as _ser
             attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
@@ -487,7 +487,7 @@ class SchemalessTable:
 
         # Add attributes if provided
         if attrs:
-            from .document_update import _serialize_for_surreal as _ser
+            from .document import _serialize_for_surreal as _ser
             attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
@@ -680,7 +680,7 @@ class SchemalessTable:
 
         # Add attributes
         updates = []
-        from .document_update import _serialize_for_surreal as _ser
+        from .document import _serialize_for_surreal as _ser
         for key, value in attrs.items():
             updates.append(f" {key} = {_ser(value)}")
 
@@ -746,7 +746,7 @@ class SchemalessTable:
 
         # Add attributes
         updates = []
-        from .document_update import _serialize_for_surreal as _ser
+        from .document import _serialize_for_surreal as _ser
         for key, value in attrs.items():
             updates.append(f" {key} = {_ser(value)}")
 

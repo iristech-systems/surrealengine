@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2025-09-05
+## [0.4.0] - 2025-12-19
+
+### Added
+- **Embedded Database Support**: Full support for connection schemes `mem://`, `surrealkv://`, and `file://` utilizing the underlying SDK's native embedded capabilities.
+- **Sync API Parity**: Added `Document.update_sync()`, `Document.save_sync()`, `Document.refresh_sync()`, and `RelationDocument.update_sync()` to match async capabilities.
+- **Data Type Compliance**: Core fields (`DurationField`, `RangeField`, `GeometryField`, `TableField`, `RecordIDField`) now natively support and preserve `surrealdb` SDK objects (`Duration`, `Range`, `Geometry`, `Table`, `RecordID`).
+
+### Changed
+- **Strict Return Types**: Fields like `RecordIDField` now return `surrealdb.RecordID` objects instead of strings, improving type safety.
+- **Improved Serialization**: Refactored `Document.save` and `Document.update` logic to share a unified serialization creation pipeline, fixing CBOR errors with `Datetime` objects.
+- **Refactoring**: Merged `document_update.py` into `document.py` for cleaner architecture.
+- **BaseQuerySet**: Updated to remove legacy dependencies and improve query building robustness.
+
+### Fixed
+- **CBOR Serialization**: Fixed `ValueError: CBOR text data type must be str` when saving `datetime` objects.
+- **ReferenceField Bug**: Fixed issue where `ReferenceField` was incorrectly converting `RecordID` objects to strings during serialization.
+- **Geometry Validation**: Enhanced `GeometryField` to strictly validate closed linear rings for Polygons.
+- **Default Values**: Fixed issue where default values were not persisted when creating documents with manually specified IDs.
 
 ### Enhanced
 - **Immutable Filtering**: `BaseQuerySet.filter()` now returns a new queryset instance, preventing accidental mutation of the original queryset.

@@ -18,14 +18,11 @@ import datetime
 from typing import Any
 from .record_id_utils import RecordIdUtils
 
-# Robust optional import for SDK wrapper
+
 try:
-    from surrealdb.data.types.datetime import IsoDateTimeWrapper  # type: ignore
-except Exception:  # pragma: no cover
-    try:
-        from surrealdb.types import IsoDateTimeWrapper  # type: ignore
-    except Exception:
-        IsoDateTimeWrapper = None  # type: ignore
+    from surrealdb import Datetime
+except ImportError:
+    Datetime = None
 
 _record_id_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*:(?!/)[^\s]+$")
 
@@ -57,19 +54,21 @@ def escape_identifier(name: str) -> str:
     safe = name.replace("`", "``")
     return f"`{safe}`"
 
-
-def _iso_from_wrapper(w: Any) -> str:
-    s = getattr(w, "dt", None)
+def _iso_from_datetime_obj(value: Any) -> str:
+    """Extract ISO string from Datetime object or return as-is if string-like."""
+    if hasattr(value, 'inner') and isinstance(value.inner, datetime.datetime):
+        s = value.inner
+    elif hasattr(value, 'dt') and isinstance(value.dt, datetime.datetime):
+        s = value.dt
+    else:
+        # Fallback
+        return str(value)
+    
     if isinstance(s, datetime.datetime):
         if s.tzinfo is None:
             s = s.replace(tzinfo=datetime.timezone.utc)
         return s.isoformat().replace("+00:00", "Z")
-    if isinstance(s, str):
-        return s.replace("+00:00", "Z")
-    s2 = getattr(w, "iso", None)
-    if isinstance(s2, str):
-        return s2.replace("+00:00", "Z")
-    return str(w)
+    return str(s)
 
 
 def escape_literal(value: Any) -> str:
@@ -97,8 +96,11 @@ def escape_literal(value: Any) -> str:
         return str(value)
 
     # Datetime wrapper
-    if IsoDateTimeWrapper is not None and isinstance(value, IsoDateTimeWrapper):
-        iso = _iso_from_wrapper(value)
+    if Datetime is not None and isinstance(value, Datetime):
+        iso = _iso_from_datetime_obj(value)
+        # Check if already has d' prefix (unlikely for ISO extract but possible if str fallback)
+        if iso.startswith("d'") and iso.endswith("'"):
+            return iso
         return f"d'{iso}'"
 
     # Python datetime

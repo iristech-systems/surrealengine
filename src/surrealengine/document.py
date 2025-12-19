@@ -27,8 +27,139 @@ from .signals import (
 )
 from .materialized_view import MaterializedView
 
+
 # Set up logging
 logger = logging.getLogger(__name__)
+
+
+# Robust import for SDK datetime wrapper
+try:
+    from surrealdb.data.types.datetime import IsoDateTimeWrapper  # new path
+except Exception:  # pragma: no cover
+    try:
+        from surrealdb.types import IsoDateTimeWrapper  # older path
+    except Exception:
+        IsoDateTimeWrapper = None
+
+def _iso_from_wrapper(w) -> str:
+    if w is None:
+        return ""
+    s = getattr(w, "dt", None)
+    if isinstance(s, datetime.datetime):
+        return s.isoformat()
+    if isinstance(s, str):
+        return s
+    s2 = getattr(w, "iso", None)
+    if isinstance(s2, str):
+        return s2
+    return str(w)
+
+# Universal HTTP-safe serializer for outgoing payloads
+def _serialize_http_safe(value: Any):
+    """Recursively process values for SurrealDB SDK.
+
+    Convert IsoDateTimeWrapper back to raw datetime - the SDK handles that better.
+    """
+    import datetime as _dt
+
+    try:
+        from surrealdb.data.types.datetime import IsoDateTimeWrapper as _Iso
+    except Exception:
+        try:
+            from surrealdb.types import IsoDateTimeWrapper as _Iso
+        except Exception:
+            _Iso = None
+    
+    # Pass through primitives and datetime unchanged
+    if value is None or isinstance(value, (str, int, float, bool, _dt.datetime)):
+        return value
+
+    # Convert IsoDateTimeWrapper/Datetime back to datetime
+    try:
+        from surrealdb import Datetime
+        if isinstance(value, Datetime):
+            if hasattr(value, 'inner') and isinstance(value.inner, _dt.datetime):
+                return value.inner
+            if hasattr(value, 'dt') and isinstance(value.dt, _dt.datetime):
+                return value.dt
+            return value 
+    except ImportError:
+        pass
+
+    if _Iso and isinstance(value, _Iso):
+        dt_val = getattr(value, 'dt', None)
+        if isinstance(dt_val, _dt.datetime):
+            return dt_val
+        iso_val = getattr(value, 'iso', None)
+        if isinstance(iso_val, str):
+            try:
+                return _dt.datetime.fromisoformat(iso_val.replace('Z', '+00:00'))
+            except:
+                pass
+        return value
+
+    # Recursively handle collections
+    if isinstance(value, list):
+        return [_serialize_http_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _serialize_http_safe(v) for k, v in value.items()}
+
+    # Pass through everything else unchanged
+    return value
+
+
+def _serialize_for_surreal(value: Any) -> str:
+    """Serialize Python values to SurrealDB-friendly literal strings."""
+    # Datetime wrappers and datetime objects
+    try:
+        from surrealdb import Datetime
+        if isinstance(value, Datetime):
+            dt = None
+            if hasattr(value, 'inner') and isinstance(value.inner, datetime.datetime):
+                dt = value.inner
+            elif hasattr(value, 'dt') and isinstance(value.dt, datetime.datetime):
+                dt = value.dt
+            
+            if dt:
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                iso = dt.isoformat().replace("+00:00", "Z")
+                return f"d'{iso}'"
+            return str(value)
+    except ImportError:
+        pass
+
+    if IsoDateTimeWrapper is not None and isinstance(value, IsoDateTimeWrapper):
+        iso = _iso_from_wrapper(value).replace("+00:00", "Z")
+        return f"d'{iso}'"
+    if isinstance(value, datetime.datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=datetime.timezone.utc)
+        iso = dt.isoformat().replace("+00:00", "Z")
+        return f"d'{iso}'"
+
+    # Already a Surreal datetime literal
+    if isinstance(value, str):
+        if value.startswith("d'") and value.endswith("'"):
+            return value
+        return json.dumps(value)
+
+    if value is None:
+        return "none"
+
+    if isinstance(value, list):
+        return '[' + ', '.join(_serialize_for_surreal(v) for v in value) + ']'
+    if isinstance(value, tuple):
+        return '[' + ', '.join(_serialize_for_surreal(v) for v in value) + ']'
+    if isinstance(value, dict):
+        items = []
+        for k, v in value.items():
+            items.append(json.dumps(str(k)) + ": " + _serialize_for_surreal(v))
+        return '{' + ', '.join(items) + '}'
+
+    try:
+        return json.dumps(value)
+    except TypeError:
+        return json.dumps(str(value))
 
 
 class DocumentMetaclass(type):
@@ -799,9 +930,10 @@ class Document(metaclass=DocumentMetaclass):
                     await document.resolve_references(depth=dereference_depth)
                 
                 return document
-            except Exception:
+            except Exception as e:
                 # Fall back to regular get with manual dereferencing
-                pass
+                logger.error(f"Error getting document {id}: {e}")
+                raise
         
         # Fallback to original method
         document = await cls.objects.get(id=id, **kwargs)
@@ -888,39 +1020,123 @@ class Document(metaclass=DocumentMetaclass):
             document.resolve_references_sync(depth=dereference_depth)
         return document
 
+    async def update(self, connection: Optional[Any] = None, **kwargs) -> 'Document':
+        """Update the document with new data.
+
+        Args:
+            connection: The database connection to use (optional)
+            **kwargs: Fields to update
+
+        Returns:
+            The updated document instance
+        """
+        # Trigger pre_save signal
+        if SIGNAL_SUPPORT:
+            pre_save.send(self.__class__, document=self)
+
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+
+        # Update fields from kwargs
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+        self.validate()
+        
+        if not self.id:
+            raise ValidationError("Cannot update a document without an ID.")
+
+        # Get changed data
+        data = self.get_changed_data_for_update()
+        if not data:
+            return self
+            
+        data = _serialize_http_safe(data)
+        
+        # Use merge for partial update
+        result = await connection.client.merge(self.id, data)
+        
+        # Update the current instance with the returned data
+        if result:
+            doc_data = result[0] if isinstance(result, list) and result else result
+            if isinstance(doc_data, dict):
+                self._data.update(doc_data)
+                # Parse fields
+                for field_name, field in self._fields.items():
+                    if field_name in doc_data:
+                        self._data[field_name] = field.from_db(doc_data[field_name])
+        else:
+            from .exceptions import DoesNotExist
+            raise DoesNotExist(f"Document with ID {self.id} does not exist.")
+        
+        # Trigger post_save signal
+        if SIGNAL_SUPPORT:
+            post_save.send(self.__class__, document=self, created=False)
+
+        self.mark_clean()
+        return self
+
+    def update_sync(self, connection: Optional[Any] = None, **kwargs) -> 'Document':
+        """Update the document with new data synchronously.
+
+        Args:
+            connection: The database connection to use (optional)
+            **kwargs: Fields to update
+
+        Returns:
+            The updated document instance
+        """
+        # Trigger pre_save signal
+        if SIGNAL_SUPPORT:
+            pre_save.send(self.__class__, document=self)
+
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+
+        # Update fields from kwargs
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+        self.validate()
+        
+        if not self.id:
+            raise ValidationError("Cannot update a document without an ID.")
+
+        # Get changed data
+        data = self.get_changed_data_for_update()
+        if not data:
+            return self
+            
+        data = _serialize_http_safe(data)
+        
+        # Use merge for partial update
+        result = connection.client.merge(self.id, data)
+        
+        # Update the current instance with the returned data
+        if result:
+            doc_data = result[0] if isinstance(result, list) and result else result
+            if isinstance(doc_data, dict):
+                self._data.update(doc_data)
+                # Parse fields
+                for field_name, field in self._fields.items():
+                    if field_name in doc_data:
+                        self._data[field_name] = field.from_db(doc_data[field_name])
+        else:
+            from .exceptions import DoesNotExist
+            raise DoesNotExist(f"Document with ID {self.id} does not exist.")
+        
+        # Trigger post_save signal
+        if SIGNAL_SUPPORT:
+            post_save.send(self.__class__, document=self, created=False)
+
+        self.mark_clean()
+        return self
+
     async def save(self, connection: Optional[Any] = None) -> 'Document':
         """Save the document to the database asynchronously.
 
         This method saves the document to the database, either creating
-        a new document or updating an existing one based on whether the
-        document has an ID.
-
-        Args:
-            connection: The database connection to use (optional)
-
-        Returns:
-            The saved document instance
-
-        Raises:
-            ValidationError: If the document fails validation
-
-        Examples:
-            Create and save a new document:
-
-            >>> user = User(name="John Doe", email="john@example.com", age=30)
-            >>> saved_user = await user.save()
-            >>> print(f"Created user with ID: {saved_user.id}")
-
-            Update an existing document:
-
-            >>> user.age = 31
-            >>> updated_user = await user.save()
-            >>> print(f"Updated user age to {updated_user.age}")
-
-            Save with specific connection:
-
-            >>> custom_connection = create_connection("ws://localhost:8001")
-            >>> await user.save(connection=custom_connection)
+        a new document or updating an existing one.
         """
         # Trigger pre_save signal
         if SIGNAL_SUPPORT:
@@ -931,109 +1147,49 @@ class Document(metaclass=DocumentMetaclass):
 
         self.validate()
 
-        # Smart save: use only changed fields for existing documents
-        is_new = not self.id
-        if is_new:
-            # For new documents, send all data
-            data = self.to_db()
-        else:
-            # For existing documents, only send changed fields for optimization
+        # Update existing document if possible
+        if self.id and self._changed_fields:
             data = self.get_changed_data_for_update()
-            # If no changes, still validate but skip database operation
-            if not data:
-                return self
+            if data:
+                from .exceptions import DoesNotExist
+                try:
+                    return await self.update(connection=connection, **data)
+                except DoesNotExist:
+                    # Document doesn't exist, proceed to create
+                    pass
+        
+        if self.id and not self._changed_fields:
+            return self
 
+        # Create new document
         # Trigger pre_save_post_validation signal
         if SIGNAL_SUPPORT:
             pre_save_post_validation.send(self.__class__, document=self)
 
-        # Special handling for RelationDocument instances
-        # If this is a RelationDocument and has an ID, use update() instead of upsert
-        # to avoid deleting fields not included in the update
-        if self.id and isinstance(self, RelationDocument) and hasattr(self, 'update'):
-            # Use the update method which preserves existing data
-            return await self.update(**data)
+        data = self.to_db()
+        safe_data = _serialize_http_safe(data)
         
-        if self.id:
-            id_part = str(self.id).split(':')[1]
-            result = await connection.client.upsert(
-                RecordID(self._get_collection_name(),
-                         int(id_part) if id_part.isdigit() else id_part),
-                data
-            )
-        else:
-            # Create new document - use full data
-            # Ensure HTTP-safe serialization (Fix B)
-            try:
-                from .utils import serialize_http_safe  # type: ignore
-            except Exception:
-                # Local fallback if utils not available
-                def serialize_http_safe(v):
-                    try:
-                        from surrealdb.data.types.datetime import IsoDateTimeWrapper as _Iso
-                    except Exception:
-                        try:
-                            from surrealdb.types import IsoDateTimeWrapper as _Iso
-                        except Exception:
-                            _Iso = ()
-                    import datetime as _dt
-                    if v is None or isinstance(v, (str, int, float, bool)):
-                        return v
-                    if isinstance(v, _dt.datetime):
-                        if v.tzinfo is None:
-                            v = v.replace(tzinfo=_dt.timezone.utc)
-                        return v.isoformat().replace('+00:00','Z')
-                    if _Iso and isinstance(v, _Iso):
-                        inner = getattr(v, 'dt', None)
-                        if isinstance(inner, _dt.datetime):
-                            if inner.tzinfo is None:
-                                inner = inner.replace(tzinfo=_dt.timezone.utc)
-                            return inner.isoformat().replace('+00:00','Z')
-                        if isinstance(inner, str):
-                            return inner.replace('+00:00','Z')
-                        inner2 = getattr(v, 'iso', None)
-                        if isinstance(inner2, str):
-                            return inner2.replace('+00:00','Z')
-                        return str(v)
-                    if isinstance(v, list):
-                        return [serialize_http_safe(x) for x in v]
-                    if isinstance(v, dict):
-                        return {k: serialize_http_safe(x) for k,x in v.items()}
-                    return v
-            data = serialize_http_safe(data)
-            result = await connection.client.create(
-                self._get_collection_name(),
-                data
-            )
-
+        result = await connection.client.create(
+            self._get_collection_name(),
+            safe_data
+        )
+        
         # Update the current instance with the returned data
         if result:
-            if isinstance(result, list) and result:
-                doc_data = result[0]
-            else:
-                doc_data = result
-
-            # Update the instance's _data with the returned document
+            doc_data = result[0] if isinstance(result, list) and result else result
             if isinstance(doc_data, dict):
-                # First update the raw data
                 self._data.update(doc_data)
-
-                # Make sure to capture the ID if it's a new document
                 if 'id' in doc_data:
                     self._data['id'] = doc_data['id']
-
-                # Then properly convert each field using its from_db method
                 for field_name, field in self._fields.items():
                     if field_name in doc_data:
                         self._data[field_name] = field.from_db(doc_data[field_name])
-
+        
         # Trigger post_save signal
         if SIGNAL_SUPPORT:
-            post_save.send(self.__class__, document=self, created=is_new)
+            post_save.send(self.__class__, document=self, created=True)
 
-        # Mark document as clean after successful save
         self.mark_clean()
-
         return self
 
     def save_sync(self, connection: Optional[Any] = None) -> 'Document':
@@ -1062,78 +1218,31 @@ class Document(metaclass=DocumentMetaclass):
         self.validate()
         
         # Smart save: use only changed fields for existing documents
-        is_new = not self.id
-        if is_new:
-            # For new documents, send all data
-            data = self.to_db()
-        else:
-            # For existing documents, only send changed fields for optimization
+        if self.id and self._changed_fields:
             data = self.get_changed_data_for_update()
-            # If no changes, still validate but skip database operation
-            if not data:
-                return self
+            if data:
+                from .exceptions import DoesNotExist
+                try:
+                    return self.update_sync(connection=connection, **data)
+                except DoesNotExist:
+                    pass
+        
+        # If we have an ID but no changes, we don't need to do anything
+        if self.id and not self._changed_fields:
+            return self
 
+        # Create new document
         # Trigger pre_save_post_validation signal
         if SIGNAL_SUPPORT:
             pre_save_post_validation.send(self.__class__, document=self)
 
-        # Special handling for RelationDocument instances
-        # If this is a RelationDocument and has an ID, use update_sync() instead of upsert
-        # to avoid deleting fields not included in the update
-        if self.id and isinstance(self, RelationDocument) and hasattr(self, 'update_sync'):
-            # Use the update_sync method which preserves existing data
-            return self.update_sync(**data)
-            
-        if self.id:
-            id_part = str(self.id).split(':')[1]
-            result = connection.client.upsert(
-                RecordID(self._get_collection_name(),
-                         int(id_part) if id_part.isdigit() else id_part),
-                data
-            )
-        else:
-            # Create new document - use full data
-            # Ensure HTTP-safe serialization (Fix B)
-            try:
-                from .utils import serialize_http_safe  # type: ignore
-            except Exception:
-                def serialize_http_safe(v):
-                    try:
-                        from surrealdb.data.types.datetime import IsoDateTimeWrapper as _Iso
-                    except Exception:
-                        try:
-                            from surrealdb.types import IsoDateTimeWrapper as _Iso
-                        except Exception:
-                            _Iso = ()
-                    import datetime as _dt
-                    if v is None or isinstance(v, (str, int, float, bool)):
-                        return v
-                    if isinstance(v, _dt.datetime):
-                        if v.tzinfo is None:
-                            v = v.replace(tzinfo=_dt.timezone.utc)
-                        return v.isoformat().replace('+00:00','Z')
-                    if _Iso and isinstance(v, _Iso):
-                        inner = getattr(v, 'dt', None)
-                        if isinstance(inner, _dt.datetime):
-                            if inner.tzinfo is None:
-                                inner = inner.replace(tzinfo=_dt.timezone.utc)
-                            return inner.isoformat().replace('+00:00','Z')
-                        if isinstance(inner, str):
-                            return inner.replace('+00:00','Z')
-                        inner2 = getattr(v, 'iso', None)
-                        if isinstance(inner2, str):
-                            return inner2.replace('+00:00','Z')
-                        return str(v)
-                    if isinstance(v, list):
-                        return [serialize_http_safe(x) for x in v]
-                    if isinstance(v, dict):
-                        return {k: serialize_http_safe(x) for k,x in v.items()}
-                    return v
-            data = serialize_http_safe(data)
-            result = connection.client.create(
-                self._get_collection_name(),
-                data
-            )
+        data = self.to_db()
+        data = _serialize_http_safe(data)
+        
+        result = connection.client.create(
+            self._get_collection_name(),
+            data
+        )
 
         # Update the current instance with the returned data
         if result:
@@ -1158,7 +1267,7 @@ class Document(metaclass=DocumentMetaclass):
 
         # Trigger post_save signal
         if SIGNAL_SUPPORT:
-            post_save.send(self.__class__, document=self, created=is_new)
+            post_save.send(self.__class__, document=self, created=True)
 
         # Mark document as clean after successful save
         self.mark_clean()

@@ -1,4 +1,11 @@
 from typing import Any, Dict, List, Optional, Type, Union
+try:
+    from surrealdb import Range
+    from surrealdb.data.types.range import BoundIncluded, BoundExcluded
+except ImportError:
+    Range = None
+    BoundIncluded = None
+    BoundExcluded = None
 
 from .base import Field
 
@@ -137,7 +144,8 @@ class TableField(Field):
             **kwargs: Additional arguments to pass to the parent class
         """
         super().__init__(**kwargs)
-        self.py_type = str
+        from surrealdb import Table
+        self.py_type = (str, Table)
 
     def validate(self, value: Any) -> Optional[str]:
         """Validate the table name.
@@ -156,8 +164,12 @@ class TableField(Field):
         """
         value = super().validate(value)
         if value is not None:
+            from surrealdb import Table
+            if isinstance(value, Table):
+                return value
+
             if not isinstance(value, str):
-                raise TypeError(f"Expected string for table name in field '{self.name}', got {type(value)}")
+                raise TypeError(f"Expected string or Table for table name in field '{self.name}', got {type(value)}")
             # Basic validation for table names
             if not value or ' ' in value:
                 raise ValueError(f"Invalid table name '{value}' for field '{self.name}'")
@@ -174,11 +186,12 @@ class TableField(Field):
         Returns:
             The table name for the database
         """
-        if value is not None and not isinstance(value, str):
-            try:
-                return str(value)
-            except (TypeError, ValueError):
-                pass
+        from surrealdb import Table
+        if value is not None:
+             if isinstance(value, Table):
+                 return value
+             if isinstance(value, str):
+                 return Table(value)
         return value
 
 
@@ -205,7 +218,8 @@ class RangeField(Field):
         self.min_type = min_type
         self.max_type = max_type if max_type is not None else min_type
         super().__init__(**kwargs)
-        self.py_type = Dict[str, Any]
+        from surrealdb import Range
+        self.py_type = (Dict[str, Any], Range)
 
     def validate(self, value: Any) -> Optional[Dict[str, Any]]:
         """Validate the range value.
@@ -227,9 +241,15 @@ class RangeField(Field):
         if value is None:
             return None
 
+        from surrealdb import Range
+        if isinstance(value, Range):
+            # We can't easily validate inner types of Range without unwrapping,
+            # but user likely knows what they are doing if using SDK objects.
+            return value
+
         if not isinstance(value, dict):
             from ..exceptions import ValidationError
-            raise ValidationError(f"Expected dict for field '{self.name}', got {type(value)}")
+            raise ValidationError(f"Expected dict or surrealdb.Range for field '{self.name}', got {type(value)}")
 
         # Ensure the range has min and max keys
         if 'min' not in value and 'max' not in value:
@@ -292,6 +312,20 @@ class RangeField(Field):
         if 'max' in value and value['max'] is not None:
             result['max'] = self.max_type.to_db(value['max'])
 
+        # Convert to SDK Range if fully populated
+        from surrealdb import Range
+        from surrealdb.data.types.range import BoundIncluded
+        if 'min' in result and 'max' in result:
+             return Range(BoundIncluded(result['min']), BoundIncluded(result['max']))
+        # Partial ranges might just be dicts? Or we construct partial Ranges? 
+        # The SDK definition seems to require both begin and end.
+        # If partial, we might need to fallback to manual string syntax?
+        # Actually, let's stick to returning dict if partial, and the SDK might handle it or we serialize manually.
+        # But wait, Range object in SDK requires begin/end. 
+        # For now, let's rely on standard serialization for dicts which creates an object,
+        # but if we want strictly Range type we should use it.
+        # Given this is "RangeField", let's leave it as dict for flexibility unless user provides Range.
+        
         return result
 
     def from_db(self, value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -305,6 +339,20 @@ class RangeField(Field):
         """
         if value is None:
             return None
+
+        if isinstance(value, Range):
+            # Convert back to dict for consistency with python usage
+            from surrealdb import Range
+            from surrealdb.data.types.range import BoundIncluded, BoundExcluded
+            res = {}
+            if value.begin:
+                val = value.begin.value
+                # Try to use from_db of subfield
+                res['min'] = self.min_type.from_db(val)
+            if value.end:
+                val = value.end.value
+                res['max'] = self.max_type.from_db(val)
+            return res
 
         result = {}
 

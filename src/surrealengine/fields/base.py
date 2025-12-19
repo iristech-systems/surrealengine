@@ -20,7 +20,7 @@ import re
 import uuid
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Pattern, Type, TypeVar, Union, cast
-from surrealdb.data.types.datetime import IsoDateTimeWrapper
+
 from surrealdb import RecordID
 from ..exceptions import ValidationError
 from ..signals import (

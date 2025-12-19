@@ -7,7 +7,7 @@ Credit to MongoEngine for providing such an extensive ODM. Much of my work was d
 
 ## Requirements
 
-- Python >= 3.8
+- Python >= 3.10
 - surrealdb >= 1.0.3
 
 ## Installation

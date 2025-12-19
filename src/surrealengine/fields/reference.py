@@ -107,7 +107,7 @@ class ReferenceField(Field):
 
         # If it's a RecordID object
         if isinstance(value, RecordID):
-            return str(value)
+            return value
 
         # If it's a document instance
         if isinstance(value, self.document_type):
@@ -218,9 +218,9 @@ class RelationField(Field):
         """
         value = super().validate(value)
         if value is not None:
-            if not isinstance(value, (self.to_document, str, dict)):
+            if not isinstance(value, (self.to_document, str, dict, RecordID)):
                 raise TypeError(
-                    f"Expected {self.to_document.__name__}, id string, or record dict for field '{self.name}', got {type(value)}")
+                    f"Expected {self.to_document.__name__}, id string, record dict, or RecordID for field '{self.name}', got {type(value)}")
 
         return value
 

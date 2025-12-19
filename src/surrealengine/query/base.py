@@ -916,7 +916,7 @@ class QuerySet(BaseQuerySet):
             # Handle documents without IDs using bulk INSERT
             if docs_without_ids:
                 data = [doc.to_db() for doc in docs_without_ids]
-                from ..document_update import serialize_http_safe
+                from ..document import serialize_http_safe
                 data = [serialize_http_safe(d) for d in data]
                 query = f"INSERT INTO {collection} {json.dumps(data)};"
                 
@@ -1000,7 +1000,7 @@ class QuerySet(BaseQuerySet):
 
             # Convert batch to DB representation
             data = [doc.to_db() for doc in batch]
-            from ..document_update import serialize_http_safe
+            from ..document import serialize_http_safe
             data = [serialize_http_safe(d) for d in data]
 
             # Construct optimized bulk insert query

@@ -91,7 +91,7 @@ class RelationQuerySet:
                 else:
                     processed_attrs[k] = v
             
-            from ..document_update import _serialize_for_surreal as _ser
+            from ..document import _serialize_for_surreal as _ser
             attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in processed_attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
@@ -163,7 +163,7 @@ class RelationQuerySet:
                 else:
                     processed_attrs[k] = v
             
-            from ..document_update import _serialize_for_surreal as _ser
+            from ..document import _serialize_for_surreal as _ser
             attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in processed_attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
@@ -346,7 +346,7 @@ class RelationQuerySet:
 
         # Add attributes
         updates = []
-        from ..document_update import _serialize_for_surreal as _ser
+        from ..document import _serialize_for_surreal as _ser
         for key, value in attrs.items():
             updates.append(f" {key} = {_ser(value)}")
 
@@ -409,7 +409,7 @@ class RelationQuerySet:
 
         # Add attributes
         updates = []
-        from ..document_update import _serialize_for_surreal as _ser
+        from ..document import _serialize_for_surreal as _ser
         for key, value in attrs.items():
             updates.append(f" {key} = {_ser(value)}")
 

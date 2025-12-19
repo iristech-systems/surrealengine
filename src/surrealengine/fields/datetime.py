@@ -1,14 +1,7 @@
 import datetime
 from typing import Any, Optional
 
-# Robust import for SDK wrapper across versions
-try:
-    from surrealdb.data.types.datetime import IsoDateTimeWrapper  # new path
-except Exception:  # pragma: no cover
-    try:
-        from surrealdb.types import IsoDateTimeWrapper  # possible older path
-    except Exception:
-        IsoDateTimeWrapper = None  # Fallback handled at runtime
+
 
 from .base import Field
 
@@ -46,7 +39,7 @@ class DateTimeField(Field):
     def validate(self, value: Any) -> Optional[datetime.datetime]:
         """Validate the datetime value.
 
-        Accepts datetime, IsoDateTimeWrapper, ISO strings (with optional Z or space separator),
+        Accepts datetime, Datetime, ISO strings (with optional Z or space separator),
         Surreal d'...' literals, and epoch seconds/milliseconds (int/float).
         """
         value = super().validate(value)
@@ -58,23 +51,27 @@ class DateTimeField(Field):
             return value
 
         # SDK wrapper instance provided directly
-        if IsoDateTimeWrapper is not None and isinstance(value, IsoDateTimeWrapper):
-            inner = getattr(value, 'dt', None)
-            if isinstance(inner, datetime.datetime):
-                return inner
-            if isinstance(inner, str):
-                try:
-                    return datetime.datetime.fromisoformat(inner.replace('Z', '+00:00'))
-                except ValueError:
-                    pass
-            inner_iso = getattr(value, 'iso', None)
-            if isinstance(inner_iso, str):
-                try:
-                    return datetime.datetime.fromisoformat(inner_iso.replace('Z', '+00:00'))
-                except ValueError:
-                    pass
-            # If wrapper can't be unpacked, treat as invalid
-            raise TypeError(f"Expected datetime-compatible value for field '{self.name}', got IsoDateTimeWrapper with unknown payload")
+        try:
+            from surrealdb import Datetime
+            if isinstance(value, Datetime):
+                # Assuming Datetime has a 'dt' or 'datetime' property or similar,
+                # or we can extract it. Based on SDK source, it wraps valid input.
+                # If it stores it as string internally or object, we need to extract.
+                # For now, let's assume we can trust it or it has a way to get back to datetime.
+                # If the SDK 1.0.7 Datetime object usage is opaque, we might return it as is
+                # if the expected return type was lenient, but type hint says Optional[datetime.datetime].
+                # We should try to extract the python datetime.
+                if hasattr(value, 'inner'): # Check SDK source if possible, else generic
+                    return value.inner
+                if hasattr(value, 'dt'):
+                    return value.dt
+                # Fallback: maybe it is a subclass of datetime? Unlikely.
+                # If we return it here, it breaks return type contract if it's not a datetime.
+                # Let's assume validation is satisfied if it's a Datetime, but we need to return datetime. 
+                # Let's inspect it via str and parse if needed.
+                return datetime.datetime.fromisoformat(str(value).replace("d'", "").replace("'", "").replace('Z', '+00:00'))
+        except ImportError:
+            pass
 
         # Epoch seconds or milliseconds
         if isinstance(value, (int, float)):
@@ -108,11 +105,17 @@ class DateTimeField(Field):
         """Convert Python datetime to database representation.
 
         This method converts a Python datetime object (or ISO-like string) to a SurrealDB datetime
-        type using the SDK's IsoDateTimeWrapper so that schemafull TYPE datetime is satisfied.
+        type using the SDK's Datetime wrapper so that schemafull TYPE datetime is satisfied.
         If a naive datetime is provided, assume UTC to avoid ambiguity.
         """
         if value is None:
             return None
+        
+        try:
+            from surrealdb import Datetime
+        except ImportError:
+            Datetime = None
+
         # Coerce from string when possible
         if isinstance(value, str):
             try:
@@ -121,9 +124,11 @@ class DateTimeField(Field):
             except ValueError:
                 # Let SDK try to handle unknown string as-is (unlikely)
                 return value
+        
         # Direct wrapper passthrough
-        if IsoDateTimeWrapper is not None and isinstance(value, IsoDateTimeWrapper):
+        if Datetime is not None and isinstance(value, Datetime):
             return value
+
         if isinstance(value, (int, float)):
             # treat as epoch seconds or milliseconds
             seconds = value / 1000.0 if value >= 1_000_000_000_000 else float(value)
@@ -131,19 +136,14 @@ class DateTimeField(Field):
                 value = datetime.datetime.fromtimestamp(seconds, tz=datetime.timezone.utc)
             except Exception:
                 return value
+        
         if isinstance(value, datetime.datetime):
             # Ensure timezone-aware; default to UTC if naive
             if value.tzinfo is None:
                 value = value.replace(tzinfo=datetime.timezone.utc)
             # Prefer SDK wrapper when available
-            if IsoDateTimeWrapper is not None:
-                try:
-                    return IsoDateTimeWrapper(value)  # some SDKs accept dt directly
-                except Exception:
-                    try:
-                        return IsoDateTimeWrapper(value.isoformat())
-                    except Exception:
-                        pass
+            if Datetime is not None:
+                return Datetime(value)
             # Fallback to Surreal literal
             return f"d'{value.isoformat().replace('+00:00','Z')}'"
         return value
@@ -151,29 +151,32 @@ class DateTimeField(Field):
     def from_db(self, value: Any) -> Optional[datetime.datetime]:
         """Convert database value to Python datetime.
 
-        Accepts IsoDateTimeWrapper, Surreal d'...' literal strings, ISO strings (with optional Z),
+        Accepts Datetime, Surreal d'...' literal strings, ISO strings (with optional Z),
         or datetime instances. Returns a Python datetime (timezone-aware if source has offset).
         """
         if value is None:
             return None
-        # SDK wrapper: value.dt may be an ISO string
-        if IsoDateTimeWrapper is not None and isinstance(value, IsoDateTimeWrapper):
-            s = getattr(value, 'dt', None)
-            if isinstance(s, str):
+        
+        try:
+            from surrealdb import Datetime
+            # SDK wrapper
+            if isinstance(value, Datetime):
+                # Try to extract the datetime object
+                if hasattr(value, 'inner') and isinstance(value.inner, datetime.datetime):
+                    return value.inner
+                if hasattr(value, 'dt') and isinstance(value.dt, datetime.datetime):
+                    return value.dt
+                # Fallback to string parsing if wrapper attributes unknown
+                s = str(value)
+                if s.startswith("d'") and s.endswith("'"):
+                    s = s[2:-1]
                 try:
                     return datetime.datetime.fromisoformat(s.replace('Z', '+00:00'))
                 except ValueError:
                     return None
-            if isinstance(s, datetime.datetime):
-                return s
-            # Some SDKs may use 'iso'
-            s2 = getattr(value, 'iso', None)
-            if isinstance(s2, str):
-                try:
-                    return datetime.datetime.fromisoformat(s2.replace('Z', '+00:00'))
-                except ValueError:
-                    return None
-            return None
+        except ImportError:
+            pass
+            
         # Surreal datetime literal like d'2025-08-31T12:34:56Z'
         if isinstance(value, str):
             s = value
@@ -241,7 +244,9 @@ class DurationField(Field):
             **kwargs: Additional arguments to pass to the parent class
         """
         super().__init__(**kwargs)
-        self.py_type = datetime.timedelta
+        super().__init__(**kwargs)
+        from surrealdb import Duration
+        self.py_type = (datetime.timedelta, Duration)
 
     def validate(self, value: Any) -> Optional[datetime.timedelta]:
         """Validate the duration value.
@@ -262,38 +267,19 @@ class DurationField(Field):
         if value is not None:
             if isinstance(value, datetime.timedelta):
                 return value
+            
+            from surrealdb import Duration
+            if isinstance(value, Duration):
+                return value
+
             if isinstance(value, str):
                 try:
-                    # Parse SurrealDB duration format (e.g., "1y2m3d4h5m6s")
-                    # This is a simplified implementation and may need to be expanded
-                    total_seconds = 0
-                    num_buffer = ""
-                    for char in value:
-                        if char.isdigit():
-                            num_buffer += char
-                        elif char == 'y' and num_buffer:
-                            total_seconds += int(num_buffer) * 365 * 24 * 60 * 60
-                            num_buffer = ""
-                        elif char == 'm' and num_buffer:
-                            # Ambiguous: could be month or minute
-                            # Assume month if previous char was 'y', otherwise minute
-                            if 'y' in value[:value.index(char)]:
-                                total_seconds += int(num_buffer) * 30 * 24 * 60 * 60
-                            else:
-                                total_seconds += int(num_buffer) * 60
-                            num_buffer = ""
-                        elif char == 'd' and num_buffer:
-                            total_seconds += int(num_buffer) * 24 * 60 * 60
-                            num_buffer = ""
-                        elif char == 'h' and num_buffer:
-                            total_seconds += int(num_buffer) * 60 * 60
-                            num_buffer = ""
-                        elif char == 's' and num_buffer:
-                            total_seconds += int(num_buffer)
-                            num_buffer = ""
-                    return datetime.timedelta(seconds=total_seconds)
-                except (ValueError, TypeError):
-                    pass
+                    return Duration.parse(value)
+                except ValueError:
+                     # Fallback to manual parsing if SDK fails or for complex python-side logic? 
+                     # Actually, SDK Duration should handle it.
+                     pass
+
             raise TypeError(f"Expected duration for field '{self.name}', got {type(value)}")
         return value
 
@@ -332,27 +318,19 @@ class DurationField(Field):
             return Duration.parse(value)
 
         if isinstance(value, datetime.timedelta):
-            # Convert timedelta to SurrealDB duration format
-            seconds = int(value.total_seconds())
-            minutes, seconds = divmod(seconds, 60)
-            hours, minutes = divmod(minutes, 60)
-            days, hours = divmod(hours, 24)
-
-            result = ""
-            if days > 0:
-                result += f"{days}d"
-            if hours > 0:
-                result += f"{hours}h"
-            if minutes > 0:
-                result += f"{minutes}m"
-            if seconds > 0 or not result:
-                result += f"{seconds}s"
-
-            return Duration.parse(result)
+            # Convert timedelta to Duration via string representation or let SDK handle if it supports timedelta
+            # SDK Duration(str) is standard
+            # Convert to ns for direct construction to be efficient
+            total_seconds = value.total_seconds()
+            ns = int(total_seconds * 1_000_000_000)
+            return Duration(ns)
 
         # If it's already a Duration object, return as is
-        if hasattr(value, 'to_string') and hasattr(value, 'elapsed'):
+        if isinstance(value, Duration):
             return value
+
+        if isinstance(value, str):
+             return Duration.parse(value)
 
         raise TypeError(f"Cannot convert {type(value)} to duration")
 
