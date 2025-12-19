@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2025-12-19
+## [0.4.1] - 2025-12-19
 
 ### Added
 - **Embedded Database Support**: Full support for connection schemes `mem://`, `surrealkv://`, and `file://` utilizing the underlying SDK's native embedded capabilities.
