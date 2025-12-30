@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2025-12-30
+
+### Added
+- **Pythonic Query Expressions**: Implemented operator overloading for `Field` objects, enabling standard Python comparison operators ('>', '<', '==', '&', '|', '~') for building queries.
+  - Added support for `startswith`, `endswith` operator methods on `Field` class.
+- **Fluent Graph Builder**: Added `.out()`, `.in_()`, and `.both()` methods to `QuerySet` and `Document.objects` for intuitive graph traversal.
+- **Magic Relation Accessors**: Added `.rel` property to `Document` for direct, fluent access to relationships starting from a document instance (e.g., `user.rel.friends`).
+- **Decorator-based Signals**: Introduced `@receiver` decorator and `SignalProxy` wrappers, allowing signal handlers (like `@pre_save`) to be defined directly as methods within `Document` classes.
+- **Manager API Consistency**: expanded `Document.objects` (QuerySetDescriptor) to expose all `QuerySet` methods directly, including `traverse`, `shortest_path`, `with_index`, `no_index`, `live`, `update`, `delete`, and `aggregate`. This enables consistent method chaining on the manager itself (e.g., `User.objects.traverse(...)`).
+
+### Fixed
+- **Relation Document Saving**: Fixed `RelationDocument.save()` to correctly handle manual `RecordID` casting for `in` and `out` fields, improving developer experience when creating relations manually.
+
+
 ## [0.5.1] - 2025-12-30
 
 ### Fixed

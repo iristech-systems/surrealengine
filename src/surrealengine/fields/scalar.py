@@ -4,7 +4,7 @@ from typing import Any, List, Optional, Pattern, Type, Union
 from .base import Field
 
 class StringField(Field):
-    """String field type.
+    r"""String field type.
 
     This field type stores string values and provides validation for
     minimum length, maximum length, and regex pattern matching.

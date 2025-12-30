@@ -59,7 +59,8 @@ from .connection import (
 # For backward compatibility
 SurrealEngineConnection = SurrealEngineAsyncConnection
 from .schemaless import SurrealEngine
-from .document import Document, RelationDocument
+from .document import Document, RelationDocument, RelationshipAccessor
+from .signals import receiver
 from .exceptions import (
     DoesNotExist,
     MultipleObjectsReturned,
@@ -137,7 +138,7 @@ from .datagrid_api import (
 )
 from .relation_update import patch_relation_document
 
-__version__ = "0.4.0"
+__version__ = "0.6.0"
 __all__ = [
     "SurrealEngine",
     "SurrealEngineAsyncConnection",
@@ -149,6 +150,8 @@ __all__ = [
     "Document",
     "DocumentMetaOptions",
     "RelationDocument",
+    "RelationshipAccessor",
+    "receiver",
     "DoesNotExist",
     "MultipleObjectsReturned",
     "ValidationError",

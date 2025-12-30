@@ -55,16 +55,99 @@ class QuerySet(BaseQuerySet):
         clone._traversal_max_depth = max_depth if (isinstance(max_depth, int) and max_depth > 0) else None
         return clone
 
-    def shortest_path(self, src: Union[str, RecordID], dst: Union[str, RecordID], edge: str) -> 'QuerySet':
-        """Helper for shortest path queries (if supported by SurrealDB).
-
-        Note: As of now, SurrealDB does not expose a stable built-in shortest path
-        function in SurrealQL. This method prepares a placeholder raw condition to
-        document the limitation. If SurrealDB adds support, this can be updated
-        to emit the proper function call.
+    def out(self, target: Union[str, Type, None] = None) -> 'QuerySet':
+        """Traverse outgoing edges or nodes.
+        
+        Args:
+            target: The relation or document class to traverse to, or a string table name.
+                   If None, traverses outgoing edges generally (->?).
+        
+        Returns:
+            A cloned QuerySet with the traversal appended.
         """
-        # Currently not supported - we document limitation by raising
-        raise NotImplementedError("Shortest path is not supported via SurrealQL in this version. Track SurrealDB updates for native support.")
+        return self._append_traversal("->", target)
+
+    def in_(self, target: Union[str, Type, None] = None) -> 'QuerySet':
+        """Traverse incoming edges or nodes.
+        
+        Args:
+            target: The relation or document class to traverse from, or a string table name.
+                   If None, traverses incoming edges generally (<-?).
+        
+        Returns:
+            A cloned QuerySet with the traversal appended.
+        """
+        return self._append_traversal("<-", target)
+
+    def both(self, target: Union[str, Type, None] = None) -> 'QuerySet':
+        """Traverse both incoming and outgoing edges or nodes.
+        
+        Args:
+            target: The relation or document class to traverse, or a string table name.
+                   If None, traverses edges generally (<->?).
+        
+        Returns:
+            A cloned QuerySet with the traversal appended.
+        """
+        return self._append_traversal("<->", target)
+
+    def _append_traversal(self, direction: str, target: Union[str, Type, None]) -> 'QuerySet':
+        """Helper to append a graph traversal step."""
+        clone = self._clone()
+        
+        current_path = getattr(clone, "_traversal_path", "") or ""
+        
+        if target is None:
+            step = "?"
+        elif isinstance(target, str):
+            step = target
+        elif hasattr(target, '_get_collection_name'):
+            step = target._get_collection_name()
+        else:
+            step = str(target)
+            
+        new_step = f"{direction}{step}"
+        clone._traversal_path = current_path + new_step
+        return clone
+
+    def shortest_path(self, src: Union[str, RecordID], dst: Union[str, RecordID], edge: str) -> 'QuerySet':
+        """Configuration for a shortest path query from src to dst.
+
+        This uses the SurrealQL idiom `src.{..+shortest=dst}->edge->dst_table`.
+
+        Args:
+            src: Source record ID (e.g. "person:1")
+            dst: Destination record ID (e.g. "person:5")
+            edge: The edge name to traverse (e.g. "knows")
+
+        Returns:
+            A QuerySet filtered to the source record and configured with the shortest path traversal.
+        """
+        # Ensure we filter to the source record
+        qs = self.filter(id=src)
+        
+        # Determine destination table for the arrow path
+        # If dst is a RecordID, use table_name. If string, parse it.
+        if isinstance(dst, RecordID):
+            dst_str = str(dst)
+            dst_table = dst.table_name
+        else:
+            dst_str = str(dst)
+            if ":" in dst_str:
+                dst_table = dst_str.split(":")[0]
+            else:
+                # Fallback: if ambiguous, we might omit the target table in the arrow path
+                # but standard idiom usually includes it: ->edge->target
+                # Let's assume the user knows what they are doing if they pass a raw ID,
+                # but valid RecordIDs are best.
+                dst_table = "?"
+
+        # Construct the shortest path idiom
+        # Example: id.{..+shortest=person:star}->knows->person
+        # We assume 'edge' is the relationship name.
+        path = f"id.{{..+shortest={dst_str}}}->{edge}->{dst_table}"
+        
+        return qs.traverse(path)
 
 
     async def live(self,
@@ -523,7 +606,8 @@ class QuerySet(BaseQuerySet):
                     traversal_to_use = simple
             else:
                 traversal_to_use = traversal.strip()
-            select_keyword = f"SELECT {traversal_to_use} AS traversed"
+            # Must select ID to allow mapping results back to objects/identifying rows
+            select_keyword = f"SELECT id, {traversal_to_use} AS traversed"
         elif self.select_fields:
             select_keyword = f"SELECT {', '.join(self.select_fields)}"
         else:

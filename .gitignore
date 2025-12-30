@@ -19,3 +19,4 @@ example_scripts/verify_v0_5_0_features.py
 *.egg-info/
 dist/
 build/
+tests/

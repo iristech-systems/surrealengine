@@ -229,8 +229,8 @@ class DocumentMetaclass(type):
                 if not attr_value.db_field:
                     attr_value.db_field = attr_name
 
-                # Remove the field from attrs so it doesn't become a class attribute
-                del attrs[attr_name]
+                # We keep the field in attrs so it can function as a descriptor
+                # del attrs[attr_name]
 
         attrs['_fields'] = fields
         attrs['_fields_ordered'] = fields_ordered
@@ -242,12 +242,64 @@ class DocumentMetaclass(type):
         for field_name, field in new_class._fields.items():
             field.owner_document = new_class
 
+        # Register signal receivers defined in the class
+        if attrs.get('__module__') != __name__:  # Skip for Document class itself
+            for attr_name, attr_value in attrs.items():
+                if callable(attr_value) and hasattr(attr_value, '_signal_receiver'):
+                    signal, sig_kwargs = attr_value._signal_receiver
+                    
+                    # Create a wrapper that delegates to the instance method
+                    # We capture attr_name because attr_value might be unbound or decorated further
+                    def make_handler(method_name):
+                        def signal_handler(sender, document=None, field=None, **kwargs):
+                            # Handle document signals
+                            if document is not None:
+                                method = getattr(document, method_name)
+                                return method(**kwargs)
+                            # Handle field signals (if ever used on document methods)
+                            # If field signal, 'field' arg is passed. But method is on Document?
+                            # Use case unclear, skipping implementation for field signals on doc methods for now.
+                            return None
+                        return signal_handler
+
+                    handler = make_handler(attr_name)
+                    # Connect with weak=False to ensure the handler persists (since it's a closure)
+                    signal.connect(handler, sender=new_class, weak=False)
+
         return new_class
+
+
+
+class RelationshipAccessor:
+    """Helper for magic relation access via .rel property.
+    
+    Allows syntax like: document.rel.knows.out()
+    """
+    def __init__(self, document):
+        self._document = document
+
+    def __getattr__(self, name: str):
+        """Dynamic access to relations.
+        
+        Args:
+            name: The name of the relation/edge to traverse.
+            
+        Returns:
+            A QuerySet pre-configured to traverse this relation from the current document.
+        """
+        # Get a fresh QuerySet for the document's class
+        qs = self._document.__class__.objects
+        
+        # Filter to this specific document
+        qs = qs.filter(id=self._document.id)
+        
+        # Add the OUT traversal step using the attribute name as the edge
+        return qs.out(name)
 
 
 class Document(metaclass=DocumentMetaclass):
     """Base class for all documents.
-
+    
     This class provides the foundation for all document models in the ORM.
     It includes methods for CRUD operations, validation, and serialization.
 
@@ -291,6 +343,15 @@ class Document(metaclass=DocumentMetaclass):
     """
     objects = QuerySetDescriptor()
     id = RecordIDField()
+
+    @property
+    def rel(self) -> 'RelationshipAccessor':
+        """Magic relation accessor.
+        
+        Provides fluent access to graph relations.
+        Example: user.rel.knows.out(Person)
+        """
+        return RelationshipAccessor(self)
 
     def __init__(self, **values: Any) -> None:
         """Initialize a new Document.
@@ -2796,6 +2857,126 @@ class RelationDocument(Document):
 
     in_document = ReferenceField(Document, required=True, db_field="in")
     out_document = ReferenceField(Document, required=True, db_field="out")
+
+    async def save(self, connection: Optional[Any] = None) -> 'RelationDocument':
+        """Save the relation document.
+        
+        This overrides the default Document.save() to use RELATE statement
+        which is required for proper graph edge creation.
+        """
+        # Trigger pre_save
+        if SIGNAL_SUPPORT:
+            pre_save.send(self.__class__, document=self)
+
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            
+        self.validate()
+        
+        # If we have an ID and no changes, return self
+        if self.id and not self._changed_fields:
+            return self
+            
+        # If updating existing relation (has ID)
+        if self.id:
+            # For updates, we can verify if it's a simple update or if in/out changed
+            # But SurrealDB relations are edges - modifying in/out usually implies a new edge
+            # For now, fallback to super().save() for updates as generic UPDATE works for content
+            return await super().save(connection)
+
+        # Creating new relation
+        if not self.in_document or not self.out_document:
+            raise ValueError("RelationDocument must have both in_document and out_document set")
+
+        # Prepare attributes (exclude in/out/id)
+        attrs = {}
+        for field_name, field in self._fields.items():
+            if field_name in ['in_document', 'out_document', 'id']:
+                continue
+            val = getattr(self, field_name)
+            if val is not None:
+                attrs[field_name] = val
+                
+        # Use existing create_relation logic
+        # We can't use create_relation directly because it creates a new instance
+        # We want to update THIS instance
+        
+        # Get relation name
+        relation_name = self.get_relation_name()
+        
+        # We need to construct the RELATE query manually or use RelationQuerySet
+        # Let's use RelationQuerySet to match create_relation behavior
+        from .query.relation import RelationQuerySet
+        qs = RelationQuerySet(self.in_document.__class__, connection, relation=relation_name)
+        
+        # create_relation logic uses .relate() which returns the record dict
+        record = await qs.relate(self.in_document, self.out_document, **attrs)
+        
+        if record:
+            self._data.update(record)
+            if 'id' in record:
+                self._data['id'] = record['id']
+            # Re-hydrate fields
+            for field_name, field in self._fields.items():
+                if field.db_field in record:
+                    self._data[field_name] = field.from_db(record[field.db_field])
+        
+        # Trigger post_save
+        if SIGNAL_SUPPORT:
+            post_save.send(self.__class__, document=self, created=True)
+            
+        self.mark_clean()
+        return self
+
+    def save_sync(self, connection: Optional[Any] = None) -> 'RelationDocument':
+        """Save the relation document synchronously.
+        
+        This overrides the default Document.save_sync() to use RELATE statement.
+        """
+        if SIGNAL_SUPPORT:
+            pre_save.send(self.__class__, document=self)
+
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            
+        self.validate()
+        
+        if self.id and not self._changed_fields:
+            return self
+            
+        if self.id:
+            return super().save_sync(connection)
+
+        if not self.in_document or not self.out_document:
+            raise ValueError("RelationDocument must have both in_document and out_document set")
+
+        attrs = {}
+        for field_name, field in self._fields.items():
+            if field_name in ['in_document', 'out_document', 'id']:
+                continue
+            val = getattr(self, field_name)
+            if val is not None:
+                attrs[field_name] = val
+                
+        relation_name = self.get_relation_name()
+        from .query.relation import RelationQuerySet
+        qs = RelationQuerySet(self.in_document.__class__, connection, relation=relation_name)
+        
+        record = qs.relate_sync(self.in_document, self.out_document, **attrs)
+        
+        if record:
+            self._data.update(record)
+            if 'id' in record:
+                self._data['id'] = record['id']
+            for field_name, field in self._fields.items():
+                if field.db_field in record:
+                    self._data[field_name] = field.from_db(record[field.db_field])
+        
+        if SIGNAL_SUPPORT:
+            post_save.send(self.__class__, document=self, created=True)
+            
+        self.mark_clean()
+        return self
 
     @classmethod
     def get_relation_name(cls) -> str:

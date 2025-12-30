@@ -101,8 +101,10 @@ class ReferenceField(Field):
         if value is None:
             return None
 
-        # If it's already a record ID string
         if isinstance(value, str):
+            if ':' in value:
+                table, id_part = value.split(':', 1)
+                return RecordID(table, id_part)
             return value
 
         # If it's a RecordID object
@@ -242,16 +244,21 @@ class RelationField(Field):
         if value is None:
             return None
 
-        # If it's already a record ID string
         if isinstance(value, str):
             if ':' not in value:
-                return f"{self.to_document._get_collection_name()}:{value}"
+                return RecordID(self.to_document._get_collection_name(), value)
+            table, id_part = value.split(':', 1)
+            return RecordID(table, id_part)
+
+        # If it's a RecordID object
+        if isinstance(value, RecordID):
             return value
 
         # If it's a document instance
         if isinstance(value, self.to_document):
             if value.id is None:
                 raise ValueError(f"Cannot relate to an unsaved {self.to_document.__name__} document")
+            
             # If the ID already includes the collection name, return it as is
             if isinstance(value.id, str) and ':' in value.id:
                 return value.id

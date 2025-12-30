@@ -144,7 +144,7 @@ class QuerySetDescriptor:
         return await queryset.get(**kwargs)
 
     def get_sync(self, **kwargs: Any) -> Any:
-        """Allow direct get operation synchronously.
+        """Allow direct get operation asynchronously.
 
         This method allows getting a single document matching the given filters.
 
@@ -162,6 +162,69 @@ class QuerySetDescriptor:
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.get_sync(**kwargs)
+
+
+    async def update(self, returning: Optional[str] = None, **kwargs: Any) -> List[Any]:
+        """Update all documents in the collection asynchronously.
+
+        WARNING: This updates ALL documents in the collection if no filters are applied
+        (which is always the case when calling objects.update()).
+
+        Args:
+            returning: Return policy ('before', 'after', 'diff', or None)
+            **kwargs: Field names and values to update
+
+        Returns:
+            List of updated documents
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return await queryset.update(returning=returning, **kwargs)
+
+    def update_sync(self, returning: Optional[str] = None, **kwargs: Any) -> List[Any]:
+        """Update all documents in the collection synchronously.
+
+        WARNING: This updates ALL documents in the collection if no filters are applied
+        (which is always the case when calling objects.update()).
+
+        Args:
+            returning: Return policy ('before', 'after', 'diff', or None)
+            **kwargs: Field names and values to update
+
+        Returns:
+            List of updated documents
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.update_sync(returning=returning, **kwargs)
+
+    async def delete(self) -> int:
+        """Delete all documents in the collection asynchronously.
+
+        WARNING: This deletes ALL documents in the collection.
+
+        Returns:
+            Number of deleted documents
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return await queryset.delete()
+
+    def delete_sync(self) -> int:
+        """Delete all documents in the collection synchronously.
+
+        WARNING: This deletes ALL documents in the collection.
+
+        Returns:
+            Number of deleted documents
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.delete_sync()
 
     def filter(self, query=None, **kwargs: Any) -> QuerySet:
         """Create a QuerySet with filters using the default async connection.
@@ -224,6 +287,212 @@ class QuerySetDescriptor:
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.limit(value)
+
+    def traverse(self, path: str, max_depth: Optional[int] = None, unique: bool = True) -> QuerySet:
+        """Configure a graph traversal for this query using the default async connection.
+
+        Args:
+            path: Arrow path segment(s), e.g. "->likes->user" or "<-follows".
+            max_depth: Optional bound for depth.
+            unique: When True, deduplicate results via GROUP BY id.
+
+        Returns:
+            A QuerySet configured with traversal.
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.traverse(path, max_depth, unique)
+
+    def traverse_sync(self, path: str, max_depth: Optional[int] = None, unique: bool = True) -> QuerySet:
+        """Configure a graph traversal for this query using the default sync connection.
+
+        Args:
+            path: Arrow path segment(s), e.g. "->likes->user" or "<-follows".
+            max_depth: Optional bound for depth.
+            unique: When True, deduplicate results via GROUP BY id.
+
+        Returns:
+            A QuerySet configured with traversal.
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.traverse(path, max_depth, unique)
+
+    def out(self, target: Union[str, Type, None] = None) -> QuerySet:
+        """Traverse outgoing edges or nodes using the default async connection.
+        
+        Args:
+            target: The relation or document class to traverse to, or a string table name.
+        
+        Returns:
+            A QuerySet with the traversal appended.
+        """
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.out(target)
+
+    def out_sync(self, target: Union[str, Type, None] = None) -> QuerySet:
+        """Traverse outgoing edges or nodes using the default sync connection.
+        
+        Args:
+            target: The relation or document class to traverse to, or a string table name.
+        
+        Returns:
+            A QuerySet with the traversal appended.
+        """
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.out(target)
+
+    def in_(self, target: Union[str, Type, None] = None) -> QuerySet:
+        """Traverse incoming edges or nodes using the default async connection.
+        
+        Args:
+            target: The relation or document class to traverse from, or a string table name.
+        
+        Returns:
+            A QuerySet with the traversal appended.
+        """
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.in_(target)
+
+    def in_sync(self, target: Union[str, Type, None] = None) -> QuerySet:
+        """Traverse incoming edges or nodes using the default sync connection.
+        
+        Args:
+            target: The relation or document class to traverse from, or a string table name.
+        
+        Returns:
+            A QuerySet with the traversal appended.
+        """
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.in_(target)
+
+    def both(self, target: Union[str, Type, None] = None) -> QuerySet:
+        """Traverse both incoming and outgoing edges or nodes using the default async connection.
+        
+        Args:
+            target: The relation or document class to traverse, or a string table name.
+        
+        Returns:
+            A QuerySet with the traversal appended.
+        """
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.both(target)
+
+    def both_sync(self, target: Union[str, Type, None] = None) -> QuerySet:
+        """Traverse both incoming and outgoing edges or nodes using the default sync connection.
+        
+        Args:
+            target: The relation or document class to traverse, or a string table name.
+        
+        Returns:
+            A QuerySet with the traversal appended.
+        """
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.both(target)
+
+    def shortest_path(self, src: Union[str, Any], dst: Union[str, Any], edge: str) -> QuerySet:
+        """Helper for shortest path queries using the default async connection.
+
+        Args:
+            src: Source record ID or string
+            dst: Destination record ID or string
+            edge: Edge name to traverse
+
+        Returns:
+            A QuerySet configured for shortest path (if supported).
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.shortest_path(src, dst, edge)
+
+    def shortest_path_sync(self, src: Union[str, Any], dst: Union[str, Any], edge: str) -> QuerySet:
+        """Helper for shortest path queries using the default sync connection.
+
+        Args:
+            src: Source record ID or string
+            dst: Destination record ID or string
+            edge: Edge name to traverse
+
+        Returns:
+            A QuerySet configured for shortest path (if supported).
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.shortest_path(src, dst, edge)
+
+    def with_index(self, index: str) -> QuerySet:
+        """Use the specified index for the query using the default async connection.
+
+        Args:
+            index: Name of the index to use
+
+        Returns:
+            A QuerySet with the index applied
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.with_index(index)
+
+    def with_index_sync(self, index: str) -> QuerySet:
+        """Use the specified index for the query using the default sync connection.
+
+        Args:
+            index: Name of the index to use
+
+        Returns:
+            A QuerySet with the index applied
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.with_index(index)
+
+    def no_index(self) -> QuerySet:
+        """Do not use any index for the query using the default async connection.
+
+        Returns:
+            A QuerySet with the NOINDEX clause applied
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.no_index()
+
+    def no_index_sync(self) -> QuerySet:
+        """Do not use any index for the query using the default sync connection.
+
+        Returns:
+            A QuerySet with the NOINDEX clause applied
+        """
+        # Get the default sync connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.no_index()
+
+    def live(self, *args, **kwargs):
+        """Subscribe to changes on this table via LIVE queries as an async generator.
+
+        This method delegates to QuerySet.live().
+
+        Returns:
+            An async generator yielding LiveEvent objects
+        """
+        # Get the default async connection
+        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return queryset.live(*args, **kwargs)
+
 
     def start(self, value: int) -> QuerySet:
         """Set the number of results to skip (for pagination).

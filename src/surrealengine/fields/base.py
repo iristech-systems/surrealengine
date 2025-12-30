@@ -214,18 +214,64 @@ class Field:
         """
         return 'any'
 
-    def cast_to_surreal_type(self) -> str:
-        """Return SurrealQL type casting syntax.
-        
-        This method returns the SurrealQL type casting syntax for this field,
-        which can be used in queries to explicitly cast values to the correct type.
-
-        Returns:
-            The SurrealQL type casting syntax
-
-        Examples:
-            >>> field = Field()
-            >>> field.cast_to_surreal_type()
-            '<any>'
-        """
         return f"<{self.get_surreal_type()}>"
+
+    def __get__(self, instance: Any, owner: Type) -> Any:
+        """Descriptor method to access field value or field definition.
+        
+        Args:
+            instance: The document instance (None if accessing via class)
+            owner: The document class
+            
+        Returns:
+            The field value (if instance) or the field object (if class)
+        """
+        if instance is None:
+            return self
+        return instance._data.get(self.name)
+
+    def __gt__(self, other: Any) -> Any:
+        from ..query_expressions import Q
+        return Q(**{f"{self.name}__gt": other})
+
+    def __lt__(self, other: Any) -> Any:
+        from ..query_expressions import Q
+        return Q(**{f"{self.name}__lt": other})
+
+    def __ge__(self, other: Any) -> Any:
+        from ..query_expressions import Q
+        return Q(**{f"{self.name}__gte": other})
+
+    def __le__(self, other: Any) -> Any:
+        from ..query_expressions import Q
+        return Q(**{f"{self.name}__lte": other})
+
+    def __eq__(self, other: Any) -> Any:
+        # If comparing to another Field, explicit check needed in library code
+        # But for query building:
+        from ..query_expressions import Q
+        return Q(**{f"{self.name}": other})
+
+    def __ne__(self, other: Any) -> Any:
+        from ..query_expressions import Q
+        return Q(**{f"{self.name}__ne": other})
+
+    def contains(self, other: Any) -> Any:
+        """Create a CONTAINS query expression."""
+        from ..query_expressions import Q
+        return Q(**{f"{self.name}__contains": other})
+
+    def in_(self, other: Any) -> Any:
+        """Create an IN/INSIDE query expression."""
+        from ..query_expressions import Q
+        return Q(**{f"{self.name}__in": other})
+
+    def startswith(self, other: Any) -> Any:
+        """Create a STARTSWITH query expression."""
+        from ..query_expressions import Q
+        return Q(**{f"{self.name}__startswith": other})
+
+    def endswith(self, other: Any) -> Any:
+        """Create a ENDSWITH query expression."""
+        from ..query_expressions import Q
+        return Q(**{f"{self.name}__endswith": other})
