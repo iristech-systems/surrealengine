@@ -47,7 +47,29 @@ class Expr:
     
     @staticmethod
     def case() -> 'Expr._CaseBuilder':
-        """Start building a CASE expression."""
+        """Start building a CASE expression.
+
+        Returns a builder for constructing CASE WHEN ... THEN ... ELSE ... END expressions
+        using a fluent interface pattern.
+
+        Returns:
+            A CaseBuilder instance for fluent CASE construction
+
+        Example:
+            ```python
+            # Simple case with else
+            price_tier = Expr.case().when(
+                Expr.gt("price", 100), "expensive"
+            ).else_("cheap").alias("price_tier")
+
+            # Multiple conditions
+            status_label = Expr.case().when(
+                Expr.eq("status", "active"), "Active User"
+            ).when(
+                Expr.eq("status", "pending"), "Pending Approval"
+            ).else_("Inactive").alias("status_label")
+            ```
+        """
         return Expr._CaseBuilder()
 
     """Build complex expressions for aggregations and filtering.

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2025-12-30
+
+### Fixed
+- **Documentation Consistency**: Unified the documentation structure to ensure consistent navigation menus across User Guide and API Reference sections.
+- **API Reference Consolidation**: Cleaned up redundant auto-generated API pages and merged orphaned modules (`graph`, `schemaless`, `base_query`, `pagination`, etc.) into curated reference pages.
+- **Docstring Formatting**: Corrected numerous docstring errors, fixed indentation issues, and converted Markdown-style code blocks to ReStructuredText (RST) across the core codebase (specifically in `Document` and `QuerySet` classes).
+- **Core Import Fix**: Fixed a missing `ValidationError` import in `document.py` that was causing documentation build failures.
+- **Field Documentation**: Fixed incorrect module paths in `api/fields.rst` ensuring all field classes are correctly documented via `autodoc`.
+- **Sphinx Build Warnings**: Resolved all remaining documentation warnings, including duplicate object descriptions and title underline mismatches.
+
 ## [0.5.0] - 2025-12-30
 
 ### Added

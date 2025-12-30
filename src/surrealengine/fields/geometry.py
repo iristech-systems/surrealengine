@@ -13,15 +13,14 @@ class GeometryField(Field):
     Attributes:
         required (bool): Whether the field is required. Defaults to False.
 
-    Example:
-        ```python
+    Example::
+
         class Location(Document):
             point = GeometryField()
 
         # Using GeometryPoint for precise coordinate handling
         from surrealengine.geometry import GeometryPoint
         loc = Location(point=GeometryPoint([-122.4194, 37.7749]))
-        ```
     """
 
     def __init__(self, required: bool = False, **kwargs):

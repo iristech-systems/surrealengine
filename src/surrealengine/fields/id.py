@@ -10,14 +10,13 @@ class RecordIDField(Field):
     conversion between Python values and SurrealDB record ID format.
 
     A RecordID consists of a table name and a unique identifier, formatted as
-    `table:id`. This field can accept a string in this format, or a tuple/list
+    ``table:id``. This field can accept a string in this format, or a tuple/list
     with the table name and ID.
 
-    Example:
-        ```python
+    Example::
+
         class Reference(Document):
             target = RecordIDField()
-        ```
     """
 
     def __init__(self, table_name: Optional[str] = None, **kwargs: Any) -> None:

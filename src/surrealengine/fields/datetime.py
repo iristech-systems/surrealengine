@@ -11,12 +11,12 @@ class DateTimeField(Field):
     This field type stores datetime values and provides validation and
     conversion between Python datetime objects and SurrealDB datetime format.
 
-    SurrealDB v2.0.0+ requires datetime values to have a `d` prefix or be cast
+    SurrealDB v2.0.0+ requires datetime values to have a ``d`` prefix or be cast
     as <datetime>. This field handles the conversion automatically, so you can
     use standard Python datetime objects in your code.
 
-    Example:
-        ```python
+    Example::
+
         class Event(Document):
             created_at = DateTimeField(default=datetime.datetime.now)
             scheduled_for = DateTimeField()
@@ -24,7 +24,6 @@ class DateTimeField(Field):
         # Python datetime objects are automatically converted to SurrealDB format
         event = Event(scheduled_for=datetime.datetime.now() + datetime.timedelta(days=7))
         await event.save()
-        ```
     """
 
     def __init__(self, **kwargs: Any) -> None:

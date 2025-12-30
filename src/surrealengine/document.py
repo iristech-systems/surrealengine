@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Type, Union, ClassVar
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
 from .fields import Field, RecordIDField, ReferenceField, DictField
 from .connection import ConnectionRegistry, SurrealEngineAsyncConnection, SurrealEngineSyncConnection
+from .exceptions import ValidationError
 from surrealdb import RecordID
 from .signals import (
     pre_init, post_init, pre_save, pre_save_post_validation, post_save,
@@ -261,31 +262,32 @@ class Document(metaclass=DocumentMetaclass):
     Meta Options:
         The Meta inner class can be used to configure various document options:
 
-        collection (str): Name of the database collection/table. Defaults to lowercase class name.
-        indexes (List[Dict]): List of index definitions. Each index dict can contain:
-            - keys (List[str]): Field names to include in the index
-            - unique (bool): Whether the index enforces uniqueness (default: False)
-            - name (str): Custom name for the index
-            - type (str): Index type (e.g., "search" for full-text search)
-        id_field (str): Name of the ID field. Defaults to "id".
-        strict (bool): Whether to enforce strict field validation. Defaults to True.
-            When False, allows dynamic fields not defined in the schema.
-        time_series (bool): Whether this is a time series table. Defaults to False.
-        time_field (str): Field to use for time series timestamp. Required when time_series is True.
-        abstract (bool): Whether this document is abstract. Abstract documents are not registered
-            with the database and are meant to be inherited.
+        - **collection** (str): Name of the database collection/table. Defaults to lowercase class name.
+        - **indexes** (List[Dict]): List of index definitions. Each index dict can contain:
+          - keys (List[str]): Field names to include in the index
+          - unique (bool): Whether the index enforces uniqueness (default: False)
+          - name (str): Custom name for the index
+          - type (str): Index type (e.g., "search" for full-text search)
+        - **id_field** (str): Name of the ID field. Defaults to "id".
+        - **strict** (bool): Whether to enforce strict field validation. Defaults to True.
+          When False, allows dynamic fields not defined in the schema.
+        - **time_series** (bool): Whether this is a time series table. Defaults to False.
+        - **time_field** (str): Field to use for time series timestamp. Required when time_series is True.
+        - **abstract** (bool): Whether this document is abstract. Abstract documents are not registered
+          with the database and are meant to be inherited.
 
-    Example:
-        >>> class User(Document):
-        ...     name = StringField(required=True)
-        ...     email = StringField(indexed=True, unique=True)
-        ...     
-        ...     class Meta:
-        ...         collection = "users"
-        ...         indexes = [
-        ...             {"keys": ["email"], "unique": True},
-        ...             {"keys": ["name", "created_at"]}
-        ...         ]
+    Example::
+
+        class User(Document):
+            name = StringField(required=True)
+            email = StringField(indexed=True, unique=True)
+            
+            class Meta:
+                collection = "users"
+                indexes = [
+                    {"fields": ["email"], "unique": True},
+                    {"fields": ["name", "created_at"]}
+                ]
     """
     objects = QuerySetDescriptor()
     id = RecordIDField()

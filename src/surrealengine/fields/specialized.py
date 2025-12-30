@@ -313,8 +313,8 @@ class BytesField(Field):
     - Stream operations for large files
     - Direct file loading/saving capabilities
     
-    Example:
-        ```python
+    Example::
+
         class Document(SurrealDocument):
             file_data = BytesField(max_size=1024*1024)  # 1MB limit
             
@@ -340,8 +340,6 @@ class BytesField(Field):
         
         # Text operations (for text files)
         doc.file_data.write_text("Hello, World!")
-        text_content = doc.file_data.read_text()
-        ```
     """
 
     def __init__(self, max_size: Optional[int] = None, 
@@ -795,11 +793,10 @@ class UUIDField(Field):
     This field type stores UUID values and provides validation and
     conversion between Python UUID objects and SurrealDB string format.
 
-    Example:
-        ```python
+    Example::
+
         class User(Document):
             id = UUIDField(default=uuid.uuid4)
-        ```
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -1006,11 +1003,10 @@ class EmailField(StringField):
     This field type stores email addresses and provides validation to ensure
     the value is a valid email address.
 
-    Example:
-        ```python
+    Example::
+
         class User(Document):
             email = EmailField(required=True)
-        ```
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -1068,8 +1064,8 @@ class URLField(StringField):
     - Robust URL validation using urllib.parse
     - Flexible scheme handling (http/https/ftp/etc.)
 
-    Example:
-        ```python
+    Example::
+
         class Website(Document):
             url = URLField(default_scheme='https', allow_host_only=True)
 
@@ -1085,7 +1081,6 @@ class URLField(StringField):
         print(site.url.port)      # 8080
         print(site.url.path)      # "/v1/users"
         print(site.url.query)     # "active=true"
-        ```
     """
 
     def __init__(self, 
@@ -1328,13 +1323,12 @@ class IPAddressField(StringField):
     This field type stores IP addresses and provides validation to ensure
     the value is a valid IPv4 or IPv6 address.
 
-    Example:
-        ```python
+    Example::
+
         class Server(Document):
             ip_address = IPAddressField(required=True)
             ip_v4 = IPAddressField(ipv4_only=True)
             ip_v6 = IPAddressField(ipv6_only=True)
-        ```
     """
 
     def __init__(self, ipv4_only: bool = False, ipv6_only: bool = False, version: str = None, **kwargs: Any) -> None:
@@ -1423,11 +1417,10 @@ class SlugField(StringField):
     This field type stores slugs (URL-friendly strings) and provides validation
     to ensure the value is a valid slug.
 
-    Example:
-        ```python
+    Example::
+
         class Article(Document):
             slug = SlugField(required=True)
-        ```
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -1472,11 +1465,10 @@ class ChoiceField(Field):
     This field type stores values from a predefined set of choices and provides
     validation to ensure the value is one of the allowed choices.
 
-    Example:
-        ```python
+    Example::
+
         class Product(Document):
             status = ChoiceField(choices=['active', 'inactive', 'discontinued'])
-        ```
     """
 
     def __init__(self, choices: List[Union[str, tuple]], **kwargs: Any) -> None:

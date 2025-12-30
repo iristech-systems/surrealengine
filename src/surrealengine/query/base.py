@@ -67,35 +67,56 @@ class QuerySet(BaseQuerySet):
         raise NotImplementedError("Shortest path is not supported via SurrealQL in this version. Track SurrealDB updates for native support.")
 
 
-    async def live(self, 
-                  where: Optional[Union["Q", dict]] = None, 
+    async def live(self,
+                  where: Optional[Union["Q", dict]] = None,
                   action: Optional[Union[str, List[str]]] = None,
-                  *, 
-                  retry_limit: int = 3, 
-                  initial_delay: float = 0.5, 
+                  *,
+                  retry_limit: int = 3,
+                  initial_delay: float = 0.5,
                   backoff: float = 2.0):
         """Subscribe to changes on this table via LIVE queries as an async generator.
 
-        This uses the underlying surrealdb Async client (websocket). If the current
-        connection uses a connection pool client which does not support LIVE, a
+        This method provides real-time updates for table changes using SurrealDB's LIVE
+        query functionality. It returns LiveEvent objects for each change (CREATE, UPDATE,
+        DELETE) that occurs on the table.
+
+        The underlying implementation uses the surrealdb Async client (websocket). If the
+        current connection uses a connection pool client which does not support LIVE, a
         NotImplementedError is raised.
 
         Args:
             where: Optional filter (Q or dict) applied client-side to incoming events.
+                   Only events matching this filter will be yielded.
             action: Optional action filter ('CREATE', 'UPDATE', 'DELETE') or list of actions.
-            retry_limit: Number of times to retry subscription on transient errors.
-            initial_delay: Initial backoff delay in seconds.
-            backoff: Multiplier for exponential backoff.
+                   Use this to subscribe to specific event types only.
+            retry_limit: Number of times to retry subscription on transient errors (default: 3).
+            initial_delay: Initial backoff delay in seconds (default: 0.5).
+            backoff: Multiplier for exponential backoff (default: 2.0).
 
         Yields:
-            LiveEvent: Typed event objects with .action, .data, .ts, .id attributes
+            LiveEvent: Typed event objects with the following attributes:
+                - action: Event type (CREATE, UPDATE, DELETE)
+                - data: Dictionary containing the document fields
+                - ts: Optional timestamp of the event
+                - id: Optional RecordID of the affected document
 
         Raises:
-            NotImplementedError: If the active connection does not support LIVE queries.
+            NotImplementedError: If the active connection does not support LIVE queries
+                                (e.g., when using connection pooling).
 
-        Example:
-            >>> async for evt in User.objects.live(where={"status": "active"}, action="CREATE"):
-            ...     print(evt.action, evt.data.get("id"))
+        Example::
+
+            # Subscribe to all user creation events
+            async for evt in User.objects.live(action="CREATE"):
+                print(f"New user: {evt.id}")
+                print(f"Data: {evt.data}")
+
+            # Filter for specific conditions
+            async for evt in User.objects.live(where={"status": "active"}, action=["CREATE", "UPDATE"]):
+                if evt.is_create:
+                    print(f"Active user created: {evt.id}")
+                elif evt.is_update:
+                    print(f"Active user updated: {evt.id}")
         """
         # Import LiveEvent locally to avoid circular imports during module load
         from ..events import LiveEvent
@@ -1164,7 +1185,8 @@ class QuerySet(BaseQuerySet):
         Returns:
             List of suggested DEFINE INDEX statements
             
-        Example:
+        Example::
+
             suggestions = User.objects.filter(age__lt=18, city="NYC").suggest_indexes()
             for suggestion in suggestions:
                 print(f"Consider: {suggestion}")
