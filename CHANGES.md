@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2025-12-30
+
+### Added
+- **QuerySet Enhancements**:
+  - `omit(*fields)`: Exclude specific fields from the results.
+  - `timeout(duration)`: Set a timeout for the query execution (e.g., "5s").
+  - `tempfiles(value)`: Enable or disable using temporary files for large queries.
+  - `with_explain(full=False)`: Builder method to explain the query execution plan. `explain()` and `explain_sync()` now also support `full=True` argument.
+  - `no_index()`: Use `WITH NOINDEX` clause to bypass indexes.
+  - `group_by(all=True)`: Support for `GROUP ALL` clause.
+- **Advanced Filter Operators**: Added support for SurrealDB set operators including:
+  - `contains_any`, `contains_all`, `contains_none`
+  - `inside`, `not_inside`
+  - `all_inside`, `any_inside`, `none_inside`
+- **Live Query Ergonomics**:
+  - `LiveEvent` class: Typed event objects yielding `action` (CREATE/UPDATE/DELETE), `data`, `ts`, and `id`.
+  - `action` filtering: `QuerySet.live(action="CREATE")` or `action=["CREATE", "UPDATE"]` to filter events client-side.
+- **Materialized Views**:
+  - `create(overwrite=True)` / `create(if_not_exists=True)`: Support for `OVERWRITE` and `IF NOT EXISTS` clauses in `DEFINE TABLE`.
+  - Improved `GROUP BY` parsing to robustly handle `QuerySet` grouping configuration.
+
+### Changed
+- **Deprecation**: `MaterializedView.refresh()` and `refresh_sync()` are now deprecated as SurrealDB views are live and do not require manual refreshing.
+- **Explain Method**: `QuerySet.explain()` now supports `full=True` to retrieve the full execution plan including trace.
+
 ## [0.4.1] - 2025-12-19
 
 ### Added

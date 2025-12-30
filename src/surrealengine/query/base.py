@@ -66,7 +66,14 @@ class QuerySet(BaseQuerySet):
         # Currently not supported - we document limitation by raising
         raise NotImplementedError("Shortest path is not supported via SurrealQL in this version. Track SurrealDB updates for native support.")
 
-    async def live(self, where: Optional["Q|dict"] = None, *, retry_limit: int = 3, initial_delay: float = 0.5, backoff: float = 2.0):
+
+    async def live(self, 
+                  where: Optional[Union["Q", dict]] = None, 
+                  action: Optional[Union[str, List[str]]] = None,
+                  *, 
+                  retry_limit: int = 3, 
+                  initial_delay: float = 0.5, 
+                  backoff: float = 2.0):
         """Subscribe to changes on this table via LIVE queries as an async generator.
 
         This uses the underlying surrealdb Async client (websocket). If the current
@@ -75,20 +82,32 @@ class QuerySet(BaseQuerySet):
 
         Args:
             where: Optional filter (Q or dict) applied client-side to incoming events.
+            action: Optional action filter ('CREATE', 'UPDATE', 'DELETE') or list of actions.
             retry_limit: Number of times to retry subscription on transient errors.
             initial_delay: Initial backoff delay in seconds.
             backoff: Multiplier for exponential backoff.
 
         Yields:
-            dict: ChangeEvent objects of the form {"action": "CREATE|UPDATE|DELETE", "data": dict, "ts": datetime|None}
+            LiveEvent: Typed event objects with .action, .data, .ts, .id attributes
 
         Raises:
             NotImplementedError: If the active connection does not support LIVE queries.
 
         Example:
-            >>> async for evt in User.objects.live(where={"status": "active"}):
-            ...     print(evt["action"], evt["data"].get("id"))
+            >>> async for evt in User.objects.live(where={"status": "active"}, action="CREATE"):
+            ...     print(evt.action, evt.data.get("id"))
         """
+        # Import LiveEvent locally to avoid circular imports during module load
+        from ..events import LiveEvent
+        
+        # Normalize action filter
+        allowed_actions = None
+        if action:
+            if isinstance(action, str):
+                allowed_actions = {action.upper()}
+            elif isinstance(action, (list, tuple, set)):
+                allowed_actions = {a.upper() for a in action}
+
         # Ensure async client and availability of live API
         client = getattr(self.connection, 'client', None)
         if client is None or not hasattr(client, 'live') or not hasattr(client, 'subscribe_live') or not hasattr(client, 'kill'):
@@ -212,11 +231,35 @@ class QuerySet(BaseQuerySet):
                                 logger.debug("Live envelope: %s", msg)
                             except Exception:
                                 pass
-                            action = msg.get('action') or msg.get('event') or 'UNKNOWN'
+                            
+                            action_str = msg.get('action') or msg.get('event') or 'UNKNOWN'
+                            action_upper = str(action_str).upper()
+                            
+                            # Filter by action if requested
+                            if allowed_actions and action_upper not in allowed_actions:
+                                continue
+                                
                             data = msg.get('result') or msg.get('record') or msg.get('data') or msg
                             ts = msg.get('time') or msg.get('ts')
+                            
                             if predicate is None or (isinstance(data, dict) and predicate(data)):
-                                yield {"action": str(action).upper() if action else None, "data": data, "ts": ts}
+                                # Parse timestamp if possible
+                                ts_val = ts
+                                
+                                # Convert ID to RecordID if possible
+                                id_val = None
+                                if isinstance(data, dict) and 'id' in data:
+                                    try:
+                                        id_val = RecordID(str(data['id']))
+                                    except Exception:
+                                        pass
+                                
+                                yield LiveEvent(
+                                    action=action_upper,
+                                    data=data,
+                                    ts=ts_val,
+                                    id=id_val
+                                )
                     else:
                         # agen path: yields only inner result; no metadata available
                         async for msg in source:
@@ -234,8 +277,36 @@ class QuerySet(BaseQuerySet):
                                     inferred_action = 'DELETE'
                                 else:
                                     inferred_action = 'UPSERT'
+                            
+                            # Filter by action if requested
+                            if allowed_actions:
+                                # Start with inferred action match
+                                match = False
+                                if inferred_action in allowed_actions:
+                                    match = True
+                                # If allowed contains CREATE or UPDATE and we have UPSERT, allow it
+                                elif inferred_action == 'UPSERT' and ('CREATE' in allowed_actions or 'UPDATE' in allowed_actions):
+                                    match = True
+                                
+                                if not match:
+                                    continue
+                                    
                             if predicate is None or (isinstance(data, dict) and predicate(data)):
-                                yield {"action": inferred_action, "data": data, "ts": None}
+                                # Convert ID to RecordID if possible
+                                id_val = None
+                                if isinstance(data, dict) and 'id' in data:
+                                    try:
+                                        id_val = RecordID(str(data['id']))
+                                    except Exception:
+                                        pass
+                                        
+                                yield LiveEvent(
+                                    action=inferred_action,
+                                    data=data,
+                                    ts=None,
+                                    id=id_val
+                                )
+                    # If loop exits, restart
                     # If loop exits, restart
                     agen = None
                 except asyncio.CancelledError:
@@ -272,6 +343,7 @@ class QuerySet(BaseQuerySet):
                     await client.kill(qid)
                 except Exception:
                     pass
+
 
     async def join(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
         """Perform a JOIN-like operation on a reference field using FETCH.
@@ -436,14 +508,22 @@ class QuerySet(BaseQuerySet):
         else:
             select_keyword = "SELECT *"
 
+        # Build OMIT clause
+        if self.omit_fields:
+            select_keyword += f" OMIT {', '.join(self.omit_fields)}"
+
+
         select_query = f"{select_keyword} FROM {from_part}"
 
         if self.query_parts:
             conditions = self._build_conditions()
             select_query += f" WHERE {' AND '.join(conditions)}"
+        
+
 
         # Add other clauses from _build_clauses
         clauses = self._build_clauses()
+
 
         # Note: GROUP BY id for traversal deduplication can change result shapes in SurrealDB.
         # To keep traversal results straightforward, we do not auto-inject GROUP BY here.
@@ -1027,12 +1107,15 @@ class QuerySet(BaseQuerySet):
         return created_docs if return_documents else total_created
 
     
-    async def explain(self) -> List[Dict[str, Any]]:
+    async def explain(self, full: bool = False) -> List[Dict[str, Any]]:
         """Get query execution plan for performance analysis.
         
         This method appends EXPLAIN to the query to show how SurrealDB
         will execute it, helping identify performance bottlenecks.
         
+        Args:
+            full: Whether to include full explanation including execution trace (default: False)
+
         Returns:
             List of execution plan steps with details
             
@@ -1040,17 +1123,35 @@ class QuerySet(BaseQuerySet):
             plan = await User.objects.filter(age__lt=18).explain()
             print(f"Query will use: {plan[0]['operation']}")
         """
-        query = self._build_query() + " EXPLAIN"
+        # If with_explain() was called, explain_value might be set.
+        # But we override duplicates anyway.
+        query = self._build_query()
+        if "EXPLAIN" not in query:
+             query += " EXPLAIN FULL" if full else " EXPLAIN"
+        elif full and "EXPLAIN FULL" not in query:
+             query = query.replace("EXPLAIN", "EXPLAIN FULL")
+             
         result = await self.connection.client.query(query)
         return result[0] if result and result[0] else []
     
-    def explain_sync(self) -> List[Dict[str, Any]]:
+    
+
+    
+    def explain_sync(self, full: bool = False) -> List[Dict[str, Any]]:
         """Get query execution plan for performance analysis synchronously.
         
+        Args:
+            full: Whether to include full explanation including execution trace (default: False)
+
         Returns:
             List of execution plan steps with details
         """
-        query = self._build_query() + " EXPLAIN"
+        query = self._build_query()
+        if "EXPLAIN" not in query:
+             query += " EXPLAIN FULL" if full else " EXPLAIN"
+        elif full and "EXPLAIN FULL" not in query:
+             query = query.replace("EXPLAIN", "EXPLAIN FULL")
+
         result = self.connection.client.query(query)
         return result[0] if result and result[0] else []
     

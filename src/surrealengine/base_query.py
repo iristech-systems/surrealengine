@@ -45,7 +45,14 @@ class BaseQuerySet:
         self.split_fields: List[str] = []
         self.fetch_fields: List[str] = []
         self.with_index: Optional[str] = None
+        self.with_index: Optional[str] = None
         self.select_fields: Optional[List[str]] = None
+        self.omit_fields: List[str] = []
+        self.timeout_value: Optional[str] = None
+        self.tempfiles_value: bool = False
+        self.explain_value: bool = False
+        self.explain_full_value: bool = False
+        self.group_by_all: bool = False
         # Graph traversal state
         self._traversal_path: Optional[str] = None
         self._traversal_unique: bool = True
@@ -194,6 +201,23 @@ class BaseQuerySet:
                     result.query_parts.append((f"string::ends_with({field}, '{v}')", '=', True))
                 elif op == 'regex':
                     result.query_parts.append((f"string::matches({field}, r'{v}')", '=', True))
+                # New operators for contains/inside variants
+                elif op == 'contains_any':
+                    result.query_parts.append((field, 'CONTAINSANY', v))
+                elif op == 'contains_all':
+                    result.query_parts.append((field, 'CONTAINSALL', v))
+                elif op == 'contains_none':
+                    result.query_parts.append((field, 'CONTAINSNONE', v))
+                elif op == 'inside':
+                    result.query_parts.append((field, 'INSIDE', v))
+                elif op == 'not_inside':
+                    result.query_parts.append((field, 'NOT INSIDE', v))
+                elif op == 'all_inside':
+                    result.query_parts.append((field, 'ALLINSIDE', v))
+                elif op == 'any_inside':
+                    result.query_parts.append((field, 'ANYINSIDE', v))
+                elif op == 'none_inside':
+                    result.query_parts.append((field, 'NONEINSIDE', v))
                 else:
                     # Handle nested field access for DictFields
                     document_class = getattr(self, 'document_class', None)
@@ -230,6 +254,20 @@ class BaseQuerySet:
         if 'id' not in select_fields:
             select_fields.append('id')
         clone.select_fields = select_fields
+        clone.select_fields = select_fields
+        return clone
+
+    def omit(self, *fields: str) -> 'BaseQuerySet':
+        """Exclude specific fields from the results.
+        
+        Args:
+            *fields: Field names to exclude
+            
+        Returns:
+            The query set instance for method chaining
+        """
+        clone = self._clone()
+        clone.omit_fields.extend(fields)
         return clone
 
     def limit(self, value: int) -> 'BaseQuerySet':
@@ -269,18 +307,22 @@ class BaseQuerySet:
         self.order_by_value = (field, direction)
         return self
 
-    def group_by(self, *fields: str) -> 'BaseQuerySet':
-        """Group the results by the specified fields.
+        return self
+
+    def group_by(self, *fields: str, all: bool = False) -> 'BaseQuerySet':
+        """Group the results by the specified fields or group all.
 
         This method sets the fields to group the results by using the GROUP BY clause.
 
         Args:
             *fields: Field names to group by
+            all: If True, use GROUP ALL (SurrealDB v2.0.0+)
 
         Returns:
             The query set instance for method chaining
         """
         self.group_by_fields.extend(fields)
+        self.group_by_all = all
         return self
 
     def split(self, *fields: str) -> 'BaseQuerySet':
@@ -369,6 +411,54 @@ class BaseQuerySet:
             The query set instance for method chaining
         """
         self.with_index = index
+        return self
+    
+    def no_index(self) -> 'BaseQuerySet':
+        """Do not use any index for the query.
+        
+        This method adds the WITH NOINDEX clause to the query.
+        
+        Returns:
+            The query set instance for method chaining
+        """
+        self.with_index = "NOINDEX"
+        return self
+
+    def timeout(self, duration: str) -> 'BaseQuerySet':
+        """Set a timeout for the query execution.
+        
+        Args:
+            duration: Duration string (e.g. "5s", "1m")
+            
+        Returns:
+            The query set instance for method chaining
+        """
+        self.timeout_value = duration
+        return self
+
+    def tempfiles(self, value: bool = True) -> 'BaseQuerySet':
+        """Enable or disable using temporary files for large queries.
+        
+        Args:
+            value: Whether to use tempfiles (default: True)
+            
+        Returns:
+            The query set instance for method chaining
+        """
+        self.tempfiles_value = value
+        return self
+
+    def with_explain(self, full: bool = False) -> 'BaseQuerySet':
+        """Explain the query execution plan (builder pattern).
+        
+        Args:
+            full: Whether to include full explanation including execution trace (default: False)
+            
+        Returns:
+            The query set instance for method chaining
+        """
+        self.explain_value = True
+        self.explain_full_value = full
         return self
     
     def use_direct_access(self) -> 'BaseQuerySet':
@@ -482,6 +572,9 @@ class BaseQuerySet:
                         conditions.append(f"string::contains({field}, {escape_literal(value)})")
                     else:
                         conditions.append(f"{field} CONTAINS {escape_literal(value)}")
+                elif op in ('CONTAINSANY', 'CONTAINSALL', 'CONTAINSNONE', 'ALLINSIDE', 'ANYINSIDE', 'NONEINSIDE'):
+                    # Handle new set operators
+                    conditions.append(f"{field} {op} {escape_literal(value)}")
                 # Special handling for URL values
                 elif isinstance(value, dict) and '__url_value__' in value:
                     # Extract the URL value and ensure it's properly quoted
@@ -627,9 +720,10 @@ class BaseQuerySet:
             conditions = self._build_conditions()
             clauses['WHERE'] = f"WHERE {' AND '.join(conditions)}"
 
-        # Build GROUP BY clause
         if self.group_by_fields:
             clauses['GROUP BY'] = f"GROUP BY {', '.join(self.group_by_fields)}"
+        elif self.group_by_all:
+             clauses['GROUP BY'] = "GROUP ALL"
 
         # Build SPLIT clause
         if self.split_fields:
@@ -655,6 +749,21 @@ class BaseQuerySet:
         # IMPORTANT: In SurrealQL, FETCH must be the last clause
         if self.fetch_fields:
             clauses['FETCH'] = f"FETCH {', '.join(self.fetch_fields)}"
+
+        # Build TIMEOUT clause
+        if self.timeout_value:
+            clauses['TIMEOUT'] = f"TIMEOUT {self.timeout_value}"
+
+        # Build TEMPFILES clause
+        if self.tempfiles_value:
+            clauses['TEMPFILES'] = "TEMPFILES"
+            
+        # Build EXPLAIN clause
+        if self.explain_value:
+            if self.explain_full_value:
+                clauses['EXPLAIN'] = "EXPLAIN FULL"
+            else:
+                clauses['EXPLAIN'] = "EXPLAIN"
 
         return clauses
     

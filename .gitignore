@@ -11,6 +11,8 @@ archive_*/
 /external_docs/
 surrealdb_documentation/
 test_data/
+notebooks/v0_5_0_features.ipynb
+example_scripts/verify_v0_5_0_features.py
 
 
 # Build artifacts

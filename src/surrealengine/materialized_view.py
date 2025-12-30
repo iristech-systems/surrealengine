@@ -458,6 +458,11 @@ class MaterializedView:
             for field in group_by_fields:
                 if field and field not in fields:
                     fields.append(field)
+        
+        # Check for GROUP ALL
+        if "GROUP ALL" in rest_part.upper():
+             # Nothing specific needed for SELECT fields with GROUP ALL
+             pass
 
         # If there are no fields, use * to select all fields
         if not fields:
@@ -469,17 +474,25 @@ class MaterializedView:
         # Combine the new SELECT part with the rest of the query
         return f"{new_select_part} {rest_part}"
 
-    async def create(self, connection=None) -> None:
+    async def create(self, connection=None, overwrite: bool = False, if_not_exists: bool = False) -> None:
         """Create the materialized view in the database.
 
         Args:
             connection: The database connection to use (optional)
+            overwrite: Whether to overwrite the table if it exists (default: False)
+            if_not_exists: Whether to create the table only if it does not exist (default: False)
         """
         connection = connection or ConnectionRegistry.get_default_connection()
+        
+        modifier = ""
+        if overwrite:
+            modifier = "OVERWRITE "
+        elif if_not_exists:
+            modifier = "IF NOT EXISTS "
 
         # Build the query for creating the materialized view
         query_str = self._build_custom_query()
-        create_query = f"DEFINE TABLE {self.name} TYPE NORMAL AS {query_str}"
+        create_query = f"DEFINE TABLE {modifier}{self.name} TYPE NORMAL AS {query_str}"
 
         # Note: SurrealDB materialized views are automatically updated when underlying data changes
         # The refresh_interval parameter is ignored as SurrealDB doesn't support the EVERY clause
@@ -487,17 +500,25 @@ class MaterializedView:
         # Execute the query
         await connection.client.query(create_query)
 
-    def create_sync(self, connection=None) -> None:
+    def create_sync(self, connection=None, overwrite: bool = False, if_not_exists: bool = False) -> None:
         """Create the materialized view in the database synchronously.
 
         Args:
             connection: The database connection to use (optional)
+            overwrite: Whether to overwrite the table if it exists (default: False)
+            if_not_exists: Whether to create the table only if it does not exist (default: False)
         """
         connection = connection or ConnectionRegistry.get_default_connection()
 
+        modifier = ""
+        if overwrite:
+            modifier = "OVERWRITE "
+        elif if_not_exists:
+            modifier = "IF NOT EXISTS "
+
         # Build the query for creating the materialized view
         query_str = self._build_custom_query()
-        create_query = f"DEFINE TABLE {self.name} TYPE NORMAL AS {query_str}"
+        create_query = f"DEFINE TABLE {modifier}{self.name} TYPE NORMAL AS {query_str}"
 
         # Execute the query
         connection.client.query(create_query)
@@ -535,36 +556,25 @@ class MaterializedView:
     async def refresh(self, connection=None) -> None:
         """Manually refresh the materialized view.
 
-        Note: SurrealDB materialized views are automatically updated when underlying data changes.
-        This method might not work as expected.
-
+        DEPRECATED: SurrealDB views derived from TABLES are live and do not need manual refresh.
+        This method will be removed in a future version.
+        
         Args:
             connection: The database connection to use (optional)
         """
-        connection = connection or ConnectionRegistry.get_default_connection()
-
-        # Build the query for refreshing the materialized view
-        refresh_query = f"REFRESH VIEW {self.name}"
-
-        # Execute the query
-        await connection.client.query(refresh_query)
+        # No-op/log warning could go here. For now we just don't execute REFRESH VIEW as it is likely invalid.
+        pass
 
     def refresh_sync(self, connection=None) -> None:
         """Manually refresh the materialized view.
 
-                Note: SurrealDB materialized views are automatically updated when underlying data changes.
-                This method might not work as expected.
+        DEPRECATED: SurrealDB views derived from TABLES are live and do not need manual refresh.
+        This method will be removed in a future version.
 
-                Args:
-                    connection: The database connection to use (optional)
-                """
-        connection = connection or ConnectionRegistry.get_default_connection()
-
-        # Build the query for refreshing the materialized view
-        refresh_query = f"REFRESH VIEW {self.name}"
-
-        # Execute the query
-        connection.client.query(refresh_query)
+        Args:
+            connection: The database connection to use (optional)
+        """
+        pass
 
     @property
     def objects(self) -> QuerySet:
