@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
 from ..connection import ConnectionRegistry
+from ..context import get_active_connection
 from .base import QuerySet
 from ..pagination import PaginationResult
 
@@ -21,6 +22,20 @@ class QuerySetDescriptor:
         self.owner: Optional[Type] = None
         self.connection: Optional[Any] = None
 
+    def using(self, connection: Any) -> 'QuerySet':
+        """Create a QuerySet using the specified connection.
+
+        This allows switching connections (e.g. to a RawSurrealConnection)
+        directly from the manager.
+
+        Args:
+            connection: The connection instance to use.
+
+        Returns:
+            A QuerySet using the specified connection.
+        """
+        return QuerySet(self.owner, connection)
+
     def __get__(self, obj: Any, owner: Type) -> 'QuerySetDescriptor':
         """Get the descriptor for the given owner.
 
@@ -39,13 +54,12 @@ class QuerySetDescriptor:
         self.connection = None
         return self
 
-    async def __call__(self, query=None, limit: Optional[int] = None, start: Optional[int] = None,
-                       page: Optional[tuple] = None, **kwargs: Any) -> List[Any]:
-        """Allow direct filtering through call syntax asynchronously.
+    def __call__(self, query=None, limit: Optional[int] = None, start: Optional[int] = None,
+                       page: Optional[tuple] = None, **kwargs: Any) -> Union[List[Any], Any]:
+        """Allow direct filtering through call syntax.
 
-        This method allows calling the descriptor directly with filters or query objects
-        to query the document class. It supports pagination through limit and start parameters
-        or the page parameter.
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             query: Q object or QueryExpression for complex queries
@@ -55,10 +69,11 @@ class QuerySetDescriptor:
             **kwargs: Field names and values to filter by
 
         Returns:
-            List of matching documents
+            List of matching documents (or awaitable resolving to it)
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        # Note: We default to async_mode=True if no context is found, preserving backward compatibility
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         
         # Apply query object if provided
@@ -78,8 +93,8 @@ class QuerySetDescriptor:
             if start is not None:
                 queryset = queryset.start(start)
 
-        # Return results
-        return await queryset.all()
+        # Return results using Polyglot .all()
+        return queryset.all()
 
     def call_sync(self, query=None, limit: Optional[int] = None, start: Optional[int] = None,
                   page: Optional[tuple] = None, **kwargs: Any) -> List[Any]:
@@ -99,8 +114,8 @@ class QuerySetDescriptor:
         Returns:
             List of matching documents
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         
         # Apply query object if provided
@@ -123,25 +138,26 @@ class QuerySetDescriptor:
         # Return results
         return queryset.all_sync()
 
-    async def get(self, **kwargs: Any) -> Any:
-        """Allow direct get operation asynchronously.
+    def get(self, **kwargs: Any) -> Union[Any, Any]:
+        """Allow direct get operation.
 
-        This method allows getting a single document matching the given filters.
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             **kwargs: Field names and values to filter by
 
         Returns:
-            The matching document
+            The matching document (or awaitable resolving to it)
 
         Raises:
             DoesNotExist: If no matching document is found
             MultipleObjectsReturned: If multiple matching documents are found
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
-        return await queryset.get(**kwargs)
+        return queryset.get(**kwargs)
 
     def get_sync(self, **kwargs: Any) -> Any:
         """Allow direct get operation asynchronously.
@@ -158,14 +174,17 @@ class QuerySetDescriptor:
             DoesNotExist: If no matching document is found
             MultipleObjectsReturned: If multiple matching documents are found
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.get_sync(**kwargs)
 
 
-    async def update(self, returning: Optional[str] = None, **kwargs: Any) -> List[Any]:
-        """Update all documents in the collection asynchronously.
+    def update(self, returning: Optional[str] = None, **kwargs: Any) -> Union[List[Any], Any]:
+        """Update all documents in the collection.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         WARNING: This updates ALL documents in the collection if no filters are applied
         (which is always the case when calling objects.update()).
@@ -175,12 +194,12 @@ class QuerySetDescriptor:
             **kwargs: Field names and values to update
 
         Returns:
-            List of updated documents
+            List of updated documents (or awaitable resolving to it)
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
-        return await queryset.update(returning=returning, **kwargs)
+        return queryset.update(returning=returning, **kwargs)
 
     def update_sync(self, returning: Optional[str] = None, **kwargs: Any) -> List[Any]:
         """Update all documents in the collection synchronously.
@@ -195,23 +214,26 @@ class QuerySetDescriptor:
         Returns:
             List of updated documents
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.update_sync(returning=returning, **kwargs)
 
-    async def delete(self) -> int:
-        """Delete all documents in the collection asynchronously.
+    def delete(self) -> Union[int, Any]:
+        """Delete all documents in the collection.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         WARNING: This deletes ALL documents in the collection.
 
         Returns:
-            Number of deleted documents
+            Number of deleted documents (or awaitable resolving to it)
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
-        return await queryset.delete()
+        return queryset.delete()
 
     def delete_sync(self) -> int:
         """Delete all documents in the collection synchronously.
@@ -221,8 +243,8 @@ class QuerySetDescriptor:
         Returns:
             Number of deleted documents
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.delete_sync()
 
@@ -238,8 +260,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the given filters
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.filter(query=query, **kwargs)
 
@@ -255,8 +277,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the given filters
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.filter(query=query, **kwargs)
 
@@ -269,8 +291,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the limit applied
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.limit(value)
 
@@ -283,8 +305,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the limit applied
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.limit(value)
 
@@ -299,8 +321,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet configured with traversal.
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.traverse(path, max_depth, unique)
 
@@ -315,8 +337,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet configured with traversal.
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.traverse(path, max_depth, unique)
 
@@ -329,7 +351,7 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the traversal appended.
         """
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.out(target)
 
@@ -342,7 +364,7 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the traversal appended.
         """
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.out(target)
 
@@ -355,7 +377,7 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the traversal appended.
         """
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.in_(target)
 
@@ -368,7 +390,7 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the traversal appended.
         """
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.in_(target)
 
@@ -381,7 +403,7 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the traversal appended.
         """
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.both(target)
 
@@ -394,7 +416,7 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the traversal appended.
         """
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.both(target)
 
@@ -409,8 +431,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet configured for shortest path (if supported).
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.shortest_path(src, dst, edge)
 
@@ -425,8 +447,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet configured for shortest path (if supported).
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.shortest_path(src, dst, edge)
 
@@ -439,8 +461,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the index applied
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.with_index(index)
 
@@ -453,8 +475,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the index applied
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.with_index(index)
 
@@ -464,8 +486,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the NOINDEX clause applied
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.no_index()
 
@@ -475,8 +497,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the NOINDEX clause applied
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.no_index()
 
@@ -488,8 +510,8 @@ class QuerySetDescriptor:
         Returns:
             An async generator yielding LiveEvent objects
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.live(*args, **kwargs)
 
@@ -503,8 +525,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the start applied
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.start(value)
 
@@ -517,8 +539,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the start applied
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.start(value)
 
@@ -532,8 +554,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the order by applied
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.order_by(field, direction)
 
@@ -547,8 +569,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the order by applied
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.order_by(field, direction)
 
@@ -563,8 +585,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the group by applied
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.group_by(*fields)
 
@@ -579,8 +601,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the group by applied
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.group_by(*fields)
 
@@ -595,8 +617,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the split applied
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.split(*fields)
 
@@ -611,8 +633,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the split applied
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.split(*fields)
 
@@ -627,8 +649,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the fetch applied
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.fetch(*fields)
 
@@ -643,10 +665,29 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the fetch applied
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.fetch(*fields)
+
+    async def to_arrow(self) -> Any:
+        """
+        Execute the query and return the results as a PyArrow Table.
+        """
+        # Use existing connection if set (e.g. via qs.connection = conn hack)
+        connection = self.connection or self.connection or get_active_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return await queryset.to_arrow()
+
+    async def to_polars(self) -> Any:
+        """
+        Execute the query and return the results as a Polars DataFrame.
+        """
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return await queryset.to_polars()
+
 
     async def first(self) -> Any:
         """Get the first result from the query asynchronously.
@@ -657,8 +698,8 @@ class QuerySetDescriptor:
         Raises:
             DoesNotExist: If no matching document is found
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return await queryset.first()
 
@@ -671,8 +712,8 @@ class QuerySetDescriptor:
         Raises:
             DoesNotExist: If no matching document is found
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.first_sync()
 
@@ -686,8 +727,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with pagination applied
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.page(number, size)
 
@@ -701,8 +742,8 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with pagination applied
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.page(number, size)
 
@@ -720,8 +761,8 @@ class QuerySetDescriptor:
         Returns:
             A PaginationResult containing the items and pagination metadata
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         # Return the paginated results
         return await queryset.paginate(page, per_page)
@@ -740,8 +781,8 @@ class QuerySetDescriptor:
         Returns:
             A PaginationResult containing the items and pagination metadata
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         # Return the paginated results
         return queryset.paginate_sync(page, per_page)
@@ -756,8 +797,8 @@ class QuerySetDescriptor:
             An AggregationPipeline instance for building and executing
             aggregation queries.
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.aggregate()
 
@@ -771,8 +812,8 @@ class QuerySetDescriptor:
             An AggregationPipeline instance for building and executing
             aggregation queries.
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.aggregate()
 
@@ -795,8 +836,8 @@ class QuerySetDescriptor:
         Raises:
             ValueError: If the field is not a ReferenceField
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return await queryset.join(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
 
@@ -819,8 +860,8 @@ class QuerySetDescriptor:
         Raises:
             ValueError: If the field is not a ReferenceField
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.join_sync(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
 
@@ -836,8 +877,8 @@ class QuerySetDescriptor:
         Returns:
             The query set instance configured for direct record access
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.get_many(ids)
 
@@ -850,8 +891,8 @@ class QuerySetDescriptor:
         Returns:
             The query set instance configured for direct record access
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.get_many(ids)
 
@@ -870,8 +911,8 @@ class QuerySetDescriptor:
         Returns:
             The query set instance configured for range access
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.get_range(start_id, end_id, inclusive)
 
@@ -887,8 +928,8 @@ class QuerySetDescriptor:
         Returns:
             The query set instance configured for range access
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.get_range(start_id, end_id, inclusive)
 
@@ -909,8 +950,8 @@ class QuerySetDescriptor:
             List of created documents with their IDs set if return_documents=True,
             otherwise returns the count of created documents
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return await queryset.bulk_create(documents, batch_size, validate, return_documents)
 
@@ -928,8 +969,8 @@ class QuerySetDescriptor:
             List of created documents with their IDs set if return_documents=True,
             otherwise returns the count of created documents
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.bulk_create_sync(documents, batch_size, validate, return_documents)
 
@@ -939,8 +980,8 @@ class QuerySetDescriptor:
         Returns:
             List of all documents matching any implicit query
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return await queryset.all()
 
@@ -950,8 +991,8 @@ class QuerySetDescriptor:
         Returns:
             List of all documents matching any implicit query
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.all_sync()
 
@@ -961,8 +1002,8 @@ class QuerySetDescriptor:
         Returns:
             Number of documents
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return await queryset.count()
 
@@ -972,7 +1013,7 @@ class QuerySetDescriptor:
         Returns:
             Number of documents
         """
-        # Get the default sync connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=False)
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
         queryset = QuerySet(self.owner, connection)
         return queryset.count_sync()

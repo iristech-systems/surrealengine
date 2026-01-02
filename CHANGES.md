@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Polyglot API**: `Document` and `QuerySet` methods now automatically adapt to the active connection context (Sync vs Async).
+  - Methods like `.save()`, `.delete()`, `.get()`, `.all()`, etc., can now be called synchronously when using a sync connection, without needing explicit `_sync` suffixes (though `_sync` methods remain available).
+- **Zero-Copy Accelerator (Rust)**: Integrated `surrealengine_accelerator`, a Rust-based extension built with PyO3/Maturin.
+  - Improves deserialization performance for large result sets.
+  - `RawSurrealConnection` added to leverage the accelerator for zero-copy Arrow/Polars data transfers.
+- **Environment**: Added explicit `Python 3.12` support and `Rust` toolchain to `devcontainer` setup for improved development experience and performance (maturin builds).
+
+### Fixed
+- **Sync API Context**: Fixed `RuntimeError` and `AttributeError` when using `Document` methods in synchronous contexts. Connections now correctly track their context (Sync/Async).
+- **Coroutine Leaks**: Fixed issue where `objects.get()`, `create_table()`, and other descriptor methods would return unawaited coroutines in synchronous mode. They now correctly execute synchronously when appropriate.
+- **Devcontainer**: Fixed issues with stale code loading and volume mounting in Docker development environments.
+
+### Changed
+- **Refactoring**: `QuerySetDescriptor` and `Document` internals refactored to support the Polyglot pattern, reducing code duplication and improving maintainability.
+
 ## [0.6.0] - 2025-12-30
 
 ### Added

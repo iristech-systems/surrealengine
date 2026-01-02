@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Type, Union, ClassVar
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
 from .fields import Field, RecordIDField, ReferenceField, DictField
 from .connection import ConnectionRegistry, SurrealEngineAsyncConnection, SurrealEngineSyncConnection
+from .context import get_active_connection
 from .exceptions import ValidationError
 from surrealdb import RecordID
 from .signals import (
@@ -769,18 +770,27 @@ class Document(metaclass=DocumentMetaclass):
         
         return instance
 
-    async def resolve_references(self, depth: int = 1) -> 'Document':
+    def resolve_references(self, depth: int = 1) -> Union['Document', Any]:
         """Resolve all references in this document using FETCH.
-
-        This method uses SurrealDB's FETCH clause to efficiently resolve references
-        instead of making individual queries for each reference.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             depth: Maximum depth of reference resolution (default: 1)
 
         Returns:
-            The document instance with resolved references
+            The document instance with resolved references (or awaitable resolving to it)
         """
+        # Get active connection to determine mode
+        connection = get_active_connection()
+        if not connection.is_async():
+            return self.resolve_references_sync(depth=depth)
+
+        return self._resolve_references_async(depth=depth)
+
+    async def _resolve_references_async(self, depth: int = 1) -> 'Document':
+        """Internal async implementation of resolve_references()."""
         if depth <= 0 or not self.id:
             return self
 
@@ -794,8 +804,8 @@ class Document(metaclass=DocumentMetaclass):
             return self
 
         # Use FETCH to resolve references in a single query
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
-        query = f"SELECT * FROM `{self.id}` FETCH {', '.join(fetch_fields)}"
+        connection = get_active_connection(async_mode=True)
+        # ... rest of implementation ...
         
         try:
             # Use FETCH with a WHERE clause instead of selecting from specific record
@@ -862,7 +872,6 @@ class Document(metaclass=DocumentMetaclass):
 
         # Use FETCH to resolve references in a single query
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
-        query = f"SELECT * FROM `{self.id}` FETCH {', '.join(fetch_fields)}"
         
         try:
             # Use FETCH with a WHERE clause instead of selecting from specific record
@@ -904,11 +913,11 @@ class Document(metaclass=DocumentMetaclass):
         return self
 
     @classmethod
-    async def get(cls, id: Any, dereference: bool = False, dereference_depth: int = 1, **kwargs: Any) -> 'Document':
+    def get(cls, id: Any, dereference: bool = False, dereference_depth: int = 1, **kwargs: Any) -> Union['Document', Any]:
         """Get a document by ID with optional dereferencing using FETCH.
-
-        This method retrieves a document by ID and optionally resolves references
-        using SurrealDB's FETCH clause for efficient reference resolution.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             id: The ID of the document to retrieve
@@ -917,29 +926,20 @@ class Document(metaclass=DocumentMetaclass):
             **kwargs: Additional arguments to pass to the get method
 
         Returns:
-            The document instance with optionally resolved references
-
-        Examples:
-            Get a document by ID:
-
-            >>> user = await User.get("user:123")
-            >>> print(f"Retrieved user: {user.name}")
-
-            Get with full record ID:
-
-            >>> task = await Task.get("tasks:abc123")
-            >>> print(f"Task: {task.title}")
-
-            Get with reference dereferencing:
-
-            >>> post = await Post.get("post:456", dereference=True)
-            >>> print(f"Post by: {post.author.name}")  # author is resolved
-
-            Get with deep dereferencing:
-
-            >>> post = await Post.get("post:456", dereference=True, dereference_depth=2)
-            # Resolves references 2 levels deep
+            The document instance (or awaitable resolving to it)
         """
+        # Get active connection logic is handled by objects.get for simple cases,
+        # but here we need to know if we should call get_sync or _get_async
+        # We can check which connection QuerySet would use.
+        connection = get_active_connection()
+        if not connection.is_async():
+            return cls.get_sync(id=id, dereference=dereference, dereference_depth=dereference_depth, **kwargs)
+
+        return cls._get_async(id=id, dereference=dereference, dereference_depth=dereference_depth, **kwargs)
+
+    @classmethod
+    async def _get_async(cls, id: Any, dereference: bool = False, dereference_depth: int = 1, **kwargs: Any) -> 'Document':
+        """Internal async implementation of get()."""
         if not dereference:
             # No dereferencing needed, use regular get
             return await cls.objects.get(id=id, **kwargs)
@@ -1083,22 +1083,35 @@ class Document(metaclass=DocumentMetaclass):
             document.resolve_references_sync(depth=dereference_depth)
         return document
 
-    async def update(self, connection: Optional[Any] = None, **kwargs) -> 'Document':
+    def update(self, connection: Optional[Any] = None, **kwargs) -> Union['Document', Any]:
         """Update the document with new data.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: The database connection to use (optional)
             **kwargs: Fields to update
 
         Returns:
-            The updated document instance
+            The updated document instance (or awaitable resolving to it)
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.update_sync(connection=target_connection, **kwargs)
+
+        return self._update_async(connection=target_connection, **kwargs)
+
+    async def _update_async(self, connection: Optional[Any] = None, **kwargs) -> 'Document':
+        """Internal async implementation of update()."""
         # Trigger pre_save signal
         if SIGNAL_SUPPORT:
             pre_save.send(self.__class__, document=self)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
 
         # Update fields from kwargs
         for key, value in kwargs.items():
@@ -1154,7 +1167,7 @@ class Document(metaclass=DocumentMetaclass):
             pre_save.send(self.__class__, document=self)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
 
         # Update fields from kwargs
         for key, value in kwargs.items():
@@ -1195,18 +1208,34 @@ class Document(metaclass=DocumentMetaclass):
         self.mark_clean()
         return self
 
-    async def save(self, connection: Optional[Any] = None) -> 'Document':
-        """Save the document to the database asynchronously.
+    def save(self, connection: Optional[Any] = None) -> Union['Document', Any]:
+        """Save the document to the database.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
-        This method saves the document to the database, either creating
-        a new document or updating an existing one.
+        Args:
+            connection: The connection to use (optional)
+
+        Returns:
+            The saved document instance (or awaitable resolving to it)
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.save_sync(connection=target_connection)
+
+        return self._save_async(connection=target_connection)
+
+    async def _save_async(self, connection: Optional[Any] = None) -> 'Document':
+        """Internal async implementation of save()."""
         # Trigger pre_save signal
         if SIGNAL_SUPPORT:
             pre_save.send(self.__class__, document=self)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
 
         self.validate()
 
@@ -1276,7 +1305,7 @@ class Document(metaclass=DocumentMetaclass):
             pre_save.send(self.__class__, document=self)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
 
         self.validate()
         
@@ -1337,42 +1366,34 @@ class Document(metaclass=DocumentMetaclass):
 
         return self
 
-    async def delete(self, connection: Optional[Any] = None) -> bool:
-        """Delete the document from the database asynchronously.
-
-        This method deletes the document from the database.
+    def delete(self, connection: Optional[Any] = None) -> Union[bool, Any]:
+        """Delete the document from the database.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: The database connection to use (optional)
 
         Returns:
-            True if the document was deleted
-
-        Raises:
-            ValueError: If the document doesn't have an ID
-
-        Examples:
-            Delete a document:
-
-            >>> user = await User.get("user:123")
-            >>> await user.delete()
-            >>> print("User deleted successfully")
-
-            Delete with custom connection:
-
-            >>> await user.delete(connection=custom_connection)
-
-            Bulk delete pattern:
-
-            >>> for task in await Task.objects.filter(completed=True).all():
-            ...     await task.delete()
+            True if deleted (or awaitable resolving to it)
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.delete_sync(connection=target_connection)
+
+        return self._delete_async(connection=target_connection)
+
+    async def _delete_async(self, connection: Optional[Any] = None) -> bool:
+        """Internal async implementation of delete()."""
         # Trigger pre_delete signal
         if SIGNAL_SUPPORT:
             pre_delete.send(self.__class__, document=self)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         if not self.id:
             raise ValueError("Cannot delete a document without an ID")
 
@@ -1403,7 +1424,7 @@ class Document(metaclass=DocumentMetaclass):
             pre_delete.send(self.__class__, document=self)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         if not self.id:
             raise ValueError("Cannot delete a document without an ID")
 
@@ -1415,22 +1436,30 @@ class Document(metaclass=DocumentMetaclass):
 
         return True
 
-    async def refresh(self, connection: Optional[Any] = None) -> 'Document':
-        """Refresh the document from the database asynchronously.
-
-        This method refreshes the document's data from the database.
+    def refresh(self, connection: Optional[Any] = None) -> Union['Document', Any]:
+        """Refresh the document from the database.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: The database connection to use (optional)
 
         Returns:
-            The refreshed document instance
-
-        Raises:
-            ValueError: If the document doesn't have an ID
+            The refreshed document instance (or awaitable resolving to it)
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.refresh_sync(connection=target_connection)
+
+        return self._refresh_async(connection=target_connection)
+
+    async def _refresh_async(self, connection: Optional[Any] = None) -> 'Document':
+        """Internal async implementation of refresh()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         if not self.id:
             raise ValueError("Cannot refresh a document without an ID")
 
@@ -1467,7 +1496,7 @@ class Document(metaclass=DocumentMetaclass):
             ValueError: If the document doesn't have an ID
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         if not self.id:
             raise ValueError("Cannot refresh a document without an ID")
 
@@ -1519,13 +1548,13 @@ class Document(metaclass=DocumentMetaclass):
 
         return relation_query_builder
 
-    async def fetch_relation(self, relation_name: str, target_document: Optional[Type] = None,
-                             relation_document: Optional[Type] = None, connection: Optional[Any] = None,
-                             **filters: Any) -> List[Any]:
-        """Fetch related documents asynchronously.
-
-        This method fetches documents related to this document through
-        the specified relation.
+    def fetch_relation(self, relation_name: str, target_document: Optional[Type] = None,
+                       relation_document: Optional[Type] = None, connection: Optional[Any] = None,
+                       **filters: Any) -> Union[List[Any], Any]:
+        """Fetch related documents.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             relation_name: Name of the relation
@@ -1535,10 +1564,26 @@ class Document(metaclass=DocumentMetaclass):
             **filters: Filters to apply to the related documents
 
         Returns:
-            List of related documents, relation documents, or relation records
+            List of related documents (or awaitable resolving to it)
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.fetch_relation_sync(
+                relation_name, target_document, relation_document, connection=target_connection, **filters
+            )
+
+        return self._fetch_relation_async(
+            relation_name, target_document, relation_document, connection=target_connection, **filters
+        )
+
+    async def _fetch_relation_async(self, relation_name: str, target_document: Optional[Type] = None,
+                              relation_document: Optional[Type] = None, connection: Optional[Any] = None,
+                              **filters: Any) -> List[Any]:
+        """Internal async implementation of fetch_relation()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         result = await relation_query.get_related(self, target_document, **filters)
 
@@ -1567,7 +1612,7 @@ class Document(metaclass=DocumentMetaclass):
             List of related documents, relation documents, or relation records
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         result = relation_query.get_related_sync(self, target_document, **filters)
 
@@ -1577,12 +1622,12 @@ class Document(metaclass=DocumentMetaclass):
 
         return result
 
-    async def resolve_relation(self, relation_name: str, target_document_class: Optional[Type] = None,
-                               relation_document: Optional[Type] = None, connection: Optional[Any] = None) -> List[Any]:
-        """Resolve related documents from a relation fetch result asynchronously.
-
-        This method resolves related documents from a relation fetch result.
-        It fetches the relation data and then resolves each related document.
+    def resolve_relation(self, relation_name: str, target_document_class: Optional[Type] = None,
+                         relation_document: Optional[Type] = None, connection: Optional[Any] = None) -> Union[List[Any], Any]:
+        """Resolve related documents from a relation fetch result.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             relation_name: Name of the relation to resolve
@@ -1591,10 +1636,25 @@ class Document(metaclass=DocumentMetaclass):
             connection: Database connection to use (optional)
 
         Returns:
-            List of resolved document instances
+            List of resolved document instances (or awaitable resolving to it)
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.resolve_relation_sync(
+                relation_name, target_document_class, relation_document, connection=target_connection
+            )
+
+        return self._resolve_relation_async(
+            relation_name, target_document_class, relation_document, connection=target_connection
+        )
+
+    async def _resolve_relation_async(self, relation_name: str, target_document_class: Optional[Type] = None,
+                                relation_document: Optional[Type] = None, connection: Optional[Any] = None) -> List[Any]:
+        """Internal async implementation of resolve_relation()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
 
         # If relation_document is specified, convert the relation records to RelationDocument instances
         if relation_document and not target_document_class:
@@ -1645,7 +1705,7 @@ class Document(metaclass=DocumentMetaclass):
             List of resolved document instances
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
 
         # If relation_document is specified, convert the relation records to RelationDocument instances
         if relation_document and not target_document_class:
@@ -1679,11 +1739,12 @@ class Document(metaclass=DocumentMetaclass):
 
         return resolved_documents
 
-    async def relate_to(self, relation_name: str, target_instance: Any,
-                        connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
-        """Create a relation to another document asynchronously.
-
-        This method creates a relation from this document to another document.
+    def relate_to(self, relation_name: str, target_instance: Any,
+                  connection: Optional[Any] = None, **attrs: Any) -> Union[Optional[Any], Any]:
+        """Create a relation to another document.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             relation_name: Name of the relation
@@ -1692,28 +1753,25 @@ class Document(metaclass=DocumentMetaclass):
             **attrs: Attributes to set on the relation
 
         Returns:
-            The created relation record or None if creation failed
-
-        Examples:
-            Create a simple relation:
-
-            >>> person = await Person.get("person:john")
-            >>> book = await Book.get("book:novel")
-            >>> relation = await person.relate_to("authored", book)
-
-            Create relation with attributes:
-
-            >>> await person.relate_to("authored", book,
-            ...     date_written="2022-01-15T00:00:00Z",
-            ...     is_primary_author=True)
-
-            Create multiple relations:
-
-            >>> for book in user_books:
-            ...     await author.relate_to("wrote", book, year=2023)
+            The created relation record or None (or awaitable resolving to it)
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.relate_to_sync(
+                relation_name, target_instance, connection=target_connection, **attrs
+            )
+
+        return self._relate_to_async(
+            relation_name, target_instance, connection=target_connection, **attrs
+        )
+
+    async def _relate_to_async(self, relation_name: str, target_instance: Any,
+                         connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
+        """Internal async implementation of relate_to()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.relate(self, target_instance, **attrs)
 
@@ -1733,15 +1791,16 @@ class Document(metaclass=DocumentMetaclass):
             The created relation record or None if creation failed
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return relation_query.relate_sync(self, target_instance, **attrs)
 
-    async def update_relation_to(self, relation_name: str, target_instance: Any,
-                                 connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
-        """Update a relation to another document asynchronously.
-
-        This method updates a relation from this document to another document.
+    def update_relation_to(self, relation_name: str, target_instance: Any,
+                           connection: Optional[Any] = None, **attrs: Any) -> Union[Optional[Any], Any]:
+        """Update a relation to another document.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             relation_name: Name of the relation
@@ -1750,10 +1809,25 @@ class Document(metaclass=DocumentMetaclass):
             **attrs: Attributes to update on the relation
 
         Returns:
-            The updated relation record or None if update failed
+            The updated relation record or None (or awaitable resolving to it)
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.update_relation_to_sync(
+                relation_name, target_instance, connection=target_connection, **attrs
+            )
+
+        return self._update_relation_to_async(
+            relation_name, target_instance, connection=target_connection, **attrs
+        )
+
+    async def _update_relation_to_async(self, relation_name: str, target_instance: Any,
+                                  connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
+        """Internal async implementation of update_relation_to()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.update_relation(self, target_instance, **attrs)
 
@@ -1773,17 +1847,16 @@ class Document(metaclass=DocumentMetaclass):
             The updated relation record or None if update failed
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return relation_query.update_relation_sync(self, target_instance, **attrs)
 
-    async def delete_relation_to(self, relation_name: str, target_instance: Optional[Any] = None,
-                                 connection: Optional[Any] = None) -> int:
-        """Delete a relation to another document asynchronously.
-
-        This method deletes a relation from this document to another document.
-        If target_instance is not provided, it deletes all relations with the
-        specified name from this document.
+    def delete_relation_to(self, relation_name: str, target_instance: Optional[Any] = None,
+                           connection: Optional[Any] = None) -> Union[int, Any]:
+        """Delete a relation to another document.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             relation_name: Name of the relation
@@ -1791,10 +1864,25 @@ class Document(metaclass=DocumentMetaclass):
             connection: The database connection to use (optional)
 
         Returns:
-            Number of deleted relations
+            Number of deleted relations (or awaitable resolving to it)
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.delete_relation_to_sync(
+                relation_name, target_instance, connection=target_connection
+            )
+
+        return self._delete_relation_to_async(
+            relation_name, target_instance, connection=target_connection
+        )
+
+    async def _delete_relation_to_async(self, relation_name: str, target_instance: Optional[Any] = None,
+                                  connection: Optional[Any] = None) -> int:
+        """Internal async implementation of delete_relation_to()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.delete_relation(self, target_instance)
 
@@ -1815,17 +1903,16 @@ class Document(metaclass=DocumentMetaclass):
             Number of deleted relations
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return relation_query.delete_relation_sync(self, target_instance)
 
-    async def traverse_path(self, path_spec: str, target_document: Optional[Type] = None,
-                            connection: Optional[Any] = None, **filters: Any) -> List[Any]:
-        """Traverse a path in the graph asynchronously.
-
-        This method traverses a path in the graph starting from this document.
-        The path_spec is a string like "->[watched]->->[acted_in]->" which describes
-        a path through the graph.
+    def traverse_path(self, path_spec: str, target_document: Optional[Type] = None,
+                      connection: Optional[Any] = None, **filters: Any) -> Union[List[Any], Any]:
+        """Traverse a path in the graph.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             path_spec: String describing the path to traverse
@@ -1834,13 +1921,28 @@ class Document(metaclass=DocumentMetaclass):
             **filters: Filters to apply to the results
 
         Returns:
-            List of documents or path results
+            List of documents or path results (or awaitable resolving to it)
 
         Raises:
             ValueError: If the document is not saved
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.traverse_path_sync(
+                path_spec, target_document, connection=target_connection, **filters
+            )
+
+        return self._traverse_path_async(
+            path_spec, target_document, connection=target_connection, **filters
+        )
+
+    async def _traverse_path_async(self, path_spec: str, target_document: Optional[Type] = None,
+                             connection: Optional[Any] = None, **filters: Any) -> List[Any]:
+        """Internal async implementation of traverse_path()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         if not self.id:
             raise ValueError(f"Cannot traverse from unsaved {self.__class__.__name__}")
 
@@ -1898,7 +2000,7 @@ class Document(metaclass=DocumentMetaclass):
             ValueError: If the document is not saved
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         if not self.id:
             raise ValueError(f"Cannot traverse from unsaved {self.__class__.__name__}")
 
@@ -1936,10 +2038,13 @@ class Document(metaclass=DocumentMetaclass):
             return result[0]
 
     @classmethod
-    async def bulk_create(self, documents: List[Any], batch_size: int = 1000,
-                          validate: bool = True, return_documents: bool = True, connection: Optional[Any] = None) -> \
-            Union[List[Any], int]:
+    def bulk_create(cls, documents: List[Any], batch_size: int = 1000,
+                    validate: bool = True, return_documents: bool = True, connection: Optional[Any] = None) -> \
+            Union[Union[List[Any], int], Any]:
         """Create multiple documents in batches.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             documents: List of documents to create
@@ -1948,8 +2053,33 @@ class Document(metaclass=DocumentMetaclass):
             return_documents: Whether to return created documents
 
         Returns:
-            List of created documents if return_documents=True, else count of created documents
+            List of created documents or count (or awaitable resolving to it)
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return cls.bulk_create_sync(
+                documents, 
+                batch_size=batch_size, 
+                validate=validate, 
+                return_documents=return_documents,
+                connection=target_connection
+            )
+
+        return cls._bulk_create_async(
+            documents, 
+            batch_size=batch_size, 
+            validate=validate, 
+            return_documents=return_documents,
+            connection=target_connection
+        )
+
+    @classmethod
+    async def _bulk_create_async(cls, documents: List[Any], batch_size: int = 1000,
+                           validate: bool = True, return_documents: bool = True, connection: Optional[Any] = None) -> \
+            Union[List[Any], int]:
+        """Internal async implementation of bulk_create()."""
         results = []
         total_count = 0
 
@@ -1968,7 +2098,7 @@ class Document(metaclass=DocumentMetaclass):
             # Create the documents in the database
             collection = batch[0]._get_collection_name()
             if connection is None:
-                connection = ConnectionRegistry.get_default_connection()
+                connection = get_active_connection(async_mode=True)
             created = await connection.client.insert(collection, data)
 
             if created:
@@ -2007,7 +2137,7 @@ class Document(metaclass=DocumentMetaclass):
             pre_bulk_insert.send(cls, documents=documents)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
 
         result = cls.objects(connection).bulk_create_sync(
             documents,
@@ -2023,10 +2153,13 @@ class Document(metaclass=DocumentMetaclass):
         return result
 
     @classmethod
-    async def create_index(cls, index_name: str, fields: List[str], unique: bool = False,
-                           search: bool = False, analyzer: Optional[str] = None,
-                           comment: Optional[str] = None, connection: Optional[Any] = None) -> None:
-        """Create an index on the document's collection asynchronously.
+    def create_index(cls, index_name: str, fields: List[str], unique: bool = False,
+                     search: bool = False, analyzer: Optional[str] = None,
+                     comment: Optional[str] = None, connection: Optional[Any] = None) -> Union[None, Any]:
+        """Create an index on the document's collection.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             index_name: Name of the index
@@ -2037,9 +2170,26 @@ class Document(metaclass=DocumentMetaclass):
             comment: Optional comment for the index
             connection: Optional connection to use
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return cls.create_index_sync(
+                index_name, fields, unique, search, analyzer, comment, connection=target_connection
+            )
+
+        return cls._create_index_async(
+            index_name, fields, unique, search, analyzer, comment, connection=target_connection
+        )
+
+    @classmethod
+    async def _create_index_async(cls, index_name: str, fields: List[str], unique: bool = False,
+                            search: bool = False, analyzer: Optional[str] = None,
+                            comment: Optional[str] = None, connection: Optional[Any] = None) -> None:
+        """Internal async implementation of create_index()."""
         if connection is None:
             from .connection import ConnectionRegistry
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
 
         collection_name = cls._get_collection_name()
         fields_str = ", ".join(fields)
@@ -2077,7 +2227,7 @@ class Document(metaclass=DocumentMetaclass):
         """
         if connection is None:
             from .connection import ConnectionRegistry
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
 
         collection_name = cls._get_collection_name()
         fields_str = ", ".join(fields)
@@ -2099,16 +2249,28 @@ class Document(metaclass=DocumentMetaclass):
         connection.client.query(query)
 
     @classmethod
-    async def create_indexes(cls, connection: Optional[Any] = None) -> None:
-        """Create all indexes defined for this document class asynchronously.
-
-        This method creates indexes defined in the Meta class and also creates
-        indexes for fields marked as indexed.
+    def create_indexes(cls, connection: Optional[Any] = None) -> Union[None, Any]:
+        """Create all indexes defined for this document class.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: Optional connection to use
         """
-        connection = connection or ConnectionRegistry.get_default_connection(async_mode=True)
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return cls.create_indexes_sync(connection=target_connection)
+
+        return cls._create_indexes_async(connection=target_connection)
+
+    @classmethod
+    async def _create_indexes_async(cls, connection: Optional[Any] = None) -> None:
+        """Internal async implementation of create_indexes()."""
+        if connection is None:
+            connection = get_active_connection(async_mode=True)
 
         # Track processed multi-field indexes to avoid duplicates
         processed_multi_field_indexes = set()
@@ -2236,7 +2398,8 @@ class Document(metaclass=DocumentMetaclass):
         Args:
             connection: Optional connection to use
         """
-        connection = connection or ConnectionRegistry.get_default_connection(async_mode=False)
+        if connection is None:
+            connection = get_active_connection(async_mode=False)
 
         # Track processed multi-field indexes to avoid duplicates
         processed_multi_field_indexes = set()
@@ -2425,33 +2588,32 @@ class Document(metaclass=DocumentMetaclass):
         return "any"
 
     @classmethod
-    async def create_table(cls, connection: Optional[Any] = None, schemafull: bool = True) -> None:
-        """Create the table for this document class asynchronously.
+    def create_table(cls, connection: Optional[Any] = None, schemafull: bool = True) -> Union[None, Any]:
+        """Create the table for this document class.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: Optional connection to use
             schemafull: Whether to create a SCHEMAFULL table (default: True)
 
-        Examples:
-            Create a SCHEMAFULL table:
+        Returns:
+            None (or awaitable resolving to None)
+        """
+        # Get target connection
+        connection = connection or get_active_connection()
+        if not connection.is_async():
+            return cls.create_table_sync(connection, schemafull)
+        return cls._create_table_async(connection, schemafull)
 
-            >>> await User.create_table()
-            >>> print("Created users table with strict schema")
+    @classmethod
+    async def _create_table_async(cls, connection: Optional[Any] = None, schemafull: bool = True) -> None:
+        """Create the table for this document class asynchronously.
 
-            Create a SCHEMALESS table:
-
-            >>> await FlexibleDoc.create_table(schemafull=False)
-            >>> print("Created flexible table without schema constraints")
-
-            Create with custom connection:
-
-            >>> await Person.create_table(connection=custom_connection)
-
-            Create multiple tables:
-
-            >>> await Person.create_table()
-            >>> await Address.create_table()
-            >>> await Organization.create_table()
+        Args:
+            connection: Optional connection to use
+            schemafull: Whether to create a SCHEMAFULL table (default: True)
         """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=True)

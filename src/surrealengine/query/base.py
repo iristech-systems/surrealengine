@@ -34,6 +34,22 @@ class QuerySet(BaseQuerySet):
         super().__init__(connection)
         self.document_class = document_class
 
+    def using(self, connection: Any) -> 'QuerySet':
+        """Select which database connection to use for this query.
+
+        This allows switching between standard connections (for writes) and 
+        RawSurrealConnections (for high-performance zero-copy reads).
+
+        Args:
+           connection: The connection instance to use.
+
+        Returns:
+           A cloned QuerySet using the specified connection.
+        """
+        clone = self._clone()
+        clone.connection = connection
+        return clone
+
     def traverse(self, path: str, max_depth: Optional[int] = None, unique: bool = True) -> 'QuerySet':
         """Configure a graph traversal for this query.
 
@@ -449,11 +465,11 @@ class QuerySet(BaseQuerySet):
                     pass
 
 
-    async def join(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
+    def join(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> Union[List[Any], Any]:
         """Perform a JOIN-like operation on a reference field using FETCH.
-
-        This method performs a JOIN-like operation on a reference field by using
-        SurrealDB's FETCH clause to efficiently resolve references in a single query.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             field_name: The name of the reference field to join on
@@ -462,11 +478,16 @@ class QuerySet(BaseQuerySet):
             dereference_depth: Maximum depth of reference resolution (default: 1)
 
         Returns:
-            List of documents with joined data
-
-        Raises:
-            ValueError: If the field is not a ReferenceField
+            List of documents with joined data (or awaitable resolving to it)
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.join_sync(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
+
+        return self._join_async(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
+
+    async def _join_async(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
+        """Internal async implementation of join()."""
         # Ensure field_name is a ReferenceField
         field = self.document_class._fields.get(field_name)
         if not field or not isinstance(field, ReferenceField):
@@ -639,18 +660,93 @@ class QuerySet(BaseQuerySet):
 
         return select_query
 
-    async def all(self, dereference: bool = False) -> List[Any]:
-        """Execute the query and return all results asynchronously.
+    async def to_arrow(self) -> Any:
+        """
+        Execute the query and return the results as a PyArrow Table.
+        
+        This method uses the Zero-Copy Accelerator if available on a RawSurrealConnection,
+        otherwise falls back to converting the standard dictionary response to Arrow.
+        
+        Returns:
+            pyarrow.Table: The query results as an Arrow Table.
+        """
+        try:
+            import pyarrow as pa
+        except ImportError:
+            raise ImportError("pyarrow is required for to_arrow()")
+        
+        query = self._build_query()
+        
+        # Check for optimized Raw Connection (Level 3 Zero-Copy)
+        if hasattr(self.connection, "query_arrow"):
+             result = await self.connection.query_arrow(query)
+             if result:
+                 return result
+             return pa.Table.from_pylist([])
 
-        This method builds and executes the query, then converts the results
-        to instances of the document class.
+        # Fallback to standard SDK (Level 1 Zero-Copy / ODM Bypass)
+        results = await self.connection.client.query(query)
+        
+        if not results:
+            return pa.Table.from_pylist([])
 
+        # Normalize rows
+        rows = None
+        if isinstance(results, list):
+            if results and isinstance(results[0], dict):
+                rows = results
+            else:
+                for part in reversed(results):
+                    if isinstance(part, list):
+                        rows = part
+                        break
+        else:
+            rows = results
+        
+        if not rows:
+            return pa.Table.from_pylist([])
+            
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        return pa.Table.from_pylist(rows)
+
+    async def to_polars(self) -> Any:
+        """
+        Execute the query and return the results as a Polars DataFrame.
+        
+        Returns:
+            polars.DataFrame: The query results as a Polars DataFrame.
+        """
+        try:
+            import polars as pl
+        except ImportError:
+            raise ImportError("polars is required for to_polars()")
+            
+        arrow_table = await self.to_arrow()
+        return pl.from_arrow(arrow_table)
+
+
+    def all(self, dereference: bool = False) -> Union[List[Any], Any]:
+        """Execute the query and return all results.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
+        
         Args:
             dereference: Whether to dereference references (default: False)
 
         Returns:
-            List of document instances
+            List of document instances (or an awaitable resolving to it)
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.all_sync(dereference=dereference)
+
+        return self._all_async(dereference=dereference)
+
+    async def _all_async(self, dereference: bool = False) -> List[Any]:
+        """Internal async implementation of all()."""
         query = self._build_query()
         results = await self.connection.client.query(query)
 
@@ -725,15 +821,23 @@ class QuerySet(BaseQuerySet):
         processed_results = [self.document_class.from_db(doc, dereference=dereference, partial=is_partial) for doc in rows]
         return processed_results
 
-    async def count(self) -> int:
-        """Count documents matching the query asynchronously.
-
-        This method builds and executes a count query to count the number
-        of documents matching the query.
+    def count(self) -> Union[int, Any]:
+        """Count documents matching the query.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Returns:
-            Number of matching documents
+            Number of matching documents (or awaiting resolving to it)
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.count_sync()
+
+        return self._count_async()
+
+    async def _count_async(self) -> int:
+        """Internal async implementation of count()."""
         count_query = f"SELECT count() FROM {self.document_class._get_collection_name()}"
 
         if self.query_parts:
@@ -769,22 +873,27 @@ class QuerySet(BaseQuerySet):
 
         return len(result)
 
-    async def get(self, dereference: bool = False, **kwargs: Any) -> Any:
-        """Get a single document matching the query asynchronously.
-
-        This method applies filters and ensures that exactly one document is returned.
+    def get(self, dereference: bool = False, **kwargs: Any) -> Union[Any, Any]:
+        """Get a single document matching the query.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             dereference: Whether to dereference references (default: False)
             **kwargs: Field names and values to filter by
 
         Returns:
-            The matching document
-
-        Raises:
-            DoesNotExist: If no matching document is found
-            MultipleObjectsReturned: If multiple matching documents are found
+            The matching document (or awaitable resolving to it)
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.get_sync(dereference=dereference, **kwargs)
+
+        return self._get_async(dereference=dereference, **kwargs)
+
+    async def _get_async(self, dereference: bool = False, **kwargs: Any) -> Any:
+        """Internal async implementation of get()."""
         queryset = self.filter(**kwargs)
         queryset.limit_value = 2  # Get 2 to check for multiple
         results = await queryset.all(dereference=dereference)
@@ -823,17 +932,26 @@ class QuerySet(BaseQuerySet):
 
         return results[0]
 
-    async def create(self, **kwargs: Any) -> Any:
-        """Create a new document asynchronously.
-
-        This method creates a new document with the given field values.
+    def create(self, **kwargs: Any) -> Union[Any, Any]:
+        """Create a new document.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             **kwargs: Field names and values for the new document
 
         Returns:
-            The created document
+            The created document (or awaitable resolving to it)
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.create_sync(**kwargs)
+
+        return self._create_async(**kwargs)
+
+    async def _create_async(self, **kwargs: Any) -> Any:
+        """Internal async implementation of create()."""
         document = self.document_class(**kwargs)
         return await document.save(self.connection)
 
@@ -961,15 +1079,23 @@ class QuerySet(BaseQuerySet):
 
         return [self.document_class.from_db(doc) for doc in result[0]]
 
-    async def delete(self) -> int:
-        """Delete documents matching the query asynchronously with performance optimizations.
-
-        This method deletes documents matching the query.
-        Uses direct record access for bulk ID operations for better performance.
+    def delete(self) -> Union[int, Any]:
+        """Delete documents matching the query.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Returns:
-            Number of deleted documents
+            Number of deleted documents (or awaitable resolving to it)
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.delete_sync()
+
+        return self._delete_async()
+
+    async def _delete_async(self) -> int:
+        """Internal async implementation of delete()."""
         # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
         if self._bulk_id_selection:
             # Use direct record deletion syntax for bulk ID operations
@@ -1053,13 +1179,12 @@ class QuerySet(BaseQuerySet):
 
         return len(result[0])
 
-    async def bulk_create(self, documents: List[Any], batch_size: int = 1000,
-                      validate: bool = True, return_documents: bool = True) -> Union[List[Any], int]:
-        """Create multiple documents in a single operation asynchronously.
-
-        This method creates multiple documents in a single operation, processing
-        them in batches for better performance. It can optionally validate the
-        documents and return the created documents.
+    def bulk_create(self, documents: List[Any], batch_size: int = 1000,
+                      validate: bool = True, return_documents: bool = True) -> Union[List[Any], int, Any]:
+        """Create multiple documents in a single operation.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             documents: List of Document instances to create
@@ -1068,9 +1193,17 @@ class QuerySet(BaseQuerySet):
             return_documents: Whether to return created documents (default: True)
 
         Returns:
-            List of created documents with their IDs set if return_documents=True,
-            otherwise returns the count of created documents
+            List of created documents or count (or awaitable resolving to it)
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.bulk_create_sync(documents, batch_size, validate, return_documents)
+
+        return self._bulk_create_async(documents, batch_size, validate, return_documents)
+
+    async def _bulk_create_async(self, documents: List[Any], batch_size: int = 1000,
+                      validate: bool = True, return_documents: bool = True) -> Union[List[Any], int]:
+        """Internal async implementation of bulk_create()."""
         if not documents:
             return [] if return_documents else 0
 
@@ -1212,22 +1345,26 @@ class QuerySet(BaseQuerySet):
         return created_docs if return_documents else total_created
 
     
-    async def explain(self, full: bool = False) -> List[Dict[str, Any]]:
+    def explain(self, full: bool = False) -> Union[List[Dict[str, Any]], Any]:
         """Get query execution plan for performance analysis.
         
-        This method appends EXPLAIN to the query to show how SurrealDB
-        will execute it, helping identify performance bottlenecks.
-        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
+
         Args:
             full: Whether to include full explanation including execution trace (default: False)
 
         Returns:
-            List of execution plan steps with details
-            
-        Example:
-            plan = await User.objects.filter(age__lt=18).explain()
-            print(f"Query will use: {plan[0]['operation']}")
+            List of execution plan steps (or awaitable resolving to it)
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.explain_sync(full=full)
+
+        return self._explain_async(full=full)
+
+    async def _explain_async(self, full: bool = False) -> List[Dict[str, Any]]:
+        """Internal async implementation of explain()."""
         # If with_explain() was called, explain_value might be set.
         # But we override duplicates anyway.
         query = self._build_query()

@@ -1449,6 +1449,10 @@ class BaseSurrealEngineConnection(Protocol):
         """Get dynamic table accessor."""
         ...
 
+    def is_async(self) -> bool:
+        """Check if the connection is asynchronous."""
+        ...
+
 class ConnectionPoolClient:
     """Client that proxies requests to connections from a connection pool.
 
@@ -1870,6 +1874,8 @@ class SurrealEngineAsyncConnection:
             The connection instance
         """
         await self.connect()
+        from .context import set_active_context_connection
+        self._context_token = set_active_context_connection(self)
         return self
 
     async def __aexit__(self, exc_type: Optional[Type[BaseException]], 
@@ -1882,6 +1888,9 @@ class SurrealEngineAsyncConnection:
             exc_val: The exception value, if an exception was raised
             exc_tb: The exception traceback, if an exception was raised
         """
+        from .context import reset_active_context_connection
+        if hasattr(self, '_context_token'):
+            reset_active_context_connection(self._context_token)
         await self.disconnect()
 
     @property
@@ -1892,6 +1901,14 @@ class SurrealEngineAsyncConnection:
             A SurrealEngine instance for accessing tables dynamically
         """
         return SurrealEngine(self)
+
+    def is_async(self) -> bool:
+        """Check if the connection is asynchronous.
+
+        Returns:
+            True
+        """
+        return True
 
     async def connect(self) -> Any:
         """Connect to the database.
@@ -2168,6 +2185,8 @@ class SurrealEngineSyncConnection:
             The connection instance
         """
         self.connect()
+        from .context import set_active_context_connection
+        self._context_token = set_active_context_connection(self)
         return self
 
     def __exit__(self, exc_type: Optional[Type[BaseException]], 
@@ -2180,6 +2199,9 @@ class SurrealEngineSyncConnection:
             exc_val: The exception value, if an exception was raised
             exc_tb: The exception traceback, if an exception was raised
         """
+        from .context import reset_active_context_connection
+        if hasattr(self, '_context_token'):
+            reset_active_context_connection(self._context_token)
         self.disconnect()
 
     @property
@@ -2190,6 +2212,14 @@ class SurrealEngineSyncConnection:
             A SurrealEngine instance for accessing tables dynamically
         """
         return SurrealEngine(self)
+
+    def is_async(self) -> bool:
+        """Check if the connection is asynchronous.
+
+        Returns:
+            False
+        """
+        return False
 
     def connect(self) -> Any:
         """Connect to the database.

@@ -4,7 +4,7 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
     volumes:
-      - .:/workspace
+      - ..:/workspace
     ports:
       - "8888:8888"
     depends_on:

@@ -55,6 +55,7 @@ from .connection import (
     create_connection,
     BaseSurrealEngineConnection
 )
+from .raw_connection import RawSurrealConnection
 
 # For backward compatibility
 SurrealEngineConnection = SurrealEngineAsyncConnection
@@ -137,6 +138,7 @@ from .datagrid_api import (
     format_datatables_response
 )
 from .relation_update import patch_relation_document
+from .context import using_connection, get_active_connection
 
 __version__ = "0.6.0"
 __all__ = [
@@ -147,6 +149,7 @@ __all__ = [
     "BaseSurrealEngineConnection",
     "create_connection",
     "ConnectionRegistry",
+    "RawSurrealConnection",
     "Document",
     "DocumentMetaOptions",
     "RelationDocument",
@@ -221,6 +224,9 @@ __all__ = [
     # SurrealQL helpers
     "escape_identifier",
     "escape_literal",
+    # Context management
+    "using_connection",
+    "get_active_connection",
 ]
 
 # Apply the patch to add update methods to RelationDocument
