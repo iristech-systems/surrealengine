@@ -16,7 +16,8 @@ import json
 import datetime
 import logging
 from dataclasses import dataclass, field as dataclass_field, make_dataclass
-from typing import Any, Dict, List, Optional, Type, Union, ClassVar
+from typing import Any, Dict, List, Optional, Type, TypeVar, Union, cast
+from .utils.tracking import TrackedList, TrackedDict
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
 from .fields import Field, RecordIDField, ReferenceField, DictField
 from .connection import ConnectionRegistry, SurrealEngineAsyncConnection, SurrealEngineSyncConnection
@@ -381,6 +382,10 @@ class Document(metaclass=DocumentMetaclass):
                 value = value()
             self._data[field_name] = value
 
+            # Register parent for tracked objects
+            if hasattr(value, '_set_parent') and callable(value._set_parent):
+                value._set_parent(self, field_name)
+
         # Set values from kwargs
         for key, value in values.items():
             if key in self._fields:
@@ -434,7 +439,14 @@ class Document(metaclass=DocumentMetaclass):
             # Store original value before changing (if not already tracked)
             if name not in self._changed_fields and hasattr(self, '_original_data'):
                 self._original_data[name] = self._data.get(name)
-            self._data[name] = field.validate(value)
+            
+            validated_value = field.validate(value)
+            self._data[name] = validated_value
+            
+            # Register parent for tracked objects
+            if hasattr(validated_value, '_set_parent') and callable(validated_value._set_parent):
+                validated_value._set_parent(self, name)
+                
             if name not in self._changed_fields:
                 self._changed_fields.append(name)
         else:
@@ -599,9 +611,31 @@ class Document(metaclass=DocumentMetaclass):
         This updates the original data to match current data and clears changed fields.
         Usually called automatically after successful save operations.
         """
-        from copy import deepcopy
-        self._original_data = deepcopy(self._data)
         self._changed_fields.clear()
+        if hasattr(self, '_original_data'):
+            self._original_data = self._data.copy()
+
+    def _mark_field_changed(self, field_name: str) -> None:
+        """Mark a field as changed.
+        
+        This is called by tracked nested objects (EmbeddedDocument, TrackedList, TrackedDict)
+        when they are modified in place.
+        """
+        if field_name not in self._fields:
+            return
+            
+        # Store original value if not already tracked
+        if field_name not in self._changed_fields and hasattr(self, '_original_data'):
+            # For mutable objects, we might be storing a reference to the now-changed object.
+            # Ideally we'd have a deep copy from before, but 'original_data' usually captures
+            # state at load time. If we modify in place, 'original_data' might also reflect change
+            # if it's a shared reference. 
+            # For now, just ensuring it's in _changed_fields is the priority.
+            if field_name not in self._original_data:
+                 self._original_data[field_name] = self._data.get(field_name)
+
+        if field_name not in self._changed_fields:
+            self._changed_fields.append(field_name)
     
     def get_changed_data_for_update(self) -> Dict[str, Any]:
         """Get only the changed fields formatted for database update.
@@ -710,7 +744,8 @@ class Document(metaclass=DocumentMetaclass):
             partial: Whether the data is a partial document (default: False)
 
         Returns:
-            A new document instance
+            A new document instance with change tracking initialized (clean state).
+            Nested tracked objects (Lists, Dicts, EmbeddedDocuments) are automatically linked.
         """
         # Create an empty instance without triggering signals
         instance = cls.__new__(cls)
@@ -763,6 +798,11 @@ class Document(metaclass=DocumentMetaclass):
             except (TypeError, ValueError):
                 # If conversion fails, just use the data as is
                 pass
+        
+        # Register parent for tracked objects in _data
+        for key, value in instance._data.items():
+             if hasattr(value, '_set_parent') and callable(value._set_parent):
+                value._set_parent(instance, key)
 
         # Initialize original data for change tracking
         from copy import deepcopy
@@ -2532,7 +2572,7 @@ class Document(metaclass=DocumentMetaclass):
             DateTimeField, ListField, DictField, ReferenceField,
             GeometryField, RelationField, DecimalField, DurationField,
             BytesField, RegexField, OptionField, FutureField,
-            UUIDField, TableField, RecordIDField
+            UUIDField, TableField, RecordIDField, EmbeddedField
         )
 
         if isinstance(field, StringField):
@@ -2553,6 +2593,8 @@ class Document(metaclass=DocumentMetaclass):
                 return f"array<{inner_type}>"
             return "array"
         elif isinstance(field, DictField):
+            return "object"
+        elif isinstance(field, EmbeddedField):
             return "object"
         elif isinstance(field, ReferenceField):
             # Get the target collection name

@@ -63,6 +63,9 @@ def _maybe_span(name: str, attributes: Optional[Dict[str, Any]] = None):
 # ContextVar-backed default connection (per-task)
 _default_connection_var: ContextVar[Optional[Union['SurrealEngineAsyncConnection','SurrealEngineSyncConnection']]] = ContextVar("surrealengine_default_connection", default=None)
 
+# ContextVar for transaction connection pinning (per-task)
+_current_transaction_connection: ContextVar[Optional[Any]] = ContextVar("surrealengine_transaction_connection", default=None)
+
 def set_default_connection(conn: Union['SurrealEngineAsyncConnection','SurrealEngineSyncConnection']) -> None:
     """Set per-task default connection using ContextVar."""
     _default_connection_var.set(conn)
@@ -1471,6 +1474,20 @@ class ConnectionPoolClient:
         """
         self.pool = pool
 
+
+    async def _get_connection(self) -> Tuple[Any, bool]:
+        """Get a connection, either from the transaction context or the pool."""
+        txn_conn = _current_transaction_connection.get()
+        if txn_conn:
+            return txn_conn, False
+        conn = await self.pool.get_connection()
+        return conn, True
+        
+    async def _return_connection(self, connection: Any, should_return: bool) -> None:
+        """Return a connection if it was borrowed from the pool."""
+        if should_return:
+            await self.pool.return_connection(connection)
+
     async def create(self, collection: str, data: Dict[str, Any]) -> Any:
         """Create a new record in the database.
 
@@ -1482,7 +1499,7 @@ class ConnectionPoolClient:
             The created record
         """
         with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "create", "db.collection": collection}):
-            connection = await self.pool.get_connection()
+            connection, should_return = await self._get_connection()
             try:
                 from .document import serialize_http_safe
                 data = serialize_http_safe(data)
@@ -1501,13 +1518,13 @@ class ConnectionPoolClient:
             The updated record
         """
         with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "update"}):
-            connection = await self.pool.get_connection()
+            connection, should_return = await self._get_connection()
             try:
                 from .document import serialize_http_safe
                 data = serialize_http_safe(data)
                 return await connection.client.update(id, data)
             finally:
-                await self.pool.return_connection(connection)
+                await self._return_connection(connection, should_return)
 
     async def delete(self, id: str) -> Any:
         """Delete a record from the database.
@@ -1518,11 +1535,11 @@ class ConnectionPoolClient:
         Returns:
             The result of the delete operation
         """
-        connection = await self.pool.get_connection()
+        connection, should_return = await self._get_connection()
         try:
             return await connection.client.delete(id)
         finally:
-            await self.pool.return_connection(connection)
+            await self._return_connection(connection, should_return)
 
     async def select(self, id: str) -> Any:
         """Select a record from the database.
@@ -1533,11 +1550,11 @@ class ConnectionPoolClient:
         Returns:
             The selected record
         """
-        connection = await self.pool.get_connection()
+        connection, should_return = await self._get_connection()
         try:
             return await connection.client.select(id)
         finally:
-            await self.pool.return_connection(connection)
+            await self._return_connection(connection, should_return)
 
     async def query(self, query: str) -> Any:
         """Execute a query against the database.
@@ -1548,11 +1565,11 @@ class ConnectionPoolClient:
         Returns:
             The result of the query
         """
-        connection = await self.pool.get_connection()
+        connection, should_return = await self._get_connection()
         try:
             return await connection.client.query(query)
         finally:
-            await self.pool.return_connection(connection)
+            await self._return_connection(connection, should_return)
 
     async def insert(self, collection: str, data: List[Dict[str, Any]]) -> Any:
         """Insert multiple records into the database.
@@ -1565,13 +1582,13 @@ class ConnectionPoolClient:
             The inserted records
         """
         with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "insert", "db.collection": collection, "db.row_count": len(data) if isinstance(data, list) else 1}):
-            connection = await self.pool.get_connection()
+            connection, should_return = await self._get_connection()
             try:
                 from .document import serialize_http_safe
                 data = [serialize_http_safe(d) for d in data] if isinstance(data, list) else serialize_http_safe(data)
                 return await connection.client.insert(collection, data)
             finally:
-                await self.pool.return_connection(connection)
+                await self._return_connection(connection, should_return)
 
     async def signin(self, credentials: Dict[str, str]) -> Any:
         """Sign in to the database.
@@ -1582,11 +1599,11 @@ class ConnectionPoolClient:
         Returns:
             The result of the sign-in operation
         """
-        connection = await self.pool.get_connection()
+        connection, should_return = await self._get_connection()
         try:
             return await connection.client.signin(credentials)
         finally:
-            await self.pool.return_connection(connection)
+            await self._return_connection(connection, should_return)
 
     async def use(self, namespace: str, database: str) -> Any:
         """Use a specific namespace and database.
@@ -1598,11 +1615,11 @@ class ConnectionPoolClient:
         Returns:
             The result of the use operation
         """
-        connection = await self.pool.get_connection()
+        connection, should_return = await self._get_connection()
         try:
             return await connection.client.use(namespace, database)
         finally:
-            await self.pool.return_connection(connection)
+            await self._return_connection(connection, should_return)
 
     async def close(self) -> None:
         """Close the connection pool."""
@@ -1808,7 +1825,7 @@ class SurrealEngineAsyncConnection:
         database: The database to use
         username: The username for authentication
         password: The password for authentication
-        client: The SurrealDB async client instance or ConnectionPoolClient
+        client: The SurrealDB async client instance or ConnectionPoolClient if pooling is used
         use_pool: Whether to use a connection pool
         pool: The connection pool if use_pool is True
         pool_size: The size of the connection pool
@@ -1986,18 +2003,36 @@ class SurrealEngineAsyncConnection:
         Raises:
             Exception: If any operation in the transaction fails
         """
-        with _maybe_span("surreal.transaction", {"db.system": "surrealdb", "db.name": self.database, "db.namespace": self.namespace, "db.operation": "transaction"}):
-            await self.client.query("BEGIN TRANSACTION;")
-            try:
-                results = []
-                for coro in coroutines:
-                    result = await coro
-                    results.append(result)
-                await self.client.query("COMMIT TRANSACTION;")
-                return results
-            except Exception as e:
-                await self.client.query("CANCEL TRANSACTION;")
-                raise e
+        # Connection pinning context if using pool
+        pinned_connection = None
+        token = None
+        
+        if self.use_pool:
+            pinned_connection = await self.pool.get_connection()
+            token = _current_transaction_connection.set(pinned_connection)
+
+        try:
+            with _maybe_span("surreal.transaction", {"db.system": "surrealdb", "db.name": self.database, "db.namespace": self.namespace, "db.operation": "transaction"}):
+                await self.client.query("BEGIN TRANSACTION; RETURN 1;")
+                try:
+                    results = []
+                    for coro in coroutines:
+                        result = await coro
+                        results.append(result)
+                    await self.client.query("COMMIT TRANSACTION; RETURN 1;")
+                    return results
+                except Exception as e:
+                    logger.error(f"Transaction failed: {e}", exc_info=True)
+                    try:
+                        await self.client.query("CANCEL TRANSACTION; RETURN 1;")
+                    except Exception:
+                        pass
+                    raise e
+        finally:
+            if token:
+                _current_transaction_connection.reset(token)
+            if pinned_connection:
+                await self.pool.return_connection(pinned_connection)
 
 
 def create_connection(url: Optional[str] = None, namespace: Optional[str] = None, 

@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Reactive Queries**: Added `ReactiveQuerySet` and `ReactiveDocument` to support reactive queries and documents.
+- **Embedded Documents**: Added `EmbeddedDocument` and `EmbeddedField` to support structured, nested objects with validation and schema generation.
+  - Supports recursive nesting of `EmbeddedDocument`s.
+  - Generates correct `DEFINE FIELD parent.child ...` schema statements for nested fields including `DictField` with schema.
+- **Nested Change Tracking**: Implemented automatic change tracking for mutable nested objects.
+  - In-place modifications to `EmbeddedDocument` fields, `ListField` (append, extend, etc.), and `DictField` are now detected and persisted automatically by `save()`.
+  - Nested objects loaded from the database are automatically wrapped in tracking proxies (`TrackedList`, `TrackedDict`).
 - **Polyglot API**: `Document` and `QuerySet` methods now automatically adapt to the active connection context (Sync vs Async).
   - Methods like `.save()`, `.delete()`, `.get()`, `.all()`, etc., can now be called synchronously when using a sync connection, without needing explicit `_sync` suffixes (though `_sync` methods remain available).
 - **Zero-Copy Accelerator (Rust)**: Integrated `surrealengine_accelerator`, a Rust-based extension built with PyO3/Maturin.
@@ -16,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Environment**: Added explicit `Python 3.12` support and `Rust` toolchain to `devcontainer` setup for improved development experience and performance (maturin builds).
 
 ### Fixed
+- **Transaction Pooling**: Fixed critical bug in `SurrealEngineAsyncConnection.transaction` where `use_pool=True` caused operations to interpret `BEGIN`, queries, and `COMMIT` on different connections. Implemented connection pinning using `ContextVar` to ensure transactional integrity.
+- **Aggregation/View Parsing**: Fixed `AggregationPipeline` and `MaterializedView` failing to parse complex expressions (e.g., function calls in `GROUP BY`) or string literals containing keywords. Implemented robust parser-aware field splitting.
+- **Docstrings**: Synchronized docstrings in `connection.py` and `document.py` to match the current v0.5.x feature set and behavior.
 - **Sync API Context**: Fixed `RuntimeError` and `AttributeError` when using `Document` methods in synchronous contexts. Connections now correctly track their context (Sync/Async).
 - **Coroutine Leaks**: Fixed issue where `objects.get()`, `create_table()`, and other descriptor methods would return unawaited coroutines in synchronous mode. They now correctly execute synchronously when appropriate.
 - **Devcontainer**: Fixed issues with stale code loading and volume mounting in Docker development environments.

@@ -92,8 +92,10 @@ from .fields import (
     URLField,
     IPAddressField,
     SlugField,
-    ChoiceField
+    ChoiceField,
+    EmbeddedField
 )
+from .embedded import EmbeddedDocument
 from .materialized_view import (
     MaterializedView, 
     Aggregation, 
@@ -139,6 +141,8 @@ from .datagrid_api import (
 )
 from .relation_update import patch_relation_document
 from .context import using_connection, get_active_connection
+from .reactive import ReactiveQuerySet
+from .events import LiveEvent
 
 __version__ = "0.6.0"
 __all__ = [
@@ -158,7 +162,9 @@ __all__ = [
     "DoesNotExist",
     "MultipleObjectsReturned",
     "ValidationError",
+    "EmbeddedDocument",
     "Field",
+    "EmbeddedField",
     "StringField",
     "NumberField",
     "IntField",
@@ -227,6 +233,8 @@ __all__ = [
     # Context management
     "using_connection",
     "get_active_connection",
+    "ReactiveQuerySet",
+    "LiveEvent",
 ]
 
 # Apply the patch to add update methods to RelationDocument

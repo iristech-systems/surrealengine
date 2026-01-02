@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional
+from ..utils.tracking import TrackedList, TrackedDict
 
 from .base import Field
 
@@ -48,7 +49,7 @@ class ListField(Field):
         """
         value = super().validate(value)
         if value is not None:
-            if not isinstance(value, list):
+            if not isinstance(value, list) and not isinstance(value, TrackedList):
                 raise TypeError(f"Expected list for field '{self.name}', got {type(value)}")
 
             # Check max_items constraint
@@ -93,8 +94,8 @@ class ListField(Field):
             The Python representation of the list
         """
         if value is not None and self.field_type:
-            return [self.field_type.from_db(item) for item in value]
-        return value
+            return TrackedList([self.field_type.from_db(item) for item in value])
+        return TrackedList(value) if value is not None else None
 
 
 class DictField(Field):
@@ -141,7 +142,7 @@ class DictField(Field):
         """
         validated = super().validate(value)
         if validated is not None:
-            if not isinstance(validated, dict):
+            if not isinstance(validated, dict) and not isinstance(validated, TrackedDict):
                 raise TypeError(f"Expected dict for field '{self.name}', got {type(validated)}")
 
             # Use schema-based validation if schema is provided

@@ -176,13 +176,11 @@ class AggregationPipeline:
         base_query = self.query_set.get_raw_query()
         
         # Extract the FROM clause and any clauses that come after it
-        from_index = base_query.upper().find("FROM")
-        if from_index == -1:
+        from .utils.parsing import split_query_on_from
+        select_part, rest_part = split_query_on_from(base_query)
+        
+        if not rest_part:
             return base_query
-            
-        # Split the query into the SELECT part and the rest
-        select_part = base_query[:from_index].strip()
-        rest_part = base_query[from_index:].strip()
         
         # Process the stages to modify the query
         for stage in self.stages:

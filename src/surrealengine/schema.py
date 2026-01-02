@@ -100,6 +100,7 @@ def generate_schema_statements(document_class: Type[Document], schemafull: bool 
 
     statements.append(table_stmt + ";")
 
+    
     # Generate DEFINE FIELD statements if schemafull or if field is marked with define_schema=True
     for field_name, field in document_class._fields.items():
         # Skip id field as it's handled by SurrealDB
@@ -108,77 +109,110 @@ def generate_schema_statements(document_class: Type[Document], schemafull: bool 
 
         # Only define fields if schemafull or if field is explicitly marked for schema definition
         if schemafull or field.define_schema:
-            field_type = document_class._get_field_type_for_surreal(field)
-            field_stmt = f"DEFINE FIELD {field.db_field} ON {collection_name} TYPE {field_type}"
-
-            # Build constraints
-            exprs: List[str] = []
-            if field.required:
-                exprs.append("$value != NONE")
-
-            try:
-                from .fields.scalar import StringField, NumberField
-                from .fields.specialized import ChoiceField
-            except Exception:
-                StringField = NumberField = ChoiceField = None  # type: ignore
-
-            if StringField and isinstance(field, StringField):
-                if getattr(field, 'min_length', None) is not None:
-                    exprs.append(f"string::len($value) >= {int(field.min_length)}")
-                if getattr(field, 'max_length', None) is not None:
-                    exprs.append(f"string::len($value) <= {int(field.max_length)}")
-                if getattr(field, 'regex_pattern', None):
-                    from .surrealql import escape_literal
-                    pat = field.regex_pattern
-                    exprs.append(f"string::matches($value, {escape_literal(pat)})")
-                if getattr(field, 'choices', None):
-                    vals = []
-                    for v in field.choices:
-                        if isinstance(v, str):
-                            s = v.replace('\\', r'\\').replace('"', r'\"')
-                            vals.append(f'"{s}"')
-                        else:
-                            vals.append(str(v).lower() if isinstance(v, bool) else str(v))
-                    exprs.append(f"$value INSIDE [{', '.join(vals)}]")
-
-            if NumberField and isinstance(field, NumberField):
-                if getattr(field, 'min_value', None) is not None:
-                    exprs.append(f"$value >= {field.min_value}")
-                if getattr(field, 'max_value', None) is not None:
-                    exprs.append(f"$value <= {field.max_value}")
-
-            if ChoiceField and isinstance(field, ChoiceField):
-                vals = []
-                for v in field.values:
-                    if isinstance(v, str):
-                        s = v.replace('\\', r'\\').replace('"', r'\"')
-                        vals.append(f'"{s}"')
-                    else:
-                        vals.append(str(v).lower() if isinstance(v, bool) else str(v))
-                exprs.append(f"$value INSIDE [{', '.join(vals)}]")
-
-            if exprs:
-                field_stmt += " ASSERT " + " AND ".join(exprs)
-
-            # Default
-            if field.default is not None and not callable(field.default):
-                def _literal(val):
-                    if isinstance(val, str):
-                        s = val.replace('\\', r'\\').replace('"', r'\"')
-                        return f'"{s}"'
-                    if isinstance(val, bool):
-                        return 'true' if val else 'false'
-                    return str(val)
-                field_stmt += f" VALUE {_literal(field.default)}"
-
-            # Field comment
-            if getattr(field, 'comment', None):
-                c = field.comment.replace('\\', r'\\').replace('"', r'\"')
-                field_stmt += f" COMMENT \"{c}\""
-
-            statements.append(field_stmt + ";")
+            _generate_field_statements(collection_name, field.db_field, field, document_class, statements)
 
     return statements
+
+def _generate_field_statements(table: str, current_path: str, field: Any, document_class: Type, statements: List[str]) -> None:
+    """Recursively generate DEFINE FIELD statements."""
+    
+    # 1. Define the field itself
+    field_type = document_class._get_field_type_for_surreal(field)
+    
+    # Handle optional fields (if they wrap another type, the base logic usually handles the type name)
+    # Checks for specific complex types to ensure proper SurrealQL syntax
+    
+    field_stmt = f"DEFINE FIELD {current_path} ON {table} TYPE {field_type}"
+
+    # Build constraints
+    exprs: List[str] = []
+    if field.required:
+        exprs.append("$value != NONE")
+
+    try:
+        from .fields.scalar import StringField, NumberField
+        from .fields.specialized import ChoiceField
+        from .fields.embedded import EmbeddedField
+        from .fields.collection import DictField
+    except ImportError:
+        # Should not happen within the package
+        StringField = NumberField = ChoiceField = EmbeddedField = DictField = None # type: ignore
+
+    if StringField and isinstance(field, StringField):
+        if getattr(field, 'min_length', None) is not None:
+            exprs.append(f"string::len($value) >= {int(field.min_length)}")
+        if getattr(field, 'max_length', None) is not None:
+            exprs.append(f"string::len($value) <= {int(field.max_length)}")
+        if getattr(field, 'regex_pattern', None):
+            from .surrealql import escape_literal
+            pat = field.regex_pattern
+            exprs.append(f"string::matches($value, {escape_literal(pat)})")
+        if getattr(field, 'choices', None):
+            vals = []
+            for v in field.choices:
+                if isinstance(v, str):
+                    s = v.replace('\\', r'\\').replace('"', r'\"')
+                    vals.append(f'"{s}"')
+                else:
+                    vals.append(str(v).lower() if isinstance(v, bool) else str(v))
+            exprs.append(f"$value INSIDE [{', '.join(vals)}]")
+
+    if NumberField and isinstance(field, NumberField):
+        if getattr(field, 'min_value', None) is not None:
+            exprs.append(f"$value >= {field.min_value}")
+        if getattr(field, 'max_value', None) is not None:
+            exprs.append(f"$value <= {field.max_value}")
+
+    if ChoiceField and isinstance(field, ChoiceField):
+        vals = []
+        for v in field.values:
+            if isinstance(v, str):
+                s = v.replace('\\', r'\\').replace('"', r'\"')
+                vals.append(f'"{s}"')
+            else:
+                vals.append(str(v).lower() if isinstance(v, bool) else str(v))
+        exprs.append(f"$value INSIDE [{', '.join(vals)}]")
+
+    if exprs:
+        field_stmt += " ASSERT " + " AND ".join(exprs)
+
+    # Default
+    if field.default is not None and not callable(field.default):
+        def _literal(val):
+            if isinstance(val, str):
+                s = val.replace('\\', r'\\').replace('"', r'\"')
+                return f'"{s}"'
+            if isinstance(val, bool):
+                return 'true' if val else 'false'
+            return str(val)
+        field_stmt += f" VALUE {_literal(field.default)}"
+
+    # Field comment
+    if getattr(field, 'comment', None):
+        c = field.comment.replace('\\', r'\\').replace('"', r'\"')
+        field_stmt += f" COMMENT \"{c}\""
+
+    statements.append(field_stmt + ";")
+
+    # 2. Recursively define sub-fields for EmbeddedDocument
+    if EmbeddedField and isinstance(field, EmbeddedField):
+        # Allow flexible schema for embedded documents?
+        # Maybe add a FLEXIBLE option to EmbeddedField later.
+        
+        # Iterate over fields of the embedded document
+        embedded_doc_cls = field.document_type
+        # We need to access _fields of the EmbeddedDocument class
+        if hasattr(embedded_doc_cls, '_fields'):
+            for sub_name, sub_field in embedded_doc_cls._fields.items():
+                sub_path = f"{current_path}.{sub_field.db_field or sub_name}"
+                _generate_field_statements(table, sub_path, sub_field, document_class, statements)
+
+    # 3. Recursively define keys for DictField if schema is provided
+    if DictField and isinstance(field, DictField) and field.schema:
+        for key, sub_field in field.schema.items():
+            # For DictField, the key is the path element
+            sub_path = f"{current_path}.{key}"
+            _generate_field_statements(table, sub_path, sub_field, document_class, statements)
 
 
 def generate_schema_statements_from_module(module_name: str, schemafull: bool = True) -> Dict[str, List[str]]:

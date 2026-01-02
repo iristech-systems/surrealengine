@@ -370,7 +370,14 @@ class QuerySet(BaseQuerySet):
                                 id_val = None
                                 if isinstance(data, dict) and 'id' in data:
                                     try:
-                                        id_val = RecordID(str(data['id']))
+                                        raw_id = str(data['id'])
+                                        if ':' in raw_id:
+                                            tb, rid = raw_id.split(':', 1)
+                                            id_val = RecordID(tb, rid)
+                                        else:
+                                            # Fallback or keep as None? 
+                                            # If we can't parse it, we can't create a valid RecordID
+                                            pass
                                     except Exception:
                                         pass
                                 
@@ -416,7 +423,12 @@ class QuerySet(BaseQuerySet):
                                 id_val = None
                                 if isinstance(data, dict) and 'id' in data:
                                     try:
-                                        id_val = RecordID(str(data['id']))
+                                        raw_id = str(data['id'])
+                                        if ':' in raw_id:
+                                            tb, rid = raw_id.split(':', 1)
+                                            id_val = RecordID(tb, rid)
+                                        else:
+                                            pass
                                     except Exception:
                                         pass
                                         
@@ -1441,3 +1453,18 @@ class QuerySet(BaseQuerySet):
                 )
         
         return list(set(suggestions))  # Remove duplicates
+
+    async def reactive(self) -> 'ReactiveQuerySet':
+        """
+        Return a ReactiveQuerySet that stays in sync with the database.
+
+        This method initializes a ReactiveQuerySet, which performs an initial fetch
+        and then subscribes to live updates to keep the local list current.
+
+        Returns:
+            A new ReactiveQuerySet instance.
+        """
+        from ..reactive import ReactiveQuerySet
+        rqs = ReactiveQuerySet(self)
+        await rqs.sync()
+        return rqs

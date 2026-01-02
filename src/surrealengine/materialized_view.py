@@ -409,14 +409,12 @@ class MaterializedView:
             return base_query
 
         # Extract the FROM clause and any clauses that come after it
-        from_index = base_query.upper().find("FROM")
-        if from_index == -1:
+        from .utils.parsing import split_query_on_from
+        select_part, rest_part = split_query_on_from(base_query)
+        
+        if not rest_part:
             # If there's no FROM clause, we can't modify the query
             return base_query
-
-        # Split the query into the SELECT part and the rest
-        select_part = base_query[:from_index].strip()
-        rest_part = base_query[from_index:].strip()
 
         # If there are no aggregations or select fields, return the base query
         if not self.aggregations and not self.select_fields:
@@ -454,7 +452,8 @@ class MaterializedView:
                 group_by_fields_str = group_by_clause[len("GROUP BY"):].strip()
 
             # Split the GROUP BY fields and add them to the SELECT fields if not already included
-            group_by_fields = [field.strip() for field in group_by_fields_str.split(",")]
+            from .utils.parsing import split_fields
+            group_by_fields = split_fields(group_by_fields_str)
             for field in group_by_fields:
                 if field and field not in fields:
                     fields.append(field)

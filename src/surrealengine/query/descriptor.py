@@ -510,10 +510,24 @@ class QuerySetDescriptor:
         Returns:
             An async generator yielding LiveEvent objects
         """
-        # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
         queryset = QuerySet(self.owner, connection)
         return queryset.live(*args, **kwargs)
+
+    async def reactive(self) -> 'ReactiveQuerySet':
+        """
+        Return a ReactiveQuerySet that stays in sync with the database.
+
+        This method initializes a ReactiveQuerySet, which performs an initial fetch
+        and then subscribes to live updates to keep the local list current.
+
+        Returns:
+            A new ReactiveQuerySet instance.
+        """
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=True)
+        queryset = QuerySet(self.owner, connection)
+        return await queryset.reactive()
 
 
     def start(self, value: int) -> QuerySet:

@@ -4,6 +4,11 @@ __pycache__/
 .vscode/
 .devcontainer/devcontainer-lock.json
 notebooks/*.ipynb_checkpoints/
+verify.log
+verify_reactive.py
+road-to-1.0.md
+design_discussion.md
+check_id.py
 
 # Archive directories
 archive_*/

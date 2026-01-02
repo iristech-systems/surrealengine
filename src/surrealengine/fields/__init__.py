@@ -21,6 +21,7 @@ from .specialized import (
 from .additional import (
     OptionField, FutureField, TableField, RangeField
 )
+from .embedded import EmbeddedField
 
 # Export all classes at the top level to maintain the same import interface
 __all__ = [
@@ -33,5 +34,5 @@ __all__ = [
     'RecordIDField',
     'BytesField', 'RegexField', 'DecimalField', 'UUIDField', 'LiteralField',
     'EmailField', 'URLField', 'IPAddressField', 'SlugField', 'ChoiceField',
-    'OptionField', 'FutureField', 'TableField', 'RangeField',
+    'OptionField', 'FutureField', 'TableField', 'RangeField', 'EmbeddedField',
 ]
