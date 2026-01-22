@@ -1,12 +1,8 @@
 import asyncio
 import time
 import random
-import string
 import os
-import surrealengine
 from surrealengine import Document, StringField, IntField, create_connection, RawSurrealConnection
-import pyarrow as pa
-import cbor2
 
 # Configuration
 DB_URL = os.getenv("SURREALDB_URL", "ws://localhost:8001/rpc")

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, List, Optional, Type, Union
 
 from surrealdb import RecordID
 

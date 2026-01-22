@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional
 
 class SurrealEngineLogger:
     """Logger for SurrealEngine.

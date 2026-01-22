@@ -4,10 +4,9 @@ This module provides support for building and executing aggregation pipelines
 in SurrealEngine. Aggregation pipelines allow for complex data transformations
 and analysis through a series of stages.
 """
-import json
 from .surrealql import escape_literal
 import re
-from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from .connection import ConnectionRegistry
 

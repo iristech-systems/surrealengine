@@ -2,7 +2,6 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from surrealengine import QuerySet, Document, StringField, IntField
 # Import RawSurrealConnection from namespace to ensure it's exposed
-from surrealengine import RawSurrealConnection
 import pyarrow as pa
 import polars as pl
 import sys

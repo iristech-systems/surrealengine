@@ -1,5 +1,5 @@
 from ..base_query import BaseQuerySet
-from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
+from typing import Any, Dict, List, Optional, Type, Union, TYPE_CHECKING, cast
 from ..exceptions import MultipleObjectsReturned, DoesNotExist
 from ..fields import ReferenceField
 from surrealdb import RecordID
@@ -7,6 +7,10 @@ import json
 import asyncio
 import logging
 from ..surrealql import escape_literal
+
+if TYPE_CHECKING:
+    from ..query_expressions import Q
+    from ..reactive import ReactiveQuerySet
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -140,7 +144,7 @@ class QuerySet(BaseQuerySet):
             A QuerySet filtered to the source record and configured with the shortest path traversal.
         """
         # Ensure we filter to the source record
-        qs = self.filter(id=src)
+        qs = cast("QuerySet", self.filter(id=src))
         
         # Determine destination table for the arrow path
         # If dst is a RecordID, use table_name. If string, parse it.
@@ -156,6 +160,7 @@ class QuerySet(BaseQuerySet):
                 # but standard idiom usually includes it: ->edge->target
                 # Let's assume the user knows what they are doing if they pass a raw ID,
                 # but valid RecordIDs are best.
+                dst_table = "?"
                 dst_table = "?"
 
         # Construct the shortest path idiom
@@ -230,8 +235,10 @@ class QuerySet(BaseQuerySet):
 
         # Ensure async client and availability of live API
         client = getattr(self.connection, 'client', None)
-        if client is None or not hasattr(client, 'live') or not hasattr(client, 'subscribe_live') or not hasattr(client, 'kill'):
-            raise NotImplementedError("LIVE queries require an async websocket client; connection pooling is not supported for LIVE in this version.")
+        
+        # Check if the client supports live queries (must have live_queues)
+        if client is None or not hasattr(client, 'live') or not hasattr(client, 'subscribe_live') or not hasattr(client, 'kill') or not hasattr(client, 'live_queues'):
+            raise NotImplementedError("LIVE queries require a WebSocket connection; embedded connections (mem://, file://) are not currently supported by the SurrealDB Python SDK.")
 
         table = self.document_class._get_collection_name()
 
@@ -286,8 +293,6 @@ class QuerySet(BaseQuerySet):
                 # If anything goes wrong, fallback to no filtering
                 predicate = None
 
-        import asyncio
-        import datetime
         attempt = 0
         delay = initial_delay
 
@@ -739,7 +744,7 @@ class QuerySet(BaseQuerySet):
         return pl.from_arrow(arrow_table)
 
 
-    def all(self, dereference: bool = False) -> Union[List[Any], Any]:
+    def all(self, dereference: bool = False, **kwargs: Any) -> Union[List[Any], Any]:  # type: ignore[override]
         """Execute the query and return all results.
         
         Polyglot method: executes synchronously if the connection is synchronous,
@@ -747,13 +752,14 @@ class QuerySet(BaseQuerySet):
         
         Args:
             dereference: Whether to dereference references (default: False)
+            **kwargs: Additional arguments for compatibility
 
         Returns:
             List of document instances (or an awaitable resolving to it)
         """
         # If connection is sync, execute sync logic immediately
         if not self.connection.is_async():
-            return self.all_sync(dereference=dereference)
+            return self.all_sync(dereference=dereference, **kwargs)
 
         return self._all_async(dereference=dereference)
 
@@ -790,7 +796,7 @@ class QuerySet(BaseQuerySet):
         processed_results = [self.document_class.from_db(doc, dereference=dereference, partial=is_partial) for doc in rows]
         return processed_results
 
-    def all_sync(self, dereference: bool = False) -> List[Any]:
+    def all_sync(self, dereference: bool = False, **kwargs: Any) -> List[Any]:
         """Execute the query and return all results synchronously.
 
         This method builds and executes the query, then converts the results
@@ -798,6 +804,7 @@ class QuerySet(BaseQuerySet):
 
         Args:
             dereference: Whether to dereference references (default: False)
+            **kwargs: Additional arguments for compatibility
 
         Returns:
             List of document instances
@@ -833,7 +840,7 @@ class QuerySet(BaseQuerySet):
         processed_results = [self.document_class.from_db(doc, dereference=dereference, partial=is_partial) for doc in rows]
         return processed_results
 
-    def count(self) -> Union[int, Any]:
+    def count(self) -> Union[int, Any]:  # type: ignore[override]
         """Count documents matching the query.
         
         Polyglot method: executes synchronously if the connection is synchronous,
@@ -1032,10 +1039,30 @@ class QuerySet(BaseQuerySet):
 
         result = await self.connection.client.query(update_query)
 
-        if not result or not result[0]:
+        if not result:
             return []
 
-        return [self.document_class.from_db(doc) for doc in result[0]]
+        # Extract rows: handle both single statement (list[dict]) and multi-statement result
+        rows = None
+        if isinstance(result, list):
+            if result and isinstance(result[0], dict):
+                rows = result
+            else:
+                # Fallback for nested results (e.g. if wrapper returns [ [doc1, doc2] ])
+                for part in reversed(result):
+                    if isinstance(part, list):
+                        rows = part
+                        break
+        else:
+            rows = result
+            
+        if not rows:
+            return []
+            
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        return [self.document_class.from_db(doc) for doc in rows]
 
     def update_sync(self, returning: Optional[str] = None, **kwargs: Any) -> List[Any]:
         """Update documents matching the query synchronously with performance optimizations.
@@ -1086,10 +1113,30 @@ class QuerySet(BaseQuerySet):
 
         result = self.connection.client.query(update_query)
 
-        if not result or not result[0]:
+        if not result:
             return []
 
-        return [self.document_class.from_db(doc) for doc in result[0]]
+        # Extract rows: handle both single statement (list[dict]) and multi-statement result
+        rows = None
+        if isinstance(result, list):
+            if result and isinstance(result[0], dict):
+                rows = result
+            else:
+                # Fallback for nested results
+                for part in reversed(result):
+                    if isinstance(part, list):
+                        rows = part
+                        break
+        else:
+            rows = result
+            
+        if not rows:
+            return []
+            
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        return [self.document_class.from_db(doc) for doc in rows]
 
     def delete(self) -> Union[int, Any]:
         """Delete documents matching the query.
@@ -1454,7 +1501,7 @@ class QuerySet(BaseQuerySet):
         
         return list(set(suggestions))  # Remove duplicates
 
-    async def reactive(self) -> 'ReactiveQuerySet':
+    async def reactive(self) -> "ReactiveQuerySet":
         """
         Return a ReactiveQuerySet that stays in sync with the database.
 

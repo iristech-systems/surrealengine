@@ -1,6 +1,5 @@
 from typing import Any, Dict, List, Type, TYPE_CHECKING, Optional
 from .fields import Field
-from .exceptions import ValidationError
 
 if TYPE_CHECKING:
     from .fields import Field

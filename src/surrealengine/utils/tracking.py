@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, TypeVar, Union, Generic, Iterable, Mapping
+from typing import Any, Dict, List, Optional, TypeVar, Union, Iterable, Mapping, SupportsIndex
 
 T = TypeVar('T')
 K = TypeVar('K')
@@ -25,7 +25,7 @@ class TrackedList(List[T], TrackedObject):
         if parent and field_name:
             self._set_parent(parent, field_name)
 
-    def __setitem__(self, index: Any, value: T) -> None:
+    def __setitem__(self, index: Union[SupportsIndex, slice], value: Any) -> None:
         super().__setitem__(index, value)
         self._mark_changed()
 
@@ -41,7 +41,7 @@ class TrackedList(List[T], TrackedObject):
         super().extend(iterable)
         self._mark_changed()
 
-    def insert(self, index: int, value: T) -> None:
+    def insert(self, index: SupportsIndex, value: T) -> None:
         super().insert(index, value)
         self._mark_changed()
 
@@ -49,7 +49,7 @@ class TrackedList(List[T], TrackedObject):
         super().remove(value)
         self._mark_changed()
 
-    def pop(self, index: int = -1) -> T:
+    def pop(self, index: SupportsIndex = -1) -> T:
         result = super().pop(index)
         self._mark_changed()
         return result

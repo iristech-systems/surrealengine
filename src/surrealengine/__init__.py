@@ -57,8 +57,7 @@ from .connection import (
 )
 from .raw_connection import RawSurrealConnection
 
-# For backward compatibility
-SurrealEngineConnection = SurrealEngineAsyncConnection
+
 from .schemaless import SurrealEngine
 from .document import Document, RelationDocument, RelationshipAccessor
 from .signals import receiver
@@ -93,7 +92,9 @@ from .fields import (
     IPAddressField,
     SlugField,
     ChoiceField,
-    EmbeddedField
+    EmbeddedField,
+    RecordIDField,
+    VectorField
 )
 from .embedded import EmbeddedDocument
 from .materialized_view import (
@@ -139,12 +140,16 @@ from .datagrid_api import (
     parse_datatables_params,
     format_datatables_response
 )
-from .relation_update import patch_relation_document
 from .context import using_connection, get_active_connection
 from .reactive import ReactiveQuerySet
-from .events import LiveEvent
+from .events import LiveEvent, Event
+from .functions import surreal_func, SurrealFunction
+from .relation_update import patch_relation_document
 
-__version__ = "0.6.0"
+# For backward compatibility
+SurrealEngineConnection = SurrealEngineAsyncConnection
+
+__version__ = "0.7.0"
 __all__ = [
     "SurrealEngine",
     "SurrealEngineAsyncConnection",
@@ -184,6 +189,8 @@ __all__ = [
     "RecordIdUtils",
     "DurationField",
     "OptionField",
+    "FutureField",
+    "DecimalField",
     "LiteralField",
     "RangeField",
     "SetField",
@@ -235,6 +242,11 @@ __all__ = [
     "get_active_connection",
     "ReactiveQuerySet",
     "LiveEvent",
+    "Event",
+    "surreal_func", 
+    "SurrealFunction",
+    "RecordIDField",
+    "VectorField",
 ]
 
 # Apply the patch to add update methods to RelationDocument

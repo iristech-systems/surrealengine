@@ -1,15 +1,26 @@
-import asyncio
 import uuid
+import asyncio
 import logging
-import websockets
+from typing import Optional, List, Any, Dict, Union
+
+# Optional dependencies with type checking guards
+try:
+    import websockets # type: ignore
+    from websockets.client import connect as ws_connect # type: ignore
+except ImportError:
+    websockets = None
+    ws_connect = None
+
 try:
     import cbor2
 except ImportError:
     cbor2 = None
+
 try:
     import surrealengine.surrealengine_accelerator as accelerator
 except ImportError:
     accelerator = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -26,19 +37,20 @@ def cbor_tag_hook(decoder, tag):
 
 class RawSurrealConnection:
     """
-    A lightweight, dedicated connection for performing Zero-Copy operations.
+    A high-performance, lower-level connection to SurrealDB using websockets directly.
     
-    This connection bypasses the standard SurrealDB SDK to directly manage
-    WebSocket communication and binary CBOR data. It allows passing raw bytes
-    to the `surrealengine_accelerator` for high-performance Arrow conversion.
+    This connection bypasses the standard SDK's abstraction layers for:
+    1. Zero-copy Arrow data transfer (when enabled)
+    2. Direct CBOR messaging
+    3. Lower overhead for high-throughput scenarios
     
-    Use this context manager when you need to fetch large datasets for analytics.
+    Features:
+    - Level 1: Pure Python Optimization (Bypass SDK overhead)
+    - Level 2: Rust Accelerator (Serialization speedup)
+    - Level 3: Zero-Copy Arrow (Data transfer speedup)
     """
     
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
-
-    def __init__(self, url: str, token: str = None, namespace: str = None, database: str = None, username: str = None, password: str = None):
+    def __init__(self, url: str, token: Optional[str] = None, namespace: Optional[str] = None, database: Optional[str] = None, username: Optional[str] = None, password: Optional[str] = None):
         self.url = url
         self.token = token
         self.namespace = namespace
@@ -46,87 +58,156 @@ class RawSurrealConnection:
         self.username = username
         self.password = password
         self.ws = None
+        self.id_counter = 0
+        self._connected = False
         
-        if cbor2 is None:
-            raise ImportError("cbor2 is required for RawSurrealConnection")
-        if accelerator is None:
-            raise ImportError("surrealengine_accelerator is required for Zero-Copy features")
-
+        # Performance flags
+        self.use_accelerator = accelerator is not None
+        self.use_arrow = False # Enabled explicitly
+        
+        if not cbor2:
+            logger.warning("cbor2 not installed. Raw connection will be limited.")
+            
     async def __aenter__(self):
         await self.connect()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
+        await self.disconnect()
 
     async def connect(self):
-        # Ensure URL has /rpc endpoint if not present
-        ws_url = self.url
+        """Establish the websocket connection and authenticate."""
+        if self._connected:
+            return
+
+        if not websockets:
+            raise ImportError("websockets package is required for RawSurrealConnection")
+
+        # Convert http/https to ws/wss
+        ws_url = self.url.replace("http://", "ws://").replace("https://", "wss://")
         if not ws_url.endswith("/rpc"):
              ws_url = f"{ws_url.rstrip('/')}/rpc"
+             
+        try:
+            # Connect with CBOR subprotocol
+            self.ws = await ws_connect(ws_url, subprotocols=["cbor"], max_size=None)
+            self._connected = True
+            
+            # Authenticate
+            if self.token:
+                await self.authenticate_token(self.token)
+            elif self.username and self.password:
+                await self.signin(self.username, self.password)
+                
+            # Use namespace/db
+            if self.namespace and self.database:
+                await self.use(self.namespace, self.database)
+                
+        except Exception as e:
+            logger.error(f"Failed to connect to SurrealDB: {e}")
+            self._connected = False
+            raise
 
-        # Connect with CBOR subprotocol support and increased size limit
-        # Set max_size to None (no limit) or very high for large datasets
-        self.ws = await websockets.connect(ws_url, subprotocols=["cbor"], max_size=None)
-        
-        # Authenticate
-        if self.token:
-             # Just use the token
-             req_id = str(uuid.uuid4())
-             req = {
-                 "id": req_id,
-                 "method": "authenticate",
-                 "params": [self.token]
-             }
-             await self.ws.send(cbor2.dumps(req))
-             resp = await self.ws.recv() 
-             # Basic check
-             if isinstance(resp, str):
-                 pass # JSON response likely OK
-             else:
-                 cbor2.loads(resp) # Validate CBOR
-        elif self.username and self.password:
-             # Signin
-             req_id = str(uuid.uuid4())
-             req = {
-                 "id": req_id,
-                 "method": "signin",
-                 "params": [{
-                     "user": self.username,
-                     "pass": self.password,
-                 }]
-             }
-             await self.ws.send(cbor2.dumps(req))
-             resp = await self.ws.recv()
-             if isinstance(resp, str):
-                 import json
-                 decoded = json.loads(resp)
-             else:
-                 decoded = cbor2.loads(resp)
-                 
-             if "error" in decoded:
-                 raise RuntimeError(f"Auth failed: {decoded['error']}")
-
-        if self.namespace and self.database:
-             await self.use(self.namespace, self.database)
-
-    async def close(self):
+    async def disconnect(self):
+        """Close the connection."""
         if self.ws:
             await self.ws.close()
+            self._connected = False
+            
+    async def _send_rust(self, req: Dict) -> bytes:
+        """Helper to send request via Rust accelerator if available."""
+        if not accelerator:
+            raise RuntimeError("Rust accelerator not available.")
+        if not self.ws:
+            raise ConnectionError("Websocket not connected")
+        
+        # The accelerator handles the CBOR serialization and sends it
+        # This assumes accelerator has a method to send and receive raw bytes
+        # For now, let's assume it just serializes and we send it.
+        # A more advanced accelerator might directly manage the websocket.
+        
+        # For now, we'll serialize with Python cbor2 and then pass to accelerator for processing response
+        # Or, if the accelerator can serialize, we'd use that.
+        # Let's assume accelerator.cbor_dumps(req) exists for sending.
+        # If not, we fall back to cbor2.dumps(req)
+        
+        # Placeholder: Assuming accelerator.cbor_dumps exists for sending
+        # If not, this part needs adjustment based on actual accelerator API
+        try:
+            # If accelerator can serialize, use it
+            serialized_req = accelerator.cbor_dumps(req)
+        except AttributeError:
+            # Fallback to Python cbor2 for serialization
+            if cbor2 is None:
+                raise ImportError("cbor2 is required for serialization when accelerator cannot.")
+            serialized_req = cbor2.dumps(req)
+            
+        await self.ws.send(serialized_req)
+        return await self.ws.recv()
+
+    async def authenticate_token(self, token: str):
+        """Authenticate with a token."""
+        if cbor2 is None:
+            raise ImportError("cbor2 is required for authentication.")
+        req_id = str(self.id_counter)
+        self.id_counter += 1
+        req = {
+            "id": req_id,
+            "method": "authenticate",
+            "params": [token]
+        }
+        if self.ws:
+            await self.ws.send(cbor2.dumps(req))
+            resp_bytes = await self.ws.recv()
+            # Basic check for error
+            decoded = cbor2.loads(resp_bytes)
+            if "error" in decoded:
+                raise RuntimeError(f"Authentication failed: {decoded['error']}")
+        else:
+            raise ConnectionError("Websocket not connected")
+
+    async def signin(self, username: str, password: str):
+        """Sign in with username and password."""
+        if cbor2 is None:
+            raise ImportError("cbor2 is required for signin.")
+        req_id = str(self.id_counter)
+        self.id_counter += 1
+        req = {
+            "id": req_id,
+            "method": "signin",
+            "params": [{
+                "user": username,
+                "pass": password,
+            }]
+        }
+        if self.ws:
+            await self.ws.send(cbor2.dumps(req))
+            resp_bytes = await self.ws.recv()
+            decoded = cbor2.loads(resp_bytes)
+            if "error" in decoded:
+                raise RuntimeError(f"Signin failed: {decoded['error']}")
+        else:
+            raise ConnectionError("Websocket not connected")
 
     async def use(self, ns: str, db: str):
         """Switch namespace and database."""
-        req_id = str(uuid.uuid4())
+        if cbor2 is None:
+            raise ImportError("cbor2 is required for 'use' command.")
+        req_id = str(self.id_counter)
+        self.id_counter += 1
         req = {
             "id": req_id,
             "method": "use",
             "params": [ns, db]
         }
-        await self.ws.send(cbor2.dumps(req))
-        resp_bytes = await self.ws.recv()
-        # We process response just to ensure it succeeded, but we don't strictly need the content for 'use'
-        # unless checking for errors. For now, simplistic.
-        
+        if self.ws:
+            await self.ws.send(cbor2.dumps(req))
+            resp_bytes = await self.ws.recv()
+            decoded = cbor2.loads(resp_bytes)
+            if "error" in decoded:
+                raise RuntimeError(f"Use failed: {decoded['error']}")
+        else:
+            raise ConnectionError("Websocket not connected")
 
     async def query_arrow(self, sql: str, vars: dict = None):
         """
@@ -134,6 +215,9 @@ class RawSurrealConnection:
         """
         if not self.ws:
             raise RuntimeError("Not connected")
+        
+        assert cbor2 is not None
+        assert accelerator is not None
 
         req_id = str(uuid.uuid4())
         req = {

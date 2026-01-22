@@ -1,8 +1,6 @@
-import asyncio
-from typing import TypeVar, AsyncGenerator, List, Dict, Any, Optional, Union
+from typing import TypeVar, AsyncGenerator, List, Dict, Any
 from .events import LiveEvent
 from .query.base import QuerySet
-from surrealdb import RecordID
 import logging
 
 T = TypeVar("T")
@@ -73,7 +71,15 @@ class ReactiveQuerySet:
         # or duplicated. Ideally we'd start the live cursor, buffer, then fetch.
         
         # For v1 simplicity: Fetch Snapshot
-        self._items = await self._queryset.all()
+        from typing import cast
+        # QuerySet.all() is a polyglot method, so type checker sees Union[List, Any].
+        # In async context, it returns an awaitable.
+        result = self._queryset.all()
+        if hasattr(result, '__await__'):
+             self._items = await result # type: ignore
+        else:
+             self._items = result # type: ignore
+             
         self._rebuild_map()
         self._initial_sync_done = True
         
@@ -160,10 +166,11 @@ class ReactiveQuerySet:
             field, direction = self._order_by
             reverse = (direction.upper() == 'DESC')
             try:
-                def get_sort_key(item):
+                def get_sort_key(item) -> Any:
                     if hasattr(item, field):
                         val = getattr(item, field)
-                        if callable(val): return None
+                        if callable(val):
+                            return "" # Sort callables last/first consistently
                         return val
                     if hasattr(item, '_data') and isinstance(item._data, dict):
                         return item._data.get(field)
@@ -193,10 +200,11 @@ class ReactiveQuerySet:
     def to_pandas(self):
         """Convert current state to Pandas DataFrame."""
         try:
-            import pandas as pd
-            # Use to_db() or __dict__?
-            # to_db() gives serialization-safe data
-            data = [item.to_db() for item in self._items]
-            return pd.DataFrame(data)
+            import pandas as pd # type: ignore
         except ImportError:
             raise ImportError("pandas is required for to_pandas()")
+            
+        # Use to_db() or __dict__?
+        # to_db() gives serialization-safe data
+        data = [item.to_db() for item in self._items]
+        return pd.DataFrame(data)

@@ -5,12 +5,15 @@ Materialized views are precomputed views of data that can be used to
 improve query performance for frequently accessed aggregated data.
 """
 from __future__ import annotations  # Enable string-based type annotations
-from typing import Any, Dict, List, Optional, Type, Union, TYPE_CHECKING, Callable
+from typing import Dict, List, Type, Optional, TYPE_CHECKING
 
 # Remove the direct import of Document
 # from .document import Document
 from .query import QuerySet
 from .connection import ConnectionRegistry
+
+if TYPE_CHECKING:
+    from .document import Document
 
 
 class Aggregation:
@@ -370,7 +373,7 @@ class MaterializedView:
     """
 
     def __init__(self, name: str, query: QuerySet, refresh_interval: str = None,
-                 document_class: Type["Document"] = None, aggregations: Dict[str, Aggregation] = None,
+                 document_class: Optional[Type["Document"]] = None, aggregations: Dict[str, Aggregation] = None,
                  select_fields: List[str] = None) -> None:
         """Initialize a new MaterializedView.
 

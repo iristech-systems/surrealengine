@@ -66,7 +66,7 @@ async def test_record_id_utils():
     encoded = RecordIdUtils.url_encode_record_id(original)
     decoded = RecordIdUtils.url_decode_record_id(encoded)
     logger.info(f"Original: {original} -> Encoded: {encoded} -> Decoded: {decoded}")
-    assert decoded == original, f"URL encoding/decoding failed"
+    assert decoded == original, "URL encoding/decoding failed"
     
     # Test batch normalization
     batch_ids = ["123", "user:456", "user%3A789", "valid-id", "user:", ":invalid"]  # Mix of valid and invalid

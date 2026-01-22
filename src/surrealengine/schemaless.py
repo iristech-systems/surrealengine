@@ -1,8 +1,7 @@
 import json
-import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Type, Union, Callable
-from .exceptions import DoesNotExist, MultipleObjectsReturned
+from typing import Any, Dict, List, Optional, Union, Callable
+from .exceptions import DoesNotExist
 from surrealdb import RecordID
 from .base_query import BaseQuerySet
 
@@ -31,13 +30,16 @@ class SchemalessQuerySet(BaseQuerySet):
         super().__init__(connection)
         self.table_name = table_name
 
-    async def all(self) -> List[Any]:
+    async def all(self, **kwargs: Any) -> List[Any]:
         """Execute the query and return all results asynchronously.
 
         This method builds and executes the query, then processes the results
         based on whether a matching document class is found. If a matching
         document class is found, the results are converted to instances of that
         class. Otherwise, they are converted to SimpleNamespace objects.
+
+        Args:
+            **kwargs: Ignored arguments for compatibility
 
         Returns:
             List of results, either document instances or SimpleNamespace objects
@@ -59,7 +61,7 @@ class SchemalessQuerySet(BaseQuerySet):
                 break
 
         # Process results based on whether we found a matching document class
-        processed_results = []
+        processed_results: List[Any] = []
         if doc_class:
             for doc_data in results:  # results[0] contains the actual data
                 instance = doc_class.from_db(doc_data)
@@ -71,20 +73,24 @@ class SchemalessQuerySet(BaseQuerySet):
                 # Check if doc_data is a dictionary, if not try to convert or skip
                 if isinstance(doc_data, dict):
                     instance = SimpleNamespace(**doc_data)
+                    processed_results.append(instance)
                 else:
                     # If it's a string, try to use it as a name attribute
                     instance = SimpleNamespace(name=str(doc_data))
-                processed_results.append(instance)
+                    processed_results.append(instance)
 
         return processed_results
 
-    def all_sync(self) -> List[Any]:
+    def all_sync(self, **kwargs: Any) -> List[Any]:
         """Execute the query and return all results synchronously.
 
         This method builds and executes the query, then processes the results
         based on whether a matching document class is found. If a matching
         document class is found, the results are converted to instances of that
         class. Otherwise, they are converted to SimpleNamespace objects.
+
+        Args:
+            **kwargs: Ignored arguments for compatibility
 
         Returns:
             List of results, either document instances or SimpleNamespace objects
@@ -106,7 +112,8 @@ class SchemalessQuerySet(BaseQuerySet):
                 break
 
         # Process results based on whether we found a matching document class
-        processed_results = []
+        # Process results based on whether we found a matching document class
+        processed_results: List[Any] = []
         if doc_class:
             for doc_data in results:  # results[0] contains the actual data
                 instance = doc_class.from_db(doc_data)
@@ -118,10 +125,11 @@ class SchemalessQuerySet(BaseQuerySet):
                 # Check if doc_data is a dictionary, if not try to convert or skip
                 if isinstance(doc_data, dict):
                     instance = SimpleNamespace(**doc_data)
+                    processed_results.append(instance)
                 else:
                     # If it's a string, try to use it as a name attribute
                     instance = SimpleNamespace(name=str(doc_data))
-                processed_results.append(instance)
+                    processed_results.append(instance)
 
         return processed_results
 
@@ -268,7 +276,7 @@ class SchemalessQuerySet(BaseQuerySet):
             return [] if return_documents else 0
 
         total_created = 0
-        created_docs = [] if return_documents else None
+        created_docs: List[Any] = []
 
         # Process in batches
         for i in range(0, len(documents), batch_size):
@@ -325,7 +333,7 @@ class SchemalessQuerySet(BaseQuerySet):
             return [] if return_documents else 0
 
         total_created = 0
-        created_docs = [] if return_documents else None
+        created_docs: List[Any] = []
 
         # Process in batches
         for i in range(0, len(documents), batch_size):

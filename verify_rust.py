@@ -1,13 +1,17 @@
 import surrealengine.surrealengine_accelerator as accelerator
-import pyarrow as pa
 import cbor2
 
 # Simulate CBOR data from SurrealDB (list of objects)
-data = [
+records = [
     {"name": "Alice", "age": 30, "active": True},
     {"name": "Bob", "age": 25, "active": False},
     {"name": "Charlie", "age": 35, "active": True}
 ]
+# Rust extension expects root -> "result" (list) -> [0] -> "result" (list of records)
+# Or if it iterates maps, it finds "result".
+# src/lib.rs: 
+#   let records_values_opt = if let Value::Map(ref map) = root { ... find "result" ... get [0] ... find "result"
+data = {"result": [{"result": records}]}
 cbor_bytes = cbor2.dumps(data)
 
 print(f"CBOR Bytes: {len(cbor_bytes)} bytes")

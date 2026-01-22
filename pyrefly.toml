@@ -1,0 +1,20 @@
+project-includes = [
+    "src",
+    "tests",
+]
+project-excludes = [
+    "**/__pycache__",
+    ".venv",
+]
+infer-with-first-use = false
+
+[errors]
+missing-attribute = "ignore"
+bad-return = "ignore"
+bad-argument-type = "ignore"
+untyped-import = "ignore"
+missing-import = "ignore"
+not-iterable = "ignore"
+not-async = "ignore"
+not-callable = "ignore"
+bad-function-definition = "ignore"

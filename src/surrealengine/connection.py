@@ -26,9 +26,12 @@ from threading import Lock, Event
 import asyncio
 from contextvars import ContextVar
 from .schemaless import SurrealEngine
+from contextlib import contextmanager
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+
 
 # Optional OpenTelemetry
 try:
@@ -37,8 +40,6 @@ try:
 except Exception:
     _otel_trace = None
     _otel_tracer = None
-
-from contextlib import contextmanager
 
 @contextmanager
 def _maybe_span(name: str, attributes: Optional[Dict[str, Any]] = None):

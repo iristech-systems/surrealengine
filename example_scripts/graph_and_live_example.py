@@ -1,5 +1,5 @@
 import asyncio
-from surrealengine import create_connection, Document, StringField, QuerySet, Q
+from surrealengine import create_connection, Document, StringField, QuerySet
 
 # Example document
 class Person(Document):

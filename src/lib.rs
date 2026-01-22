@@ -106,28 +106,87 @@ fn cbor_to_arrow(py: Python, data: &Bound<'_, PyBytes>) -> PyResult<PyObject> {
 
     // 2. Extract inner data
     // Path: root -> "result" (Array) -> [0] -> "result" (Array of records)
-    let records_values_opt = if let Value::Map(ref map) = root {
-        map.iter()
+    // Check for "result" array in root
+    // Check for "error" key first
+    if let Value::Map(ref map) = root {
+        if let Some((_, v)) = map.iter().find(|(k, _)| matches!(k, Value::Text(s) if s == "error")) {
+            // Found top-level error (e.g. { "id": ..., "error": { "code": ..., "message": ... } })
+            let msg = if let Value::Map(err_map) = v {
+                 let message = err_map.iter()
+                    .find(|(k, _)| matches!(k, Value::Text(s) if s == "message"))
+                    .map(|(_, v)| match v {
+                        Value::Text(s) => s.clone(),
+                        _ => format!("{:?}", v),
+                    })
+                    .unwrap_or_else(|| format!("{:?}", v));
+                 let code = err_map.iter()
+                    .find(|(k, _)| matches!(k, Value::Text(s) if s == "code"))
+                    .map(|(_, v)| format!("{:?}", v))
+                    .unwrap_or_else(|| "?".to_string());
+                 format!("SurrealDB Error ({}): {}", code, message)
+            } else {
+                 format!("SurrealDB Error: {:?}", v)
+            };
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(msg));
+        }
+    }
+
+    let root_result_arr = if let Value::Map(ref map) = root {
+         map.iter()
             .find(|(k, _)| matches!(k, Value::Text(s) if s == "result"))
-            .and_then(|(_, v)| {
-                 if let Value::Array(arr) = v {
-                     arr.get(0)
-                 } else { None }
-            })
-            .and_then(|v| {
-                 if let Value::Map(map) = v {
-                      map.iter()
-                        .find(|(k, _)| matches!(k, Value::Text(s) if s == "result"))
-                        .map(|(_, v)| v)
-                 } else { None }
-            })
+            .map(|(_, v)| v)
     } else {
-        None
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("CBOR Root is not a Map"));
     };
 
-    let records_arr = match records_values_opt {
+    let responses = match root_result_arr {
         Some(Value::Array(arr)) => arr,
-        _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Could not find 'result[0].result' array in CBOR response")),
+        Some(_) => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Root 'result' is not an array")),
+        None => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Root 'result' key not found")),
+    };
+
+    if responses.is_empty() {
+        return Ok(py.None());
+    }
+
+    // Check first response
+    let first_response = &responses[0];
+    let first_response_map = if let Value::Map(map) = first_response {
+        map
+    } else {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("First response is not a Map"));
+    };
+    
+    // Check status
+    let status_opt = first_response_map.iter()
+        .find(|(k, _)| matches!(k, Value::Text(s) if s == "status"))
+        .map(|(_, v)| v);
+        
+    if let Some(Value::Text(status)) = status_opt {
+        if status != "OK" {
+            // Try to find "detail" or "message" to include in error
+            let detail = first_response_map.iter()
+                .find(|(k, _)| matches!(k, Value::Text(s) if s == "detail" || s == "message"))
+                .map(|(_, v)| format!("{:?}", v))
+                .unwrap_or_else(|| "Unknown error".to_string());
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Database returned error status '{}': {}", status, detail)));
+        }
+    }
+
+    // Get inner result
+    let inner_result_opt = first_response_map.iter()
+        .find(|(k, _)| matches!(k, Value::Text(s) if s == "result"))
+        .map(|(_, v)| v);
+
+    let records_arr = match inner_result_opt {
+        Some(Value::Array(arr)) => arr,
+        Some(_) => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Inner 'result' is not an array")),
+        None => {
+            // If status is OK but no result, maybe it's valid empty? or just missing.
+            // Check keys to be helpful
+            let keys: Vec<String> = first_response_map.iter().map(|(k, _)| format!("{:?}", k)).collect();
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Inner 'result' key not found. Available keys: {:?}", keys)));
+        }
     };
 
     if records_arr.is_empty() {

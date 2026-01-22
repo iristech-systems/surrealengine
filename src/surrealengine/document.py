@@ -15,12 +15,11 @@ Classes:
 import json
 import datetime
 import logging
-from dataclasses import dataclass, field as dataclass_field, make_dataclass
-from typing import Any, Dict, List, Optional, Type, TypeVar, Union, cast
-from .utils.tracking import TrackedList, TrackedDict
+from dataclasses import field as dataclass_field, make_dataclass
+from typing import Any, Dict, List, Optional, Type, Union
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
 from .fields import Field, RecordIDField, ReferenceField, DictField
-from .connection import ConnectionRegistry, SurrealEngineAsyncConnection, SurrealEngineSyncConnection
+from .connection import ConnectionRegistry
 from .context import get_active_connection
 from .exceptions import ValidationError
 from surrealdb import RecordID
@@ -58,7 +57,7 @@ def _iso_from_wrapper(w) -> str:
     return str(w)
 
 # Universal HTTP-safe serializer for outgoing payloads
-def _serialize_http_safe(value: Any):
+def serialize_http_safe(value: Any):
     """Recursively process values for SurrealDB SDK.
 
     Convert IsoDateTimeWrapper back to raw datetime - the SDK handles that better.
@@ -97,15 +96,15 @@ def _serialize_http_safe(value: Any):
         if isinstance(iso_val, str):
             try:
                 return _dt.datetime.fromisoformat(iso_val.replace('Z', '+00:00'))
-            except:
+            except Exception:
                 pass
         return value
 
     # Recursively handle collections
     if isinstance(value, list):
-        return [_serialize_http_safe(v) for v in value]
+        return [serialize_http_safe(v) for v in value]
     if isinstance(value, dict):
-        return {k: _serialize_http_safe(v) for k, v in value.items()}
+        return {k: serialize_http_safe(v) for k, v in value.items()}
 
     # Pass through everything else unchanged
     return value
@@ -206,6 +205,7 @@ class DocumentMetaclass(type):
             'time_series': getattr(meta, 'time_series', False),
             'time_field': getattr(meta, 'time_field', None),
             'abstract': getattr(meta, 'abstract', False),
+            'events': getattr(meta, 'events', []),
         }
 
         # Process fields
@@ -365,7 +365,11 @@ class Document(metaclass=DocumentMetaclass):
             AttributeError: If strict mode is enabled and an unknown field is provided
         """
         if 'id' not in self._fields:
-            self._fields['id'] = RecordIDField()
+            id_field = RecordIDField()
+            id_field.name = 'id'
+            id_field.db_field = 'id'
+            id_field.owner_document = self.__class__
+            self._fields['id'] = id_field
 
         # Trigger pre_init signal
         if SIGNAL_SUPPORT:
@@ -452,32 +456,7 @@ class Document(metaclass=DocumentMetaclass):
         else:
             super().__setattr__(name, value)
 
-    @property
-    def id(self) -> Any:
-        """Get the document ID.
 
-        Returns:
-            The document ID
-        """
-        return self._data.get('id')
-
-    @id.setter
-    def id(self, value: Any) -> None:
-        """Set the document ID.
-
-        Args:
-            value: The document ID to set
-        """
-        if 'id' in self._fields:
-            field = self._fields['id']
-            # Store original value before changing (if not already tracked)
-            if 'id' not in self._changed_fields and hasattr(self, '_original_data'):
-                self._original_data['id'] = self._data.get('id')
-            self._data['id'] = field.validate(value)
-            if 'id' not in self._changed_fields:
-                self._changed_fields.append('id')
-        else:
-            self._data['id'] = value
 
     @classmethod
     def _get_collection_name(cls) -> str:
@@ -729,7 +708,16 @@ class Document(metaclass=DocumentMetaclass):
         result = {}
         for field_name, field in self._fields.items():
             value = self._data.get(field_name)
-            if value is not None or field.required:
+            # Only include the field if:
+            # 1. The value is not None, OR
+            # 2. The field is required (in which case we send None to let DB validate)
+            # But skip 'id' field if it's None (it will be auto-generated)
+            if field_name == 'id' and value is None:
+                continue
+            if value is not None:
+                db_field = field.db_field or field_name
+                result[db_field] = field.to_db(value)
+            elif field.required:
                 db_field = field.db_field or field_name
                 result[db_field] = field.to_db(value)
         return result
@@ -1167,7 +1155,7 @@ class Document(metaclass=DocumentMetaclass):
         if not data:
             return self
             
-        data = _serialize_http_safe(data)
+        data = serialize_http_safe(data)
         
         # Use merge for partial update
         result = await connection.client.merge(self.id, data)
@@ -1223,7 +1211,7 @@ class Document(metaclass=DocumentMetaclass):
         if not data:
             return self
             
-        data = _serialize_http_safe(data)
+        data = serialize_http_safe(data)
         
         # Use merge for partial update
         result = connection.client.merge(self.id, data)
@@ -1299,7 +1287,7 @@ class Document(metaclass=DocumentMetaclass):
             pre_save_post_validation.send(self.__class__, document=self)
 
         data = self.to_db()
-        safe_data = _serialize_http_safe(data)
+        safe_data = serialize_http_safe(data)
         
         result = await connection.client.create(
             self._get_collection_name(),
@@ -1369,7 +1357,7 @@ class Document(metaclass=DocumentMetaclass):
             pre_save_post_validation.send(self.__class__, document=self)
 
         data = self.to_db()
-        data = _serialize_http_safe(data)
+        data = serialize_http_safe(data)
         
         result = connection.client.create(
             self._get_collection_name(),
@@ -2145,7 +2133,7 @@ class Document(metaclass=DocumentMetaclass):
                 if return_documents:
                     # Convert created records back to documents
                     for record in created:
-                        doc = self.from_db(record)
+                        doc = cls.from_db(record)
                         results.append(doc)
                 total_count += len(created)
 
@@ -2195,7 +2183,8 @@ class Document(metaclass=DocumentMetaclass):
     @classmethod
     def create_index(cls, index_name: str, fields: List[str], unique: bool = False,
                      search: bool = False, analyzer: Optional[str] = None,
-                     comment: Optional[str] = None, connection: Optional[Any] = None) -> Union[None, Any]:
+                     comment: Optional[str] = None, connection: Optional[Any] = None,
+                     **kwargs) -> Union[None, Any]:
         """Create an index on the document's collection.
         
         Polyglot method: executes synchronously if the connection is synchronous,
@@ -2215,20 +2204,20 @@ class Document(metaclass=DocumentMetaclass):
         
         if not target_connection.is_async():
             return cls.create_index_sync(
-                index_name, fields, unique, search, analyzer, comment, connection=target_connection
+                index_name, fields, unique, search, analyzer, comment, connection=target_connection, **kwargs
             )
 
         return cls._create_index_async(
-            index_name, fields, unique, search, analyzer, comment, connection=target_connection
+            index_name, fields, unique, search, analyzer, comment, connection=target_connection, **kwargs
         )
 
     @classmethod
     async def _create_index_async(cls, index_name: str, fields: List[str], unique: bool = False,
                             search: bool = False, analyzer: Optional[str] = None,
-                            comment: Optional[str] = None, connection: Optional[Any] = None) -> None:
+                            comment: Optional[str] = None, connection: Optional[Any] = None,
+                            **kwargs) -> None:
         """Internal async implementation of create_index()."""
         if connection is None:
-            from .connection import ConnectionRegistry
             connection = get_active_connection(async_mode=True)
 
         collection_name = cls._get_collection_name()
@@ -2242,6 +2231,25 @@ class Document(metaclass=DocumentMetaclass):
             query += " UNIQUE"
         elif search and analyzer:
             query += f" SEARCH ANALYZER {analyzer}"
+            if kwargs.get('bm25'):
+                query += " BM25"
+            if kwargs.get('highlights'):
+                query += " HIGHLIGHTS"
+        elif kwargs.get('dimension'):
+            # HNSW Vector Index
+            dim = kwargs['dimension']
+            query += f" HNSW DIMENSION {dim}"
+            
+            if kwargs.get('dist'):
+                query += f" DIST {kwargs['dist']}"
+            if kwargs.get('m'):
+                query += f" M {kwargs['m']}"
+            if kwargs.get('efc'):
+                query += f" EFC {kwargs['efc']}"
+            if kwargs.get('m0'):
+                query += f" M0 {kwargs['m0']}"
+            if kwargs.get('lm'):
+                query += f" LM {kwargs['lm']}"
 
         # Add comment if provided
         if comment:
@@ -2253,7 +2261,8 @@ class Document(metaclass=DocumentMetaclass):
     @classmethod
     def create_index_sync(cls, index_name: str, fields: List[str], unique: bool = False,
                           search: bool = False, analyzer: Optional[str] = None,
-                          comment: Optional[str] = None, connection: Optional[Any] = None) -> None:
+                          comment: Optional[str] = None, connection: Optional[Any] = None,
+                          **kwargs) -> None:
         """Create an index on the document's collection synchronously.
 
         Args:
@@ -2264,9 +2273,9 @@ class Document(metaclass=DocumentMetaclass):
             analyzer: Analyzer to use for search indexes
             comment: Optional comment for the index
             connection: Optional connection to use
+            **kwargs: Additional index options (dimension, dist, bm25, highlights, etc.)
         """
         if connection is None:
-            from .connection import ConnectionRegistry
             connection = get_active_connection(async_mode=False)
 
         collection_name = cls._get_collection_name()
@@ -2280,6 +2289,25 @@ class Document(metaclass=DocumentMetaclass):
             query += " UNIQUE"
         elif search and analyzer:
             query += f" SEARCH ANALYZER {analyzer}"
+            if kwargs.get('bm25'):
+                query += " BM25"
+            if kwargs.get('highlights'):
+                query += " HIGHLIGHTS"
+        elif kwargs.get('dimension'):
+            # HNSW Vector Index
+            dim = kwargs['dimension']
+            query += f" HNSW DIMENSION {dim}"
+            
+            if kwargs.get('dist'):
+                query += f" DIST {kwargs['dist']}"
+            if kwargs.get('m'):
+                query += f" M {kwargs['m']}"
+            if kwargs.get('efc'):
+                query += f" EFC {kwargs['efc']}"
+            if kwargs.get('m0'):
+                query += f" M0 {kwargs['m0']}"
+            if kwargs.get('lm'):
+                query += f" LM {kwargs['lm']}"
 
         # Add comment if provided
         if comment:
@@ -2346,7 +2374,8 @@ class Document(metaclass=DocumentMetaclass):
                     search=search,
                     analyzer=analyzer,
                     comment=comment,
-                    connection=connection
+                    connection=connection,
+                    **{k: v for k, v in index_def.items() if k not in ['name', 'fields', 'unique', 'search', 'analyzer', 'comment']}
                 )
 
                 # Mark this index as processed to avoid duplicates
@@ -2475,7 +2504,8 @@ class Document(metaclass=DocumentMetaclass):
                     search=search,
                     analyzer=analyzer,
                     comment=comment,
-                    connection=connection
+                    connection=connection,
+                    **{k: v for k, v in index_def.items() if k not in ['name', 'fields', 'unique', 'search', 'analyzer', 'comment']}
                 )
 
                 # Mark this index as processed to avoid duplicates
@@ -2556,6 +2586,46 @@ class Document(metaclass=DocumentMetaclass):
                         analyzer=analyzer,
                         connection=connection
                     )
+
+    @classmethod
+    async def create_events(cls, connection: Optional[Any] = None) -> None:
+        """Create events defined in Meta.events asynchronously.
+        
+        Args:
+            connection: Optional connection to use
+        """
+        if not hasattr(cls, '_meta') or not cls._meta.get('events'):
+            return
+
+        if connection is None:
+            connection = get_active_connection(async_mode=True)
+            
+        collection_name = cls._get_collection_name()
+        
+        for event in cls._meta['events']:
+            if hasattr(event, 'to_sql'):
+                query = event.to_sql(collection_name)
+                await connection.client.query(query)
+
+    @classmethod
+    def create_events_sync(cls, connection: Optional[Any] = None) -> None:
+        """Create events defined in Meta.events synchronously.
+        
+        Args:
+            connection: Optional connection to use
+        """
+        if not hasattr(cls, '_meta') or not cls._meta.get('events'):
+            return
+
+        if connection is None:
+            connection = get_active_connection(async_mode=False)
+            
+        collection_name = cls._get_collection_name()
+        
+        for event in cls._meta['events']:
+            if hasattr(event, 'to_sql'):
+                query = event.to_sql(collection_name)
+                connection.client.query(query)
 
     @classmethod
     def _get_field_type_for_surreal(cls, field: Field) -> str:
@@ -2704,6 +2774,9 @@ class Document(metaclass=DocumentMetaclass):
             # Only define fields if schemafull or if field is explicitly marked for schema definition
             if schemafull or field.define_schema:
                 field_type = cls._get_field_type_for_surreal(field)
+                # Wrap in option<> if field is not required (allows NULL/NONE values)
+                if not field.required:
+                    field_type = f"option<{field_type}>"
                 field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} TYPE {field_type}"
 
                 # Build constraints
@@ -2783,6 +2856,12 @@ class Document(metaclass=DocumentMetaclass):
                         nested_field_query = f"DEFINE FIELD {field.db_field}.theme ON {collection_name} TYPE string"
                         await connection.client.query(nested_field_query)
 
+        # Create indexes
+        await cls.create_indexes(connection)
+        
+        # Create events
+        await cls.create_events(connection)
+
     @classmethod
     def create_table_sync(cls, connection: Optional[Any] = None, schemafull: bool = True) -> None:
         """Create the table for this document class synchronously."""
@@ -2834,6 +2913,9 @@ class Document(metaclass=DocumentMetaclass):
             # Only define fields if schemafull or if field is explicitly marked for schema definition
             if schemafull or field.define_schema:
                 field_type = cls._get_field_type_for_surreal(field)
+                # Wrap in option<> if field is not required (allows NULL/NONE values)
+                if not field.required:
+                    field_type = f"option<{field_type}>"
                 field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} TYPE {field_type}"
 
                 # Build constraints
@@ -2911,6 +2993,12 @@ class Document(metaclass=DocumentMetaclass):
                         nested_field_query = f"DEFINE FIELD {field.db_field}.theme ON {collection_name} TYPE string"
                         connection.client.query(nested_field_query)
 
+        # Create indexes
+        cls.create_indexes_sync(connection)
+        
+        # Create events
+        cls.create_events_sync(connection)
+
     @classmethod
     def to_dataclass(cls):
         """Convert the document class to a dataclass.
@@ -2974,7 +3062,7 @@ class Document(metaclass=DocumentMetaclass):
         Returns:
             A MaterializedView instance
         """
-        from .materialized_view import MaterializedView, Count, Mean, Sum, Min, Max, ArrayCollect
+        from .materialized_view import Count, Mean, Sum, Min, Max, ArrayCollect
 
         # Process aggregations if provided as keyword arguments
         if aggregations is None:
@@ -3047,6 +3135,12 @@ class Document(metaclass=DocumentMetaclass):
 
         # Look up the document class in the registry
         return cls._document_registry.get(collection_name)
+
+# Fix for Document.id field: The metaclass skips processing the base Document class,
+# so the id field doesn't get its name/db_field set. We set them manually here.
+if hasattr(Document, 'id') and hasattr(Document.id, 'name'):
+    Document.id.name = 'id'
+    Document.id.db_field = 'id'
 
 class RelationDocument(Document):
     """A Document that represents a relationship between two documents.

@@ -5,7 +5,7 @@ __pycache__/
 .devcontainer/devcontainer-lock.json
 notebooks/*.ipynb_checkpoints/
 verify.log
-verify_reactive.py
+/verify_*.py
 road-to-1.0.md
 design_discussion.md
 check_id.py

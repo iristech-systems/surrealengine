@@ -7,7 +7,7 @@ import urllib.parse
 import io
 import os
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Pattern, Type, Union, BinaryIO
+from typing import Any, Dict, List, Optional, Pattern, Union, BinaryIO
 
 from .base import Field
 from .scalar import StringField, NumberField
@@ -817,21 +817,22 @@ class UUIDField(Field):
         Args:
             value: The value to validate
 
-        Returns:
             The validated UUID value
 
         Raises:
             TypeError: If the value cannot be converted to a UUID
-            ValueError: If the UUID format is invalid
+            ValueError: If the UUID string is invalid
         """
         value = super().validate(value)
         if value is not None:
             if isinstance(value, uuid.UUID):
                 return value
-            try:
-                return uuid.UUID(str(value))
-            except (TypeError, ValueError) as e:
-                raise ValueError(f"Invalid UUID format for field '{self.name}': {str(e)}")
+            if isinstance(value, str):
+                try:
+                    return uuid.UUID(value)
+                except ValueError as e:
+                    raise ValueError(f"Invalid UUID string for field '{self.name}': {str(e)}")
+            raise TypeError(f"Expected UUID for field '{self.name}', got {type(value)}")
         return value
 
     def to_db(self, value: Any) -> Optional[str]:
@@ -846,12 +847,7 @@ class UUIDField(Field):
             The string representation for the database
         """
         if value is not None:
-            if isinstance(value, uuid.UUID):
-                return str(value)
-            try:
-                return str(uuid.UUID(str(value)))
-            except (TypeError, ValueError):
-                pass
+            return str(value)
         return value
 
     def from_db(self, value: Any) -> Optional[uuid.UUID]:
@@ -866,10 +862,102 @@ class UUIDField(Field):
             The Python UUID object
         """
         if value is not None:
-            try:
-                return uuid.UUID(str(value))
-            except (TypeError, ValueError):
-                pass
+            if isinstance(value, uuid.UUID):
+                return value
+            if isinstance(value, str):
+                try:
+                    return uuid.UUID(value)
+                except ValueError:
+                    pass
+        return value
+
+
+class VectorField(Field):
+    """Vector field type for storing embeddings and high-dimensional vectors.
+    
+    This field stores sequences of floating point numbers (like embeddings) 
+    and validates their dimension and type. It supports lists, tuples, and numpy arrays.
+
+    Attributes:
+        dimension (int): The expected dimension of the vector.
+        dtype (str): The element type ('F32' or 'F64'). Defaults to 'F32'.
+
+    Example::
+
+        class Embedding(Document):
+            vector = VectorField(dimension=768, dtype="F32")
+    """
+
+    def __init__(self, dimension: int, dtype: str = "F32", **kwargs: Any) -> None:
+        """Initialize a new VectorField.
+
+        Args:
+            dimension: The fixed dimension (length) of the vector.
+            dtype: The data type of elements ('F32' or 'F64').
+            **kwargs: Additional arguments to pass to the parent class.
+        """
+        self.dimension = dimension
+        self.dtype = dtype.upper()
+        if self.dtype not in ("F32", "F64"):
+            raise ValueError(f"Invalid dtype '{dtype}'. Must be 'F32' or 'F64'.")
+            
+        super().__init__(**kwargs)
+        # We accept list, tuple, or numpy array, but py_type for generic check is list
+        self.py_type = list
+
+    def validate(self, value: Any) -> Optional[List[float]]:
+        """Validate the vector value.
+
+        Args:
+            value: The value to validate (list, tuple, or numpy array).
+
+        Returns:
+            A list of floats.
+
+        Raises:
+            ValidationError: If dimension mismatch or invalid types.
+        """
+        value = super().validate(value)
+        if value is None:
+            return None
+
+        # Handle numpy arrays (duck typing to avoid hard dependency)
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+
+        if not isinstance(value, (list, tuple)):
+             raise TypeError(f"Expected list, tuple, or numpy array for field '{self.name}', got {type(value)}")
+
+        if len(value) != self.dimension:
+            raise ValueError(f"Vector dimension mismatch for field '{self.name}'. Expected {self.dimension}, got {len(value)}")
+
+        # Validate elements are numbers and convert to float
+        validated_vector = []
+        for i, item in enumerate(value):
+            if not isinstance(item, (int, float)):
+                 # Try converting if it's a numeric-like type (e.g. numpy scalar)
+                 try:
+                     item = float(item)
+                 except (TypeError, ValueError):
+                     raise ValueError(f"Vector element at index {i} must be a number, got {type(item)}")
+            else:
+                item = float(item)
+            validated_vector.append(item)
+
+        return validated_vector
+
+    def to_db(self, value: Any) -> Optional[List[float]]:
+        """Convert to database compatible format (List[float])."""
+        if value is None:
+            return None
+            
+        # Ensure it's a list of floats (validation already handled most, but let's be safe)
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+            
+        if isinstance(value, (list, tuple)):
+            return [float(x) for x in value]
+            
         return value
 
 

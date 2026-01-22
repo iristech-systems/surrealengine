@@ -6,7 +6,7 @@ Signal support is optional and requires the blinker library to be installed.
 """
 
 try:
-    from blinker import signal
+    from blinker import signal # type: ignore
     SIGNAL_SUPPORT = True
 except ImportError:
     SIGNAL_SUPPORT = False

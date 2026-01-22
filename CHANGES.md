@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.7.0] - 2026-01-22
+
 ### Added
+- **Vector Search Support**: Support for HNSW vector indexes via `Meta.indexes` (using `dimension`, `dist`, `m`, `efc`, `m0`, `lm` params).
+- **Full Text Search Support**: Support for FTS with BM25 and Highlighting via `Meta.indexes` (using `bm25` and `highlights` params).
+- **Events Support**: Support for `DEFINE EVENT` logic via `Meta.events` and the new `Event` class.
+- **Functions Support**: Added `@surreal_func` decorator to define SurrealDB stored functions directly from Python, with automatic `DEFINE FUNCTION` statement generation via `generate_function_statements()`.  Will be adding future .call() method onto QuerySet and Document objects to call the function.
+- **Top-level Exports**: `RecordIDField`, `Event`, `surreal_func`, and `SurrealFunction` are now exported from the top-level `surrealengine` package.
 - **Reactive Queries**: Added `ReactiveQuerySet` and `ReactiveDocument` to support reactive queries and documents.
 - **Embedded Documents**: Added `EmbeddedDocument` and `EmbeddedField` to support structured, nested objects with validation and schema generation.
   - Supports recursive nesting of `EmbeddedDocument`s.
@@ -23,15 +31,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Environment**: Added explicit `Python 3.12` support and `Rust` toolchain to `devcontainer` setup for improved development experience and performance (maturin builds).
 
 ### Fixed
+- **RecordID Compatibility**: Fixed `RecordIDField.validate` to correctly access `table_name` on `RecordID` objects, resolving a compatibility issue with the latest `surrealdb` SDK.
 - **Transaction Pooling**: Fixed critical bug in `SurrealEngineAsyncConnection.transaction` where `use_pool=True` caused operations to interpret `BEGIN`, queries, and `COMMIT` on different connections. Implemented connection pinning using `ContextVar` to ensure transactional integrity.
 - **Aggregation/View Parsing**: Fixed `AggregationPipeline` and `MaterializedView` failing to parse complex expressions (e.g., function calls in `GROUP BY`) or string literals containing keywords. Implemented robust parser-aware field splitting.
 - **Docstrings**: Synchronized docstrings in `connection.py` and `document.py` to match the current v0.5.x feature set and behavior.
 - **Sync API Context**: Fixed `RuntimeError` and `AttributeError` when using `Document` methods in synchronous contexts. Connections now correctly track their context (Sync/Async).
 - **Coroutine Leaks**: Fixed issue where `objects.get()`, `create_table()`, and other descriptor methods would return unawaited coroutines in synchronous mode. They now correctly execute synchronously when appropriate.
+- **ID Field Access**: Fixed issue where `document.id` returned `None` after `save()` in sync mode. Root causes: (1) `to_db()` was sending `None` for optional fields to SCHEMAFULL tables causing database errors, (2) schema generation wasn't wrapping non-required fields in `option<type>`, and (3) `Document.id` field descriptor didn't have its `name` attribute set.
+- **Rust Accelerator Debugging**: Improved error reporting in `surrealengine_accelerator` to provide detailed messages when CBOR parsing fails or when the database returns an error status, instead of a generic parsing error.
+- **Dependencies**: Added `cbor2` and `pyarrow` to `pyproject.toml` as they are required for Zero-Copy features.
 - **Devcontainer**: Fixed issues with stale code loading and volume mounting in Docker development environments.
+- **QuerySet Update**: Fixed `QuerySet.update()` returning duplicate/bogus objects by correctly handling the database response structure (list of dicts vs nested list).
+- **Query Filter Logic**: Fixed critical regression in `BaseQuerySet.filter` where complex queries (using `Q` objects or `QueryExpression`) were not being correctly applied to the queryset.
+- **Async Awaitability**: Fixed "object is not awaitable" errors in `schemaless.py` event handlers and `ReactiveQuerySet`, ensuring consistent async behavior.
+- **Connection Imports**: Fixed `ImportError` for optional dependencies (`websockets`, `cbor2`) in `raw_connection.py`, improving robustness in minimal environments.
+- **Relation Updates**: Fixed `AttributeError` in `relation_update.py` when determining the active client.
+- **Bulk Safe Access**: Fixed unsafe `QuerySet` instantiation in `descriptor.py` by enforcing owner existence checks.
+
+
 
 ### Changed
 - **Refactoring**: `QuerySetDescriptor` and `Document` internals refactored to support the Polyglot pattern, reducing code duplication and improving maintainability.
+
+### Maintenance
+- **Code Quality**: Applied comprehensive linting fixes across the codebase (`src/surrealengine`), including import sorting, type hint corrections (`materialized_view.py`), and removal of redundant code (`document.py`).
+- **Configuration**: JSON config and benchmark scripts (`benchmark_zero_copy.py`) are now explicitly excluded from strict linting in `pyproject.toml`.
 
 ## [0.6.0] - 2025-12-30
 

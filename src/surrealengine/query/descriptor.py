@@ -1,5 +1,7 @@
-from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
-from ..connection import ConnectionRegistry
+from typing import Any, List, Optional, Type, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..reactive import ReactiveQuerySet
 from ..context import get_active_connection
 from .base import QuerySet
 from ..pagination import PaginationResult
@@ -74,6 +76,8 @@ class QuerySetDescriptor:
         # Get the connection (implicit context or default async)
         # Note: We default to async_mode=True if no context is found, preserving backward compatibility
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         
         # Apply query object if provided
@@ -116,6 +120,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         
         # Apply query object if provided
@@ -156,6 +162,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.get(**kwargs)
 
@@ -176,6 +184,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.get_sync(**kwargs)
 
@@ -198,6 +208,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.update(returning=returning, **kwargs)
 
@@ -216,6 +228,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.update_sync(returning=returning, **kwargs)
 
@@ -232,6 +246,10 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.delete()
 
@@ -245,6 +263,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.delete_sync()
 
@@ -262,6 +282,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.filter(query=query, **kwargs)
 
@@ -279,6 +301,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.filter(query=query, **kwargs)
 
@@ -293,6 +317,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.limit(value)
 
@@ -307,6 +333,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.limit(value)
 
@@ -323,6 +351,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.traverse(path, max_depth, unique)
 
@@ -339,6 +369,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.traverse(path, max_depth, unique)
 
@@ -352,6 +384,8 @@ class QuerySetDescriptor:
             A QuerySet with the traversal appended.
         """
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.out(target)
 
@@ -365,6 +399,8 @@ class QuerySetDescriptor:
             A QuerySet with the traversal appended.
         """
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.out(target)
 
@@ -378,6 +414,8 @@ class QuerySetDescriptor:
             A QuerySet with the traversal appended.
         """
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.in_(target)
 
@@ -391,6 +429,8 @@ class QuerySetDescriptor:
             A QuerySet with the traversal appended.
         """
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.in_(target)
 
@@ -404,6 +444,8 @@ class QuerySetDescriptor:
             A QuerySet with the traversal appended.
         """
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.both(target)
 
@@ -417,6 +459,8 @@ class QuerySetDescriptor:
             A QuerySet with the traversal appended.
         """
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.both(target)
 
@@ -433,6 +477,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.shortest_path(src, dst, edge)
 
@@ -449,6 +495,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.shortest_path(src, dst, edge)
 
@@ -463,6 +511,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.with_index(index)
 
@@ -477,6 +527,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.with_index(index)
 
@@ -488,6 +540,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.no_index()
 
@@ -499,6 +553,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.no_index()
 
@@ -511,10 +567,12 @@ class QuerySetDescriptor:
             An async generator yielding LiveEvent objects
         """
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.live(*args, **kwargs)
 
-    async def reactive(self) -> 'ReactiveQuerySet':
+    async def reactive(self) -> "ReactiveQuerySet":
         """
         Return a ReactiveQuerySet that stays in sync with the database.
 
@@ -526,6 +584,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return await queryset.reactive()
 
@@ -541,6 +601,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.start(value)
 
@@ -555,6 +617,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.start(value)
 
@@ -570,6 +634,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.order_by(field, direction)
 
@@ -585,6 +651,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.order_by(field, direction)
 
@@ -601,6 +669,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.group_by(*fields)
 
@@ -617,6 +687,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.group_by(*fields)
 
@@ -633,6 +705,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.split(*fields)
 
@@ -649,6 +723,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.split(*fields)
 
@@ -665,6 +741,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.fetch(*fields)
 
@@ -681,6 +759,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.fetch(*fields)
 
@@ -690,6 +770,8 @@ class QuerySetDescriptor:
         """
         # Use existing connection if set (e.g. via qs.connection = conn hack)
         connection = self.connection or self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return await queryset.to_arrow()
 
@@ -699,6 +781,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return await queryset.to_polars()
 
@@ -714,6 +798,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return await queryset.first()
 
@@ -728,6 +814,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.first_sync()
 
@@ -743,6 +831,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.page(number, size)
 
@@ -758,6 +848,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.page(number, size)
 
@@ -777,6 +869,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         # Return the paginated results
         return await queryset.paginate(page, per_page)
@@ -797,6 +891,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         # Return the paginated results
         return queryset.paginate_sync(page, per_page)
@@ -813,6 +909,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.aggregate()
 
@@ -828,6 +926,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.aggregate()
 
@@ -852,6 +952,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return await queryset.join(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
 
@@ -876,6 +978,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.join_sync(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
 
@@ -893,6 +997,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.get_many(ids)
 
@@ -907,6 +1013,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.get_many(ids)
 
@@ -927,6 +1035,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.get_range(start_id, end_id, inclusive)
 
@@ -944,6 +1054,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.get_range(start_id, end_id, inclusive)
 
@@ -966,6 +1078,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return await queryset.bulk_create(documents, batch_size, validate, return_documents)
 
@@ -985,6 +1099,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.bulk_create_sync(documents, batch_size, validate, return_documents)
 
@@ -996,6 +1112,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return await queryset.all()
 
@@ -1007,6 +1125,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.all_sync()
 
@@ -1018,6 +1138,8 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return await queryset.count()
 
@@ -1029,5 +1151,7 @@ class QuerySetDescriptor:
         """
         # Get the connection (implicit context or default sync)
         connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.count_sync()

@@ -13,7 +13,9 @@ Functions:
 """
 import inspect
 import importlib
-from typing import Any, Dict, List, Optional, Type, Union, Set
+from typing import Any, Dict, List, Optional, Type
+from .functions import get_registered_functions
+
 
 from .document import Document
 
@@ -52,9 +54,11 @@ async def create_tables_from_module(module_name: str, connection: Optional[Any] 
     """
     document_classes = get_document_classes(module_name)
 
-    for doc_class in document_classes:
-        await doc_class.create_table(connection=connection, schemafull=schemafull)
+    document_classes = get_document_classes(module_name)
 
+    for doc_class in document_classes:
+        # Cast to Any to avoid static analysis issues with dynamic attributes and creates_table
+        await getattr(doc_class, 'create_table')(connection=connection, schemafull=schemafull)
 
 def create_tables_from_module_sync(module_name: str, connection: Optional[Any] = None,
                                   schemafull: bool = True) -> None:
@@ -68,7 +72,7 @@ def create_tables_from_module_sync(module_name: str, connection: Optional[Any] =
     document_classes = get_document_classes(module_name)
 
     for doc_class in document_classes:
-        doc_class.create_table_sync(connection=connection, schemafull=schemafull)
+        getattr(doc_class, 'create_table_sync')(connection=connection, schemafull=schemafull)
 
 
 def generate_schema_statements(document_class: Type[Document], schemafull: bool = True) -> List[str]:
@@ -85,7 +89,10 @@ def generate_schema_statements(document_class: Type[Document], schemafull: bool 
         A list of SurrealDB schema statements
     """
     statements = []
-    collection_name = document_class._get_collection_name()
+    
+    # Cast to Any for meta access
+    doc_cls_any: Any = document_class
+    collection_name = doc_cls_any._get_collection_name()
 
     # Generate DEFINE TABLE statement
     schema_type = "SCHEMAFULL" if schemafull else "SCHEMALESS"
@@ -100,11 +107,18 @@ def generate_schema_statements(document_class: Type[Document], schemafull: bool 
 
     statements.append(table_stmt + ";")
 
+    # Generate DEFINE EVENT statements
+    events = doc_cls_any._meta.get('events', [])
+    if events:
+        for event in events:
+            if hasattr(event, 'to_sql'):
+                statements.append(event.to_sql(collection_name) + ";")
+
     
     # Generate DEFINE FIELD statements if schemafull or if field is marked with define_schema=True
-    for field_name, field in document_class._fields.items():
+    for field_name, field in doc_cls_any._fields.items():
         # Skip id field as it's handled by SurrealDB
-        if field_name == document_class._meta.get('id_field', 'id'):
+        if field_name == doc_cls_any._meta.get('id_field', 'id'):
             continue
 
         # Only define fields if schemafull or if field is explicitly marked for schema definition
@@ -116,8 +130,10 @@ def generate_schema_statements(document_class: Type[Document], schemafull: bool 
 def _generate_field_statements(table: str, current_path: str, field: Any, document_class: Type, statements: List[str]) -> None:
     """Recursively generate DEFINE FIELD statements."""
     
+    # Cast document_class to Any to access _get_field_type_for_surreal
+    doc_cls_any: Any = document_class
     # 1. Define the field itself
-    field_type = document_class._get_field_type_for_surreal(field)
+    field_type = doc_cls_any._get_field_type_for_surreal(field)
     
     # Handle optional fields (if they wrap another type, the base logic usually handles the type name)
     # Checks for specific complex types to ensure proper SurrealQL syntax
@@ -140,9 +156,10 @@ def _generate_field_statements(table: str, current_path: str, field: Any, docume
 
     if StringField and isinstance(field, StringField):
         if getattr(field, 'min_length', None) is not None:
-            exprs.append(f"string::len($value) >= {int(field.min_length)}")
+            # Cast to int to satisfy type checker
+            exprs.append(f"string::len($value) >= {int(field.min_length)}") # type: ignore
         if getattr(field, 'max_length', None) is not None:
-            exprs.append(f"string::len($value) <= {int(field.max_length)}")
+            exprs.append(f"string::len($value) <= {int(field.max_length)}") # type: ignore
         if getattr(field, 'regex_pattern', None):
             from .surrealql import escape_literal
             pat = field.regex_pattern
@@ -234,3 +251,11 @@ def generate_schema_statements_from_module(module_name: str, schemafull: bool = 
         schema_statements[class_name] = statements
 
     return schema_statements
+
+
+def generate_function_statements() -> List[str]:
+    """Generate DEFINE FUNCTION statements for all registered functions."""
+    statements = []
+    for func in get_registered_functions():
+        statements.append(func.to_sql())
+    return statements

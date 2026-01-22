@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import asyncio
 from src.surrealengine import (
     Document, StringField, IntField, FloatField, ListField, 
-    ReferenceField, RelationField, create_connection
+    ReferenceField, create_connection
 )
 
 # Define document models with relationships
@@ -72,7 +72,7 @@ async def main():
             await Author.create_table()
             await Category.create_table()
             await Book.create_table()
-        except Exception as e:
+        except Exception:
             # Tables might already exist
             pass
         

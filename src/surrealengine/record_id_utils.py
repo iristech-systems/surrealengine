@@ -5,7 +5,7 @@ including string, URL-encoded, and complex ID types.
 """
 import re
 import urllib.parse
-from typing import Any, Union, Optional, Tuple
+from typing import Any, Optional, Tuple
 from surrealdb import RecordID
 
 
@@ -194,7 +194,8 @@ class RecordIdUtils:
         if not normalized or not cls.is_valid_record_id(normalized):
             return None, None
             
-        return normalized.split(':', 1)
+        parts = normalized.split(':', 1)
+        return (parts[0], parts[1])
     
     @classmethod
     def build_record_id(cls, table: str, id_value: Any) -> str:
@@ -236,7 +237,7 @@ class RecordIdUtils:
             >>> RecordIdUtils.is_short_id("user:123")
             False
         """
-        return isinstance(value, str) and ':' not in value and value
+        return bool(isinstance(value, str) and ':' not in value and value)
     
     @classmethod
     def format_for_query(cls, record_id: str, quote: bool = False) -> str:
