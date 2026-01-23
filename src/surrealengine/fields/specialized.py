@@ -948,6 +948,12 @@ class VectorField(Field):
 
     def to_db(self, value: Any) -> Optional[List[float]]:
         """Convert to database compatible format (List[float])."""
+        return self.validate(value)
+        
+    def get_surreal_type(self) -> str:
+        """Return the SurrealQL type name for this field."""
+        # Vectors are stored as arrays of numbers/floats
+        return f"array<float>"
         if value is None:
             return None
             

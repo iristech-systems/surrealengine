@@ -97,8 +97,9 @@ class RelationQuerySet:
         result = await self.connection.client.query(query)
 
         # Return the relation record
+        # Return the relation record
         if result and result[0]:
-            return result[0]
+            return result[0][0] if isinstance(result[0], list) and result[0] else result[0]
 
         return None
 
@@ -169,8 +170,9 @@ class RelationQuerySet:
         result = self.connection.client.query(query)
 
         # Return the relation record
+        # Return the relation record
         if result and result[0]:
-            return result[0]
+            return result[0][0] if isinstance(result[0], list) and result[0] else result[0]
 
         return None
 

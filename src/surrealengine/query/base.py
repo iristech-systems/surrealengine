@@ -112,22 +112,67 @@ class QuerySet(BaseQuerySet):
         return self._append_traversal("<->", target)
 
     def _append_traversal(self, direction: str, target: Union[str, Type, None]) -> 'QuerySet':
-        """Helper to append a graph traversal step."""
+        """Helper to append a graph traversal step.
+        
+        For SurrealQL, graph traversal syntax is:
+        - ->edge->node (outbound: traverse through edge to destination node)
+        - <-edge<-node (inbound: traverse through edge to source node)
+        - <->edge<->node (both directions)
+        
+        When a string is given, it's treated as an edge name - we append ->edge->* 
+        to traverse through the edge to any node type (enables chaining).
+        When a model class is given, we use its collection name as destination.
+        When None is given, we use ? as wildcard.
+        
+        Example chains:
+        - .out("follows") -> "->follows->?"
+        - .out("follows").out("follows") -> "->follows->?->follows->?"  
+        - .out("follows").out(User) -> "->follows->?->users"
+        """
         clone = self._clone()
         
         current_path = getattr(clone, "_traversal_path", "") or ""
         
         if target is None:
-            step = "?"
+            # Wildcard traversal
+            new_step = f"{direction}?"
         elif isinstance(target, str):
-            step = target
+            # String is treated as an edge name
+            # Append ->edge->? to traverse through edge to any node
+            # This enables proper chaining of traversals
+            new_step = f"{direction}{target}{direction}?"
         elif hasattr(target, '_get_collection_name'):
+            # Model class - get its collection name as destination
             step = target._get_collection_name()
+            # Check if current path ends with ->? from a previous edge traversal
+            # If so, replace the ? with the actual table name
+            if current_path.endswith('->?'):
+                clone._traversal_path = current_path[:-1] + step
+                clone.document_class = target
+                clone._traversal_target_is_model = True
+                return clone
+            elif current_path.endswith('<-?'):
+                clone._traversal_path = current_path[:-1] + step
+                clone.document_class = target
+                clone._traversal_target_is_model = True
+                return clone
+            elif current_path.endswith('<->?'):
+                clone._traversal_path = current_path[:-1] + step
+                clone.document_class = target
+                clone._traversal_target_is_model = True
+                return clone
+            new_step = f"{direction}{step}"
         else:
             step = str(target)
+            new_step = f"{direction}{step}"
             
-        new_step = f"{direction}{step}"
         clone._traversal_path = current_path + new_step
+        
+        # If target is a model class, update the document class for hydration
+        if hasattr(target, '_get_collection_name'):
+             clone.document_class = target
+             clone._traversal_target_is_model = True
+
         return clone
 
     def shortest_path(self, src: Union[str, RecordID], dst: Union[str, RecordID], edge: str) -> 'QuerySet':
@@ -645,7 +690,8 @@ class QuerySet(BaseQuerySet):
             else:
                 traversal_to_use = traversal.strip()
             # Must select ID to allow mapping results back to objects/identifying rows
-            select_keyword = f"SELECT id, {traversal_to_use} AS traversed"
+            # Use .* to force fetching all fields of the target node
+            select_keyword = f"SELECT id, {traversal_to_use}.* AS traversed"
         elif self.select_fields:
             select_keyword = f"SELECT {', '.join(self.select_fields)}"
         else:
@@ -666,6 +712,15 @@ class QuerySet(BaseQuerySet):
 
         # Add other clauses from _build_clauses
         clauses = self._build_clauses()
+
+        # Auto-fetch traversal alias ensuring hydration
+        if traversal:
+            fetch_clause = clauses.get('FETCH')
+            if fetch_clause:
+                if 'traversed' not in fetch_clause:
+                    clauses['FETCH'] = f"{fetch_clause}, traversed"
+            else:
+                clauses['FETCH'] = "FETCH traversed"
 
 
         # Note: GROUP BY id for traversal deduplication can change result shapes in SurrealDB.
@@ -789,8 +844,21 @@ class QuerySet(BaseQuerySet):
             rows = [rows]
 
         # If this is a traversal query, return raw rows (shape may not match document schema)
+        # If this is a traversal query, return raw rows unless we're targeting a model
         if getattr(self, "_traversal_path", None):
-            return rows
+            if not getattr(self, "_traversal_target_is_model", False):
+                return rows
+            
+            # Extract and flatten traversal results
+            traversed_rows = []
+            for row in rows:
+                if 'traversed' in row:
+                    val = row['traversed']
+                    if isinstance(val, list):
+                        traversed_rows.extend(val)
+                    elif val:
+                         traversed_rows.append(val)
+            rows = traversed_rows
 
         is_partial = self.select_fields is not None
         processed_results = [self.document_class.from_db(doc, dereference=dereference, partial=is_partial) for doc in rows]
@@ -810,6 +878,7 @@ class QuerySet(BaseQuerySet):
             List of document instances
         """
         query = self._build_query()
+        print(f"DEBUG QUERY: {query}")
         results = self.connection.client.query(query)
 
         if not results:
@@ -833,8 +902,21 @@ class QuerySet(BaseQuerySet):
             rows = [rows]
 
         # If this is a traversal query, return raw rows (shape may not match document schema)
+        # If this is a traversal query, return raw rows unless we're targeting a model
         if getattr(self, "_traversal_path", None):
-            return rows
+            if not getattr(self, "_traversal_target_is_model", False):
+                return rows
+            
+            # Extract and flatten traversal results
+            traversed_rows = []
+            for row in rows:
+                if 'traversed' in row:
+                    val = row['traversed']
+                    if isinstance(val, list):
+                        traversed_rows.extend(val)
+                    elif val:
+                         traversed_rows.append(val)
+            rows = traversed_rows
 
         is_partial = self.select_fields is not None
         processed_results = [self.document_class.from_db(doc, dereference=dereference, partial=is_partial) for doc in rows]

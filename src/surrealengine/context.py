@@ -15,7 +15,7 @@ from .connection import ConnectionRegistry
 _current_connection: ContextVar[Optional[Any]] = ContextVar("current_connection", default=None)
 
 
-def get_active_connection(async_mode: bool = True) -> Any:
+def get_active_connection(async_mode: Optional[bool] = True) -> Any:
     """Get the currently active connection.
 
     Precedence:
@@ -23,7 +23,10 @@ def get_active_connection(async_mode: bool = True) -> Any:
     2. Default global connection from Registry.
 
     Args:
-        async_mode: Preferred mode if falling back to default (default: True).
+        async_mode: Preferred mode. 
+                    If True: default async. 
+                    If False: default sync.
+                    If None: try async, fallback to sync.
 
     Returns:
         The active connection object.
@@ -34,6 +37,13 @@ def get_active_connection(async_mode: bool = True) -> Any:
         return conn
 
     # 2. Fallback to Registry
+    if async_mode is None:
+        # Try async, then sync
+        try:
+            return ConnectionRegistry.get_default_connection(async_mode=True)
+        except RuntimeError:
+            return ConnectionRegistry.get_default_connection(async_mode=False)
+            
     return ConnectionRegistry.get_default_connection(async_mode=async_mode)
 
 

@@ -66,6 +66,18 @@ class TrackedList(List[T], TrackedObject):
         super().reverse()
         self._mark_changed()
 
+    def __deepcopy__(self, memo: Dict[int, Any]) -> 'TrackedList':
+        from copy import deepcopy
+        # Create a new, detached instance
+        new_list = type(self)(iterable=[], parent=None, field_name=None)
+        memo[id(self)] = new_list
+        
+        # Manually copy items
+        for item in self:
+            super(TrackedList, new_list).append(deepcopy(item, memo))
+            
+        return new_list
+
 class TrackedDict(Dict[K, V], TrackedObject):
     """A dictionary that notifies its parent of changes."""
 
@@ -108,3 +120,16 @@ class TrackedDict(Dict[K, V], TrackedObject):
         if key not in self:
             self._mark_changed()
         return super().setdefault(key, default)
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> 'TrackedDict':
+        from copy import deepcopy
+        # Create a new, detached instance
+        new_dict = type(self)(parent=None, field_name=None)
+        memo[id(self)] = new_dict
+        
+        # Manually copy items to avoid triggering __setitem__ tracking on the new instance
+        for k, v in self.items():
+            super(TrackedDict, new_dict).__setitem__(deepcopy(k, memo), deepcopy(v, memo))
+            
+        return new_dict
+

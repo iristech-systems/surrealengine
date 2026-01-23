@@ -476,16 +476,22 @@ class MaterializedView:
         # Combine the new SELECT part with the rest of the query
         return f"{new_select_part} {rest_part}"
 
-    async def create(self, connection=None, overwrite: bool = False, if_not_exists: bool = False) -> None:
+    def create(self, connection=None, overwrite: bool = False, if_not_exists: bool = False) -> None:
         """Create the materialized view in the database.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: The database connection to use (optional)
             overwrite: Whether to overwrite the table if it exists (default: False)
             if_not_exists: Whether to create the table only if it does not exist (default: False)
         """
-        connection = connection or ConnectionRegistry.get_default_connection()
+        connection = connection or ConnectionRegistry.get_default_connection(async_mode=None)
         
+        if not connection.is_async():
+            return self.create_sync(connection, overwrite, if_not_exists)
+            
         modifier = ""
         if overwrite:
             modifier = "OVERWRITE "
@@ -496,11 +502,8 @@ class MaterializedView:
         query_str = self._build_custom_query()
         create_query = f"DEFINE TABLE {modifier}{self.name} TYPE NORMAL AS {query_str}"
 
-        # Note: SurrealDB materialized views are automatically updated when underlying data changes
-        # The refresh_interval parameter is ignored as SurrealDB doesn't support the EVERY clause
-
         # Execute the query
-        await connection.client.query(create_query)
+        return connection.client.query(create_query)
 
     def create_sync(self, connection=None, overwrite: bool = False, if_not_exists: bool = False) -> None:
         """Create the materialized view in the database synchronously.
@@ -525,20 +528,25 @@ class MaterializedView:
         # Execute the query
         connection.client.query(create_query)
 
-    async def drop(self, connection=None) -> None:
+    def drop(self, connection=None) -> None:
         """Drop the materialized view from the database.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: The database connection to use (optional)
         """
-        connection = connection or ConnectionRegistry.get_default_connection()
+        connection = connection or ConnectionRegistry.get_default_connection(async_mode=None)
+        
+        if not connection.is_async():
+            return self.drop_sync(connection)
 
         # Build the query for dropping the materialized view
         drop_query = f"REMOVE TABLE {self.name}"
 
-
         # Execute the query
-        await connection.client.query(drop_query)
+        return connection.client.query(drop_query)
 
     def drop_sync(self, connection=None) -> None:
         """Drop the materialized view from the database synchronously.
@@ -555,7 +563,7 @@ class MaterializedView:
         # Execute the query
         connection.client.query(drop_query)
 
-    async def refresh(self, connection=None) -> None:
+    def refresh(self, connection=None) -> None:
         """Manually refresh the materialized view.
 
         DEPRECATED: SurrealDB views derived from TABLES are live and do not need manual refresh.
@@ -594,8 +602,11 @@ class MaterializedView:
         connection = ConnectionRegistry.get_default_connection()
         return QuerySet(view_class, connection)
 
-    async def execute_raw_query(self, connection=None):
+    def execute_raw_query(self, connection=None):
         """Execute a raw query against the materialized view.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         This is a workaround for the "no decoder for tag" error that can occur
         when querying materialized views using the objects property.
@@ -604,11 +615,15 @@ class MaterializedView:
             connection: The database connection to use (optional)
 
         Returns:
-            The query results
+            The query results (or awaitable)
         """
-        connection = connection or ConnectionRegistry.get_default_connection()
+        connection = connection or ConnectionRegistry.get_default_connection(async_mode=None)
+        
+        if not connection.is_async():
+            return self.execute_raw_query_sync(connection)
+            
         query = f"SELECT * FROM {self.name}"
-        return await connection.client.query(query)
+        return connection.client.query(query)
 
     def execute_raw_query_sync(self, connection=None):
         """Execute a raw query against the materialized view synchronously.

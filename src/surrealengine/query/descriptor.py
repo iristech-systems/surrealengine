@@ -74,8 +74,8 @@ class QuerySetDescriptor:
             List of matching documents (or awaitable resolving to it)
         """
         # Get the connection (implicit context or default async)
-        # Note: We default to async_mode=True if no context is found, preserving backward compatibility
-        connection = self.connection or get_active_connection(async_mode=True)
+        # Note: We use async_mode=None to allow fallback to sync connection if only sync is available
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -97,7 +97,9 @@ class QuerySetDescriptor:
             if start is not None:
                 queryset = queryset.start(start)
 
-        # Return results using Polyglot .all()
+        # Return results using Polyglot dispatch
+        if not connection.is_async():
+            return queryset.all_sync()
         return queryset.all()
 
     def call_sync(self, query=None, limit: Optional[int] = None, start: Optional[int] = None,
@@ -161,10 +163,13 @@ class QuerySetDescriptor:
             MultipleObjectsReturned: If multiple matching documents are found
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
+        
+        if not connection.is_async():
+            return queryset.get_sync(**kwargs)
         return queryset.get(**kwargs)
 
     def get_sync(self, **kwargs: Any) -> Any:
@@ -207,10 +212,13 @@ class QuerySetDescriptor:
             List of updated documents (or awaitable resolving to it)
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
+        
+        if not connection.is_async():
+            return queryset.update_sync(returning=returning, **kwargs)
         return queryset.update(returning=returning, **kwargs)
 
     def update_sync(self, returning: Optional[str] = None, **kwargs: Any) -> List[Any]:
@@ -245,12 +253,15 @@ class QuerySetDescriptor:
             Number of deleted documents (or awaitable resolving to it)
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
+        
+        if not connection.is_async():
+            return queryset.delete_sync()
         return queryset.delete()
 
     def delete_sync(self) -> int:
@@ -281,7 +292,7 @@ class QuerySetDescriptor:
             A QuerySet with the given filters
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -316,7 +327,7 @@ class QuerySetDescriptor:
             A QuerySet with the limit applied
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -350,7 +361,7 @@ class QuerySetDescriptor:
             A QuerySet configured with traversal.
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -375,7 +386,7 @@ class QuerySetDescriptor:
         return queryset.traverse(path, max_depth, unique)
 
     def out(self, target: Union[str, Type, None] = None) -> QuerySet:
-        """Traverse outgoing edges or nodes using the default async connection.
+        """Traverse outgoing edges or nodes using the default connection.
         
         Args:
             target: The relation or document class to traverse to, or a string table name.
@@ -383,7 +394,7 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the traversal appended.
         """
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -405,7 +416,7 @@ class QuerySetDescriptor:
         return queryset.out(target)
 
     def in_(self, target: Union[str, Type, None] = None) -> QuerySet:
-        """Traverse incoming edges or nodes using the default async connection.
+        """Traverse incoming edges or nodes using the default connection.
         
         Args:
             target: The relation or document class to traverse from, or a string table name.
@@ -413,7 +424,7 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the traversal appended.
         """
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -435,7 +446,7 @@ class QuerySetDescriptor:
         return queryset.in_(target)
 
     def both(self, target: Union[str, Type, None] = None) -> QuerySet:
-        """Traverse both incoming and outgoing edges or nodes using the default async connection.
+        """Traverse both incoming and outgoing edges or nodes using the default connection.
         
         Args:
             target: The relation or document class to traverse, or a string table name.
@@ -443,7 +454,7 @@ class QuerySetDescriptor:
         Returns:
             A QuerySet with the traversal appended.
         """
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -476,7 +487,7 @@ class QuerySetDescriptor:
             A QuerySet configured for shortest path (if supported).
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -510,7 +521,7 @@ class QuerySetDescriptor:
             A QuerySet with the index applied
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -539,7 +550,7 @@ class QuerySetDescriptor:
             A QuerySet with the NOINDEX clause applied
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -583,7 +594,7 @@ class QuerySetDescriptor:
             A new ReactiveQuerySet instance.
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -600,7 +611,7 @@ class QuerySetDescriptor:
             A QuerySet with the start applied
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -633,7 +644,7 @@ class QuerySetDescriptor:
             A QuerySet with the order by applied
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -668,7 +679,7 @@ class QuerySetDescriptor:
             A QuerySet with the group by applied
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -704,7 +715,7 @@ class QuerySetDescriptor:
             A QuerySet with the split applied
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -740,7 +751,7 @@ class QuerySetDescriptor:
             A QuerySet with the fetch applied
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -769,7 +780,7 @@ class QuerySetDescriptor:
         Execute the query and return the results as a PyArrow Table.
         """
         # Use existing connection if set (e.g. via qs.connection = conn hack)
-        connection = self.connection or self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -780,15 +791,18 @@ class QuerySetDescriptor:
         Execute the query and return the results as a Polars DataFrame.
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return await queryset.to_polars()
 
 
-    async def first(self) -> Any:
-        """Get the first result from the query asynchronously.
+    def first(self) -> Any:
+        """Get the first result from the query.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Returns:
             The first matching document or None if no matches
@@ -797,11 +811,14 @@ class QuerySetDescriptor:
             DoesNotExist: If no matching document is found
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        return await queryset.first()
+        
+        if not connection.is_async():
+            return queryset.first_sync()
+        return queryset.first()
 
     def first_sync(self) -> Any:
         """Get the first result from the query synchronously.
@@ -1059,12 +1076,12 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.get_range(start_id, end_id, inclusive)
 
-    async def bulk_create(self, documents: List[Any], batch_size: int = 1000,
-                         validate: bool = True, return_documents: bool = True) -> Union[List[Any], int]:
-        """Create multiple documents in a single operation asynchronously.
+    def bulk_create(self, documents: List[Any], batch_size: int = 1000,
+                         validate: bool = True, return_documents: bool = True) -> Union[List[Any], int, Any]:
+        """Create multiple documents in a single operation.
 
-        This method creates multiple documents in a single operation, processing
-        them in batches for better performance.
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             documents: List of Document instances to create
@@ -1073,15 +1090,17 @@ class QuerySetDescriptor:
             return_documents: Whether to return created documents (default: True)
 
         Returns:
-            List of created documents with their IDs set if return_documents=True,
-            otherwise returns the count of created documents
+            List of created documents (or count) - or awaitable resolving to it
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        return await queryset.bulk_create(documents, batch_size, validate, return_documents)
+        
+        if not connection.is_async():
+            return queryset.bulk_create_sync(documents, batch_size, validate, return_documents)
+        return queryset.bulk_create(documents, batch_size, validate, return_documents)
 
     def bulk_create_sync(self, documents: List[Any], batch_size: int = 1000,
                         validate: bool = True, return_documents: bool = True) -> Union[List[Any], int]:
@@ -1104,18 +1123,24 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.bulk_create_sync(documents, batch_size, validate, return_documents)
 
-    async def all(self) -> List[Any]:
-        """Execute the query and return all results asynchronously.
+    def all(self) -> Union[List[Any], Any]:
+        """Execute the query and return all results.
         
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
+
         Returns:
-            List of all documents matching any implicit query
+            List of all documents matching any implicit query (or awaitable)
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        return await queryset.all()
+        
+        if not connection.is_async():
+            return queryset.all_sync()
+        return queryset.all()
 
     def all_sync(self) -> List[Any]:
         """Execute the query and return all results synchronously.
@@ -1130,18 +1155,24 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.all_sync()
 
-    async def count(self) -> int:
-        """Count all documents asynchronously.
+    def count(self) -> Union[int, Any]:
+        """Count all documents.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
         
         Returns:
-            Number of documents
+            Number of documents (or awaitable)
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        return await queryset.count()
+        
+        if not connection.is_async():
+            return queryset.count_sync()
+        return queryset.count()
 
     def count_sync(self) -> int:
         """Count all documents synchronously.

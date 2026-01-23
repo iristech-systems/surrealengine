@@ -25,32 +25,66 @@ class SurrealFunction:
 # Global registry
 _function_registry: List[SurrealFunction] = []
 
-def surreal_func(name: str, args: List[Tuple[str, str]], return_type: str, permissions: str = "FULL", body: Optional[str] = None):
+def surreal_func(name: str, args: Optional[List[Tuple[str, str]]] = None, return_type: Optional[str] = None, permissions: str = "FULL", body: Optional[str] = None):
     """
     Decorator to define a SurrealDB function.
 
     Args:
         name: The name of the function in SurrealDB (e.g., "fn::greet")
-        args: List of (argument_name, type) tuples (e.g., [("name", "string")])
-        return_type: The return type of the function (e.g., "string")
+        args: List of (argument_name, type) tuples. If None, inferred from type hints.
+        return_type: The return type of the function. If None, inferred from type hints.
         permissions: Permissions for the function (default: "FULL")
-        body: The JavaScript body of the function. If None, we might eventually support transpilation, 
-              but for now explicit body is required or we expect the user to provide it.
-              Actually, let's enforce body for v1.
+        body: The JavaScript body of the function. If None, the function's docstring is used.
     """
     def decorator(func):
-        # If body is not provided, maybe we can read docstring? 
-        # For now, let's require explicit body or we can check docstring if body is None
+        nonlocal args, return_type, body
+
+        # Infer args and return_type from type hints if not provided
+        if args is None or return_type is None:
+            import inspect
+            sig = inspect.signature(func)
+            
+            # Helper to map python types to surreal types
+            def map_type(py_type):
+                if py_type is str: return "string"
+                if py_type is int: return "int"
+                if py_type is float: return "float"
+                if py_type is bool: return "bool"
+                if py_type is list or getattr(py_type, '__origin__', None) is list: return "array"
+                if py_type is dict or getattr(py_type, '__origin__', None) is dict: return "object"
+                # Fallback for now
+                return "any"
+
+            if args is None:
+                args = []
+                for param_name, param in sig.parameters.items():
+                    if param.annotation != inspect.Parameter.empty:
+                        s_type = map_type(param.annotation)
+                        args.append((param_name, s_type))
+                    else:
+                        args.append((param_name, "any"))
+
+            if return_type is None:
+                if sig.return_annotation != inspect.Signature.empty:
+                    if sig.return_annotation is None:
+                        return_type = "null" # or use option<none> behavior?
+                    else:
+                        return_type = map_type(sig.return_annotation)
+                else:
+                    return_type = "any"
+
         func_body = body
         if func_body is None:
-             raise ValueError(f"Function {name} must have a 'body' argument defined.")
+             # Use docstring as body
+             if func.__doc__:
+                 func_body = func.__doc__
+             else:
+                 raise ValueError(f"Function {name} must have a body or docstring defined.")
 
         # Cleanup body indentation
         func_body = textwrap.dedent(func_body).strip()
         
-        # Ensure body starts with { and ends with } if not provided?
-        # SurrealDB CREATE FUNCTION syntax: ... { return "..." };
-        # If user provides just the code "return 1;", we should wrap it.
+        # Ensure body starts with { and ends with }
         if not func_body.startswith("{"):
             func_body = "{\n" + textwrap.indent(func_body, "    ") + "\n}"
 
@@ -68,3 +102,7 @@ def surreal_func(name: str, args: List[Tuple[str, str]], return_type: str, permi
 
 def get_registered_functions() -> List[SurrealFunction]:
     return _function_registry
+
+def generate_function_statements() -> List[str]:
+    """Generate SQL statements for all registered functions."""
+    return [fn.to_sql() for fn in _function_registry]
