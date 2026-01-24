@@ -1111,11 +1111,12 @@ class QuerySet(BaseQuerySet):
         # Fall back to regular update query
         update_query = f"UPDATE {self.document_class._get_collection_name()}"
 
+        update_query += f" SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
+
         if self.query_parts:
             conditions = self._build_conditions()
             update_query += f" WHERE {' AND '.join(conditions)}"
-
-        update_query += f" SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
+        
         if returning in ("before", "after", "diff"):
             update_query += f" RETURN {returning.upper()}"
 
@@ -1375,19 +1376,19 @@ class QuerySet(BaseQuerySet):
             # Handle documents without IDs using bulk INSERT
             if docs_without_ids:
                 data = [doc.to_db() for doc in docs_without_ids]
-                from ..document import serialize_http_safe
-                data = [serialize_http_safe(d) for d in data]
-                query = f"INSERT INTO {collection} {json.dumps(data)};"
                 
                 try:
-                    result = await self.connection.client.query(query)
-                    if return_documents and result and result[0]:
+                    # Use SDK insert method which handles serialization and query parameters efficiently
+                    result = await self.connection.client.insert(collection, data)
+                    
+                    if return_documents and result:
+                        # Result from bulk insert is a list of created records
                         batch_docs = [self.document_class.from_db(doc_data)
-                                      for doc_data in result[0]]
+                                      for doc_data in result]
                         created_docs.extend(batch_docs)
                         total_created += len(batch_docs)
-                    elif result and result[0]:
-                        total_created += len(result[0])
+                    elif result:
+                        total_created += len(result)
                 except Exception as e:
                     logger.error(f"Error in bulk create batch (no IDs): {str(e)}")
             

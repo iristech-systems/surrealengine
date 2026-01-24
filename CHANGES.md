@@ -47,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Connection Imports**: Fixed `ImportError` for optional dependencies (`websockets`, `cbor2`) in `raw_connection.py`, improving robustness in minimal environments.
 - **Relation Updates**: Fixed `AttributeError` in `relation_update.py` when determining the active client.
 - **Bulk Safe Access**: Fixed unsafe `QuerySet` instantiation in `descriptor.py` by enforcing owner existence checks.
+- **Ergonomic Rel Accessor**: Fixed `RelationshipAccessor` to be callable, allowing `user.rel.follows(User)` syntax for specific target traversals.
+- **Update Query Syntax**: Fixed invalid SurrealQL generation in `QuerySet.update()` by correctly reordering SET and WHERE clauses.
+- **Async Connection Safety**: Fixed `asyncio.gather` crashes by prioritizing async connections when a running event loop is detected.
+- **Bulk Create Performance**: Optimized `bulk_create` to use native SDK `insert` for documents without IDs, improving performance via Rust serialization.
 
 
 

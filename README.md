@@ -1,11 +1,13 @@
 
 # SurrealEngine
 
-**The Real-Time Data Platform for Python**
+# SurrealEngine
+
+**The Python ORM & Real-Time Data Platform**
 
 > **Vector Search, Graph Queries, Live Updates, and Zero-Copy Analytics — All in One.**
 
-SurrealEngine is more than just an ORM. It's a high-performance data platform designed to unlock the full potential of wide-column, multi-model databases. Built on top of SurrealDB, it gives Python developers capabilities that were previously impossible without complex distributed systems.
+SurrealEngine is the comprehensive Python ORM for SurrealDB that evolves into a real-time data platform. It gives you the familiar object mapping you expect, plus capabilities that were previously impossible without complex distributed systems.
 
 Whether you're building a **Real-Time Recommendation Engine**, an **AI-Powered Search Service**, or a **High-Frequency Data Pipeline**, SurrealEngine provides the unified API you need.
 

@@ -1,5 +1,4 @@
-"""
-Context management for SurrealEngine connections.
+"""Context management for SurrealEngine connections.
 
 This module provides utilities for managing active database connections
 using ContextVars, allowing for "polyglot" code execution where the
@@ -30,6 +29,7 @@ def get_active_connection(async_mode: Optional[bool] = True) -> Any:
 
     Returns:
         The active connection object.
+
     """
     # 1. Check ContextVar
     conn = _current_connection.get()
@@ -38,7 +38,22 @@ def get_active_connection(async_mode: Optional[bool] = True) -> Any:
 
     # 2. Fallback to Registry
     if async_mode is None:
-        # Try async, then sync
+        # Check if we are in an async loop - if so, prefer async connection
+        import asyncio
+        try:
+            asyncio.get_running_loop()
+            in_async_loop = True
+        except RuntimeError:
+            in_async_loop = False
+            
+        if in_async_loop:
+            try:
+                return ConnectionRegistry.get_default_connection(async_mode=True)
+            except RuntimeError:
+                # Fallback to sync if no async default (might warn later)
+                pass
+
+        # Try async, then sync (original behavior, but now second priority if loop active)
         try:
             return ConnectionRegistry.get_default_connection(async_mode=True)
         except RuntimeError:
@@ -57,6 +72,7 @@ def using_connection(connection: Any) -> Iterator[None]:
     Example:
         >>> with using_connection(sync_conn):
         ...     User.objects.all()  # Uses sync_conn
+
     """
     token: Token = _current_connection.set(connection)
     try:

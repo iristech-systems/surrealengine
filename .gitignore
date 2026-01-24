@@ -28,3 +28,5 @@ tests/
 # Rust
 target/
 
+docs/iristech_logo.png
+ROADMAP.md

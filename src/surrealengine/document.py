@@ -1,5 +1,4 @@
-"""
-Document classes for object-document mapping with SurrealDB.
+"""Document classes for object-document mapping with SurrealDB.
 
 This module provides the foundation for defining and working with documents
 in SurrealDB using an Object-Document Mapper (ODM) pattern. It includes
@@ -176,7 +175,9 @@ class DocumentMetaclass(type):
         _fields: Dictionary of fields for the document class
         _fields_ordered: List of field names in order of definition
         _registry: Dictionary mapping collection names to Document classes
+
     """
+
     _registry: Dict[str, Type] = {}
 
     def __new__(mcs, name: str, bases: tuple, attrs: Dict[str, Any]) -> Type:
@@ -192,6 +193,7 @@ class DocumentMetaclass(type):
 
         Returns:
             The new Document class
+
         """
         # Skip processing for the base Document class
         if name == 'Document' and attrs.get('__module__') == __name__:
@@ -279,11 +281,69 @@ class DocumentMetaclass(type):
 
 
 
+class CallableRelationship:
+    """Proxy that behaves like a QuerySet but can be called to refine the relation target.
+    
+    returned by: document.rel.edge_name
+    usage:
+      - await document.rel.edge_name              (wildcard ->edge->?)
+      - await document.rel.edge_name(User)        (specific ->edge->user)
+    """
+
+    def __init__(self, queryset, edge_name: str):
+        self._qs = queryset
+        self._edge_name = edge_name
+        # Default behavior: ->edge->?
+        self._default_qs = queryset.out(edge_name)
+
+    def __call__(self, target: Any = None):
+        if target is None:
+            return self._default_qs
+            
+        # Refine target: ->edge->target_collection
+        collection = target
+        is_model = False
+        
+        # Check if target is a Document model
+        if hasattr(target, "_get_collection_name"):
+            collection = target._get_collection_name()
+            is_model = True
+            
+        # Manually construct the traversal path
+        # We start from the base queryset (which has no traversal yet)
+        clone = self._qs._clone()
+        base_path = getattr(clone, "_traversal_path", "") or ""
+        # Append explicit path: ->edge->collection
+        clone._traversal_path = f"{base_path}->{self._edge_name}->{collection}"
+        
+        # Configure hydration if target is a model
+        if is_model:
+            clone._traversal_target_is_model = True
+            clone.document_class = target
+            
+        return clone
+
+    def __getattr__(self, name):
+        return getattr(self._default_qs, name)
+        
+    def __iter__(self):
+        return iter(self._default_qs)
+        
+    def __await__(self):
+        return self._default_qs.__await__()
+        
+    def __repr__(self):
+        return repr(self._default_qs)
+
+
 class RelationshipAccessor:
     """Helper for magic relation access via .rel property.
     
-    Allows syntax like: document.rel.knows.out()
+    Allows syntax like: 
+    - document.rel.knows.all()
+    - document.rel.knows(User).all()
     """
+
     def __init__(self, document):
         self._document = document
 
@@ -294,7 +354,8 @@ class RelationshipAccessor:
             name: The name of the relation/edge to traverse.
             
         Returns:
-            A QuerySet pre-configured to traverse this relation from the current document.
+            A CallableRelationship proxy that defaults to wildcard traversal but can be called with a target.
+
         """
         # Get a fresh QuerySet for the document's class
         qs = self._document.__class__.objects
@@ -302,8 +363,8 @@ class RelationshipAccessor:
         # Filter to this specific document
         qs = qs.filter(id=self._document.id)
         
-        # Add the OUT traversal step using the attribute name as the edge
-        return qs.out(name)
+        # Return the callable proxy
+        return CallableRelationship(qs, name)
 
 
 class Document(metaclass=DocumentMetaclass):
@@ -349,7 +410,9 @@ class Document(metaclass=DocumentMetaclass):
                     {"fields": ["email"], "unique": True},
                     {"fields": ["name", "created_at"]}
                 ]
+
     """
+
     objects = QuerySetDescriptor()
     id = RecordIDField()
 
@@ -370,6 +433,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             AttributeError: If strict mode is enabled and an unknown field is provided
+
         """
         if 'id' not in self._fields:
             id_field = RecordIDField()
@@ -427,6 +491,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             AttributeError: If the attribute is not a field
+
         """
         if name in self._fields:
             # Return the value directly from _data instead of the field instance
@@ -442,6 +507,7 @@ class Document(metaclass=DocumentMetaclass):
         Args:
             name: Name of the attribute to set
             value: Value to set
+
         """
         if name.startswith('_'):
             super().__setattr__(name, value)
@@ -471,6 +537,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The collection name
+
         """
         return cls._meta.get('collection')
 
@@ -494,6 +561,7 @@ class Document(metaclass=DocumentMetaclass):
             >>> user.has_changed()  # True
             >>> user.has_changed('age')  # True 
             >>> user.has_changed('name')  # False
+
         """
         if field:
             return field in self._changed_fields
@@ -509,6 +577,7 @@ class Document(metaclass=DocumentMetaclass):
             >>> user.age = 31
             >>> user.name = "Jane"
             >>> user.get_changes()  # {'age': 31, 'name': 'Jane'}
+
         """
         return {field: self._data.get(field) for field in self._changed_fields}
     
@@ -524,6 +593,7 @@ class Document(metaclass=DocumentMetaclass):
         Examples:
             >>> user.age = 31  # was 30
             >>> user.get_original_value('age')  # 30
+
         """
         return self._original_data.get(field)
     
@@ -538,6 +608,7 @@ class Document(metaclass=DocumentMetaclass):
             >>> user.name = "Jane" 
             >>> user.revert_changes(['age'])  # Only revert age
             >>> user.revert_changes()  # Revert all changes
+
         """
         if fields:
             # Revert specific fields
@@ -565,6 +636,7 @@ class Document(metaclass=DocumentMetaclass):
             >>> user.is_dirty  # True
             >>> await user.save()
             >>> user.is_dirty  # False
+
         """
         return len(self._changed_fields) > 0
     
@@ -574,6 +646,7 @@ class Document(metaclass=DocumentMetaclass):
         
         Returns:
             True if there are no unsaved changes, False otherwise
+
         """
         return len(self._changed_fields) == 0
     
@@ -588,6 +661,7 @@ class Document(metaclass=DocumentMetaclass):
             >>> user.age = 31
             >>> user.name = "Jane"
             >>> user.dirty_fields  # ['age', 'name']
+
         """
         return self._changed_fields.copy()
     
@@ -630,6 +704,7 @@ class Document(metaclass=DocumentMetaclass):
             Dictionary of changed fields in database format
             
         This is used internally for optimized updates that only send changed fields.
+
         """
         if not self._changed_fields:
             return {}
@@ -658,6 +733,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValidationError: If a field fails validation
+
         """
         for field_name, field in self._fields.items():
             value = self._data.get(field_name)
@@ -673,6 +749,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             Dictionary of field values including ID
+
         """
         result = {}
         for k, v in self._data.items():
@@ -711,6 +788,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             Dictionary of field values for the database
+
         """
         result = {}
         for field_name, field in self._fields.items():
@@ -741,6 +819,7 @@ class Document(metaclass=DocumentMetaclass):
         Returns:
             A new document instance with change tracking initialized (clean state).
             Nested tracked objects (Lists, Dicts, EmbeddedDocuments) are automatically linked.
+
         """
         # Create an empty instance without triggering signals
         instance = cls.__new__(cls)
@@ -816,6 +895,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The document instance with resolved references (or awaitable resolving to it)
+
         """
         # Get active connection to determine mode
         connection = get_active_connection()
@@ -892,6 +972,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The document instance with resolved references
+
         """
         if depth <= 0 or not self.id:
             return self
@@ -962,6 +1043,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The document instance (or awaitable resolving to it)
+
         """
         # Get active connection logic is handled by objects.get for simple cases,
         # but here we need to know if we should call get_sync or _get_async
@@ -1054,6 +1136,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The document instance with optionally resolved references
+
         """
         if not dereference:
             # No dereferencing needed, use regular get
@@ -1130,6 +1213,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The updated document instance (or awaitable resolving to it)
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection()
@@ -1201,6 +1285,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The updated document instance
+
         """
         # Trigger pre_save signal
         if SIGNAL_SUPPORT:
@@ -1264,6 +1349,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The saved document instance (or awaitable resolving to it)
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection(async_mode=None)
@@ -1349,6 +1435,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValidationError: If the document fails validation
+
         """
         # Trigger pre_save signal
         if SIGNAL_SUPPORT:
@@ -1432,6 +1519,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             True if deleted (or awaitable resolving to it)
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection(async_mode=None)
@@ -1473,6 +1561,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValueError: If the document doesn't have an ID
+
         """
         # Trigger pre_delete signal
         if SIGNAL_SUPPORT:
@@ -1502,6 +1591,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The refreshed document instance (or awaitable resolving to it)
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection(async_mode=None)
@@ -1554,6 +1644,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValueError: If the document doesn't have an ID
+
         """
         if connection is None:
             connection = get_active_connection(async_mode=False)
@@ -1596,6 +1687,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             Function that creates a RelationQuerySet
+
         """
 
         def relation_query_builder(connection: Optional[Any] = None) -> RelationQuerySet:
@@ -1606,6 +1698,7 @@ class Document(metaclass=DocumentMetaclass):
 
             Returns:
                 A RelationQuerySet for the relation
+
             """
             if connection is None:
                 connection = ConnectionRegistry.get_default_connection()
@@ -1630,6 +1723,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             List of related documents (or awaitable resolving to it)
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection()
@@ -1675,6 +1769,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             List of related documents, relation documents, or relation records
+
         """
         if connection is None:
             connection = get_active_connection(async_mode=False)
@@ -1702,6 +1797,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             List of resolved document instances (or awaitable resolving to it)
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection()
@@ -1768,6 +1864,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             List of resolved document instances
+
         """
         if connection is None:
             connection = get_active_connection(async_mode=False)
@@ -1819,6 +1916,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The created relation record or None (or awaitable resolving to it)
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection()
@@ -1854,6 +1952,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The created relation record or None if creation failed
+
         """
         if connection is None:
             connection = get_active_connection(async_mode=False)
@@ -1875,6 +1974,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The updated relation record or None (or awaitable resolving to it)
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection()
@@ -1910,6 +2010,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The updated relation record or None if update failed
+
         """
         if connection is None:
             connection = get_active_connection(async_mode=False)
@@ -1930,6 +2031,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             Number of deleted relations (or awaitable resolving to it)
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection()
@@ -1966,6 +2068,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             Number of deleted relations
+
         """
         if connection is None:
             connection = get_active_connection(async_mode=False)
@@ -1990,6 +2093,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValueError: If the document is not saved
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection()
@@ -2063,6 +2167,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValueError: If the document is not saved
+
         """
         if connection is None:
             connection = get_active_connection(async_mode=False)
@@ -2119,6 +2224,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             List of created documents or count (or awaitable resolving to it)
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection()
@@ -2196,6 +2302,7 @@ class Document(metaclass=DocumentMetaclass):
         Returns:
             List of created documents with their IDs set if return_documents=True,
             otherwise returns the count of created documents
+
         """
         # Trigger pre_bulk_insert signal
         if SIGNAL_SUPPORT:
@@ -2235,6 +2342,7 @@ class Document(metaclass=DocumentMetaclass):
             analyzer: Analyzer to use for search indexes
             comment: Optional comment for the index
             connection: Optional connection to use
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection()
@@ -2314,6 +2422,7 @@ class Document(metaclass=DocumentMetaclass):
             comment: Optional comment for the index
             connection: Optional connection to use
             **kwargs: Additional index options (dimension, dist, bm25, highlights, etc.)
+
         """
         if connection is None:
             connection = get_active_connection(async_mode=False)
@@ -2368,6 +2477,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Args:
             connection: Optional connection to use
+
         """
         # Determine target connection
         target_connection = connection or get_active_connection()
@@ -2509,6 +2619,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Args:
             connection: Optional connection to use
+
         """
         if connection is None:
             connection = get_active_connection(async_mode=False)
@@ -2636,6 +2747,7 @@ class Document(metaclass=DocumentMetaclass):
         
         Args:
             connection: Optional connection to use
+
         """
         if not hasattr(cls, '_meta') or not cls._meta.get('events'):
             return
@@ -2656,6 +2768,7 @@ class Document(metaclass=DocumentMetaclass):
         
         Args:
             connection: Optional connection to use
+
         """
         if not hasattr(cls, '_meta') or not cls._meta.get('events'):
             return
@@ -2679,6 +2792,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The SurrealDB type as a string
+
         """
         from .fields import (
             StringField, IntField, FloatField, BooleanField,
@@ -2760,6 +2874,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             None (or awaitable resolving to None)
+
         """
         # Get target connection
         connection = connection or get_active_connection(async_mode=None)
@@ -2774,6 +2889,7 @@ class Document(metaclass=DocumentMetaclass):
         Args:
             connection: Optional connection to use
             schemafull: Whether to create a SCHEMAFULL table (default: True)
+
         """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=True)
@@ -3119,6 +3235,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             A dataclass type based on the document's fields
+
         """
         fields = [('id', Optional[str], dataclass_field(default=None))]
         # Process fields
@@ -3169,6 +3286,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             A MaterializedView instance
+
         """
         from .materialized_view import Count, Mean, Sum, Min, Max, ArrayCollect
 
@@ -3216,6 +3334,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The document class for the collection, or None if not found
+
         """
         # Initialize the document registry if it doesn't exist
         if not hasattr(cls, '_document_registry'):
@@ -3259,6 +3378,7 @@ class RelationDocument(Document):
 
     class Meta:
         """Meta options for RelationDocument."""
+
         abstract = True
 
     in_document = ReferenceField(Document, required=True, db_field="in")
@@ -3402,6 +3522,7 @@ class RelationDocument(Document):
 
         Returns:
             The name of the relation
+
         """
         return cls._meta.get('collection')
 
@@ -3418,6 +3539,7 @@ class RelationDocument(Document):
 
         Returns:
             Function that creates a RelationQuerySet
+
         """
         relation_name = cls.get_relation_name()
 
@@ -3429,6 +3551,7 @@ class RelationDocument(Document):
 
             Returns:
                 A RelationQuerySet for the relation
+
             """
             if connection is None:
                 connection = ConnectionRegistry.get_default_connection()
@@ -3453,6 +3576,7 @@ class RelationDocument(Document):
 
         Raises:
             ValueError: If either instance is not saved
+
         """
         if not from_instance.id:
             raise ValueError(f"Cannot create relation from unsaved {from_instance.__class__.__name__}")
@@ -3493,6 +3617,7 @@ class RelationDocument(Document):
 
         Raises:
             ValueError: If either instance is not saved
+
         """
         if not from_instance.id:
             raise ValueError(f"Cannot create relation from unsaved {from_instance.__class__.__name__}")
@@ -3518,8 +3643,7 @@ class RelationDocument(Document):
 
     @classmethod
     def find_by_in_document(cls, in_doc, **additional_filters):
-        """
-        Query RelationDocument by in_document field.
+        """Query RelationDocument by in_document field.
 
         Args:
             in_doc: The document instance or ID to filter by
@@ -3527,6 +3651,7 @@ class RelationDocument(Document):
 
         Returns:
             QuerySet filtered by in_document
+
         """
         # Get the default connection
         connection = ConnectionRegistry.get_default_connection(async_mode=True)
@@ -3538,8 +3663,7 @@ class RelationDocument(Document):
 
     @classmethod
     def find_by_in_document_sync(cls, in_doc, **additional_filters):
-        """
-        Query RelationDocument by in_document field synchronously.
+        """Query RelationDocument by in_document field synchronously.
 
         Args:
             in_doc: The document instance or ID to filter by
@@ -3547,6 +3671,7 @@ class RelationDocument(Document):
 
         Returns:
             QuerySet filtered by in_document
+
         """
         # Get the default connection
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
@@ -3558,8 +3683,7 @@ class RelationDocument(Document):
 
     @classmethod
     def find_by_in_documents(cls, in_docs, **additional_filters):
-        """
-        Query RelationDocument where the `in` reference is any of the provided records (polyglot).
+        """Query RelationDocument where the `in` reference is any of the provided records (polyglot).
 
         Polyglot method: executes synchronously if the active connection is synchronous,
         otherwise returns an awaitable.
@@ -3570,6 +3694,7 @@ class RelationDocument(Document):
 
         Returns:
             QuerySet filtered by in__in (or awaitable)
+
         """
         # Get the active connection (will try async first if available)
         connection = get_active_connection(async_mode=None)
@@ -3609,6 +3734,7 @@ class RelationDocument(Document):
 
         Returns:
             QuerySet filtered by in__in
+
         """
         # Get the default sync connection
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
@@ -3638,6 +3764,7 @@ class RelationDocument(Document):
 
         Returns:
             The resolved out_document instance (or awaitable)
+
         """
         # If out_document is already a document instance, return it
         if isinstance(self.out_document, Document):
@@ -3721,6 +3848,7 @@ class RelationDocument(Document):
 
         Returns:
             The resolved out_document instance
+
         """
         # If out_document is already a document instance, return it
         if isinstance(self.out_document, Document):
