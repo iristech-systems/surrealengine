@@ -1767,19 +1767,28 @@ class ConnectionRegistry:
         return cls._default_sync_connection
 
     @classmethod
-    def get_default_connection(cls, async_mode: bool = True) -> Union['SurrealEngineAsyncConnection', 'SurrealEngineSyncConnection']:
+    def get_default_connection(cls, async_mode: Optional[bool] = True) -> Union['SurrealEngineAsyncConnection', 'SurrealEngineSyncConnection']:
         """Get the default connection based on the mode.
 
         Args:
-            async_mode: Whether to get the async or sync connection
+            async_mode: Whether to get the async (True) or sync (False) connection.
+                       If None, tries to get the async connection first, then sync.
 
         Returns:
-            The default connection of the requested type
+            The default connection of the requested type (or available type if None)
 
         Raises:
-            RuntimeError: If no default connection of the requested type has been set
-
+            RuntimeError: If no default connection is found
         """
+        if async_mode is None:
+            # Auto-detect: prefer async, then sync
+            if cls._default_async_connection is not None:
+                return cls._default_async_connection
+            if cls._default_sync_connection is not None:
+                return cls._default_sync_connection
+            # If neither is set, let get_default_async_connection raise the error
+            return cls.get_default_async_connection()
+
         if async_mode:
             return cls.get_default_async_connection()
         else:

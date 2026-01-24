@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+
 ## [0.7.0] - 2026-01-22
 
 ### Added
@@ -51,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Update Query Syntax**: Fixed invalid SurrealQL generation in `QuerySet.update()` by correctly reordering SET and WHERE clauses.
 - **Async Connection Safety**: Fixed `asyncio.gather` crashes by prioritizing async connections when a running event loop is detected.
 - **Bulk Create Performance**: Optimized `bulk_create` to use native SDK `insert` for documents without IDs, improving performance via Rust serialization.
+- **Materialized Views Connection**: Fixed `RuntimeError` in `MaterializedView.create()` when using `async_mode=None` (polyglot connection resolution).
+- **Aggregation Pipeline**: Fixed `AttributeError` in `MaterializedView` when using `AggregationPipeline` as input query (support `build_query()` method).
+- **Document Hydration**: Fixed `KeyError`/missing fields when loading documents with dynamic fields (e.g., from views or aggregations) by relaxing strict mode validation during `from_db`.
+- **Document Access**: Implemented `__getitem__` and `__setitem__` on `Document`, allowing dictionary-style access to fields (e.g., `doc['field']`), including dynamic fields not in the schema.
 
 
 

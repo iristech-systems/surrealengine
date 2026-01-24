@@ -1,19 +1,24 @@
-
 # SurrealEngine
+**Replace Your Multi-Database Stack with One Pythonic ORM**
 
-# SurrealEngine
+Documents, graphs, vectors, real-time, and analytics—without the operational nightmare.
+Powered by SurrealDB. Built for Python developers.
 
-**The Python ORM & Real-Time Data Platform**
+> **Vector Search, Graph Queries, Live Updates, and Zero-Copy Analytics — All in One ORM.**
 
-> **Vector Search, Graph Queries, Live Updates, and Zero-Copy Analytics — All in One.**
+SurrealEngine is the comprehensive Python ORM for SurrealDB, delivering capabilities 
+that previously required multiple databases and complex distributed systems. You get 
+familiar object mapping plus native support for graphs, vectors, real-time queries, 
+and advanced analytics.
 
-SurrealEngine is the comprehensive Python ORM for SurrealDB that evolves into a real-time data platform. It gives you the familiar object mapping you expect, plus capabilities that were previously impossible without complex distributed systems.
-
-Whether you're building a **Real-Time Recommendation Engine**, an **AI-Powered Search Service**, or a **High-Frequency Data Pipeline**, SurrealEngine provides the unified API you need.
+Whether you're building a **Real-Time Recommendation Engine**, an **AI-Powered Search Service**, 
+or a **High-Frequency Data Pipeline**, SurrealEngine provides a unified Pythonic API 
+without the operational complexity of managing multiple databases.
 
 [![Documentation](https://img.shields.io/badge/docs-visualized-blue.svg)](https://iristech-systems.github.io/SurrealEngine-Docs/)
 [![PyPI](https://img.shields.io/pypi/v/surrealengine.svg)](https://pypi.org/project/surrealengine/)
 [![License](https://img.shields.io/github/license/iristech-systems/surrealengine.svg)](https://github.com/iristech-systems/surrealengine/blob/main/LICENSE)
+[![SurrealDB](https://img.shields.io/badge/Powered%20by-SurrealDB-ff00a0)](https://surrealdb.com)
 
 ---
 
@@ -22,49 +27,55 @@ Whether you're building a **Real-Time Recommendation Engine**, an **AI-Powered S
 Why choose SurrealEngine? Because you can do **this** in a single query:
 
 ```python
-# Real-time Vector Search + Graph Traversal
-# Find users with similar interests (Vector), who are friends of friends (Graph),
-# AND subscribe to real-time updates as they happen (Live Query).
+# The "Why SurrealEngine?" Example:
+# Vector Search + Graph Traversal — in one query.
+# Try doing THIS with PostgreSQL + Neo4j + Pinecone.
 
 similar_users = await User.objects \
     .filter(embedding__knn=(user_vector, 10)) \
     .out("friends") \
     .out(Person) \
-    .live()
-
-async for change in similar_users:
-    print(f"New friend match found: {change.data['name']} (Score: {change.data['similarity']})")
+    .all()
+# Result: Top 10 similar users' friends (Deep traversal)
 ```
 
 ---
 
-## 📚 Documentation
+## 🤔 Why SurrealEngine?
 
-**Full documentation is available at [https://iristech-systems.github.io/SurrealEngine-Docs/](https://iristech-systems.github.io/SurrealEngine-Docs/)**
+**Before SurrealEngine:**
+```python
+from pymongo import MongoClient        # Documents
+from neo4j import GraphDatabase        # Graphs
+from pinecone import Index             # Vectors
+from redis import Redis                # Real-time
+import pandas as pd                    # Analytics
+```
 
-👉 **Read the [State of SurrealEngine](https://github.com/iristech-systems/surrealengine/discussions/4) announcement!**
+**With SurrealEngine:**
+```python
+from surrealengine import Document, create_connection
+
+# Everything you need
+```
+
+**One database. One connection. One API. Zero operational complexity.**
 
 ---
 
-## ✨ Features
+## 🆚 How It Compares
 
-
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| **Polyglot API** | ✅ Supported | (New in v0.7.0) Write code once, run in both **Sync** (WSGI/Scripts) and **Async** (ASGI/FastAPI) contexts naturally. |
-| **Aggregations** | ✅ Supported | MongoDB-style aggregation pipelines (`.aggregate().group(...).execute()`) for complex analytics. |
-| **Materialized Views** | ✅ Supported | Define pre-computed views using `Document.create_materialized_view()` for high-performance analytics. |
-| **Connection Pooling** | ✅ Supported | Full support for async pooling (auto-reconnect, health checks). Sync pooling available via `Queue`. |
-| **Live Queries** | ⚠️ Partial | Supported on **WebSocket** connections (`ws://`, `wss://`). **NOT** supported on embedded (`mem://`, `file://`). |
-| **Graph Traversal** | ✅ Supported | Fluent API with chaining (`.out("edge").out(Node)` -> `->edge->node`). Improved in v0.7.0 for deep traversals. |
-| **Change Tracking** | ✅ Supported | Objects track dirty fields (`.is_dirty`, `.get_changes()`) to optimize UPDATE queries. |
-| **Schema Generation** | ✅ Supported | Can generate `DEFINE TABLE/FIELD` statements from Python classes. |
-| **Vector Search** | ✅ Supported | Support for HNSW indexes via `Meta.indexes` (dimension, dist, etc.). |
-| **Full Text Search** | ✅ Supported | Support for BM25 and Highlights via `Meta.indexes`. |
-| **Events** | ✅ Supported | Define triggers via `Meta.events` using the `Event` class. |
-| **Data Science** | ✅ Supported | Zero-copy export to PyArrow (`.to_arrow()`) and Polars (`.to_polars()`). Requires `pip install surrealengine[data]`. |
-| **Pydantic** | ✅ Compatible | `RecordID` objects (SDK v1.0.8+) are Pydantic-compatible. |
+| Need | Traditional Approach | With SurrealEngine |
+|------|---------------------|-------------------|
+| **Documents** | MongoDB + PyMongo | ✅ Built-in |
+| **Graphs** | Neo4j + Driver | ✅ Built-in |
+| **Vectors** | Pinecone/Weaviate | ✅ Built-in |
+| **Real-Time** | Redis/Firebase | ✅ Built-in |
+| **Analytics** | ClickHouse/Pandas | ✅ Built-in |
+| **Databases to Manage** | 3-5 | **1** |
+| **APIs to Learn** | 3-5 | **1** |
+| **Connection Pools** | 3-5 | **1** |
+| **Failure Modes** | Many | Few |
 
 ---
 
@@ -157,6 +168,10 @@ friends = await Person.objects.filter(id=jane.id).out("knows").out(Person).all()
 # Chain traversals freely:
 # Friends of friends (Hydrated)
 fof = await Person.objects.filter(id=jane.id).out("knows").out("knows").out(Person).all()
+
+# 3. Magic Accessor (.rel)
+# Simple access to relationships from a document instance
+friends = await jane.rel.knows(Person).all()
 ```
 
 ### 4. Advanced Performance
@@ -187,6 +202,80 @@ stats = await Transaction.objects.aggregate() \
 
 ---
 
+## 🎬 See It In Action
+
+### Real-World Examples
+
+**Recommendation Engine (Vector + Graph)**
+```python
+# Find products similar to what user liked (vector)
+# that were purchased by friends (graph)
+friend_ids = [u.id for u in await user.rel.friends(User)]
+
+recommendations = await Product.objects \
+    .filter(embedding__knn=(user_preference_vector, 20)) \
+    .in_("purchased") \
+    .filter(id__inside=friend_ids) \
+    .all()
+```
+
+**Analytics Dashboard**
+```python
+# MongoDB-style aggregation pipeline
+stats = await Order.objects.aggregate() \
+    .group("category", revenue=Sum("amount")) \
+    .sort(revenue="DESC") \
+    .limit(5) \
+    .execute()
+```
+
+**AI-Powered Search**
+```python
+# Semantic search + full-text filters
+# using HNSW vector index and BM25 full-text search
+from surrealengine import Q
+
+results = await Article.objects \
+    .filter(embedding__knn=(query_embedding, 10)) \
+    .filter(Q.raw("content @1@ 'machine learning'")) \
+    .filter(published=True) \
+    .all()
+```
+
+👉 **[See 20+ more examples in the docs](https://iristech-systems.github.io/SurrealEngine-Docs/)**
+
+---
+
+## 📚 Documentation
+
+**Full documentation is available at [https://iristech-systems.github.io/SurrealEngine-Docs/](https://iristech-systems.github.io/SurrealEngine-Docs/)**
+
+👉 **Read the [State of SurrealEngine](https://github.com/iristech-systems/surrealengine/discussions/4) announcement!**
+
+---
+
+## ✨ Features
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Polyglot API** | ✅ Supported | (New in v0.7.0) Write code once, run in both **Sync** (WSGI/Scripts) and **Async** (ASGI/FastAPI) contexts naturally. |
+| **Aggregations** | ✅ Supported | MongoDB-style aggregation pipelines (`.aggregate().group(...).execute()`) for complex analytics. |
+| **Materialized Views** | ✅ Supported | Define pre-computed views using `Document.create_materialized_view()` for high-performance analytics. |
+| **Connection Pooling** | ✅ Supported | Full support for async pooling (auto-reconnect, health checks). Sync pooling available via `Queue`. |
+| **Live Queries** | ⚠️ Partial | Supported on **WebSocket** connections (`ws://`, `wss://`). **NOT** supported on embedded (`mem://`, `file://`). |
+| **Graph Traversal** | ✅ Supported | Fluent API (`.out().in_()`) and Magic `.rel` accessor (`user.rel.friends(User)`). |
+| **Change Tracking** | ✅ Supported | Objects track dirty fields (`.is_dirty`, `.get_changes()`) to optimize UPDATE queries. |
+| **Schema Generation** | ✅ Supported | Can generate `DEFINE TABLE/FIELD` statements from Python classes. |
+| **Embedded Docs** | ✅ Supported | Define structured nested objects with `EmbeddedDocument`. Generates schema automatically. |
+| **Stored Functions** | ✅ Supported | Define SurrealDB functions directly in Python using `@surreal_func`. |
+| **Vector Search** | ✅ Supported | Support for HNSW indexes via `Meta.indexes` (dimension, dist, etc.). |
+| **Full Text Search** | ✅ Supported | Support for BM25 and Highlights via `Meta.indexes`. |
+| **Events** | ✅ Supported | Define triggers via `Meta.events` using the `Event` class. |
+| **Data Science** | ✅ Supported | Zero-copy export to PyArrow (`.to_arrow()`) and Polars (`.to_polars()`). Requires `surrealengine[data]`. |
+| **Pydantic** | ✅ Compatible | `RecordID` objects (SDK v1.0.8+) are Pydantic-compatible. |
+
+---
+
 ## ⚠️ Sharp Edges & Limitations
 
 SurrealEngine is designed to be a robust, high-level abstraction. However, be aware of these known limitations:
@@ -206,10 +295,25 @@ SurrealEngine is designed to be a robust, high-level abstraction. However, be aw
     When using `create_connection(..., auto_connect=True)`, the connection is established immediately. For **async** connections, ensure this is called within a running event loop.
 
 5.  **Transactions**:
-    SurrealDB supports transactions (`BEGIN`, `COMMIT`, `CANCEL`), but `surrealengine` does not yet provide a high-level Python context manager (e.g. `async with db.transaction():`). You must manually execute these queries using `client.query()`.
+    SurrealDB supports transactions (`BEGIN`, `COMMIT`, `CANCEL`). **SurrealEngine** provides a helper `await connection.transaction([coro1, coro2])` that ensures atomicity via connection pinning when using pools. A high-level `async with` context manager is planned for v0.8.0.
+
+---
+
+## 🎯 Get Started
+
+```bash
+uv add surrealengine
+```
+
+**Next Steps:**
+- 📖 [Read the Docs](https://iristech-systems.github.io/SurrealEngine-Docs/)
+- 💬 [Join Discussions](https://github.com/iristech-systems/surrealengine/discussions)
+- 🐛 [Report Issues](https://github.com/iristech-systems/surrealengine/issues)
+- ⭐ [Star on GitHub](https://github.com/iristech-systems/surrealengine) (if you find it useful!)
 
 ---
 
 <p align="center">
-  Built with ❤️ by Iristech Systems
+  Built with ❤️ by Iristech Systems<br>
+  Powered by <a href="https://surrealdb.com">SurrealDB</a>
 </p>

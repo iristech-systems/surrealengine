@@ -496,7 +496,32 @@ class Document(metaclass=DocumentMetaclass):
         if name in self._fields:
             # Return the value directly from _data instead of the field instance
             return self._data.get(name)
+        
+        # Also check _data for dynamic fields (e.g. from aggregations)
+        if name in self._data:
+            return self._data[name]
+            
         raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+
+    def __contains__(self, key: str) -> bool:
+        """Check if a field exists."""
+        return key in self._fields or key in self._data
+
+    def __getitem__(self, key: str) -> Any:
+        """Get a field value using dictionary syntax."""
+        try:
+            if key in self._fields:
+                return self._data.get(key)
+            return self._data[key]
+        except KeyError:
+            raise KeyError(f"'{self.__class__.__name__}' object has no field '{key}'")
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        """Set a field value using dictionary syntax."""
+        if key in self._fields:
+            setattr(self, key, value)
+        else:
+            self._data[key] = value
 
     def __setattr__(self, name: str, value: Any) -> None:
         """Set a field value.
@@ -854,6 +879,7 @@ class Document(metaclass=DocumentMetaclass):
                         instance._data[field_name] = field.from_db(data[db_field])
 
             # Then, handle fields without db_field mapping (for backward compatibility)
+            # and extra fields if strict mode is disabled
             for key, value in data.items():
                 if key in instance._fields:
                     field = instance._fields[key]
@@ -862,6 +888,9 @@ class Document(metaclass=DocumentMetaclass):
                         instance._data[key] = field.from_db(value, dereference=dereference)
                     else:
                         instance._data[key] = field.from_db(value)
+                elif not instance._meta.get('strict', True):
+                    # In non-strict mode, store unknown fields directly
+                    instance._data[key] = value
         # If data is a RecordID or string, set it as the ID
         elif isinstance(data, (RecordID, str)):
             instance._data['id'] = data

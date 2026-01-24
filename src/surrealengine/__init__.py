@@ -126,6 +126,7 @@ from .aggregation import AggregationPipeline
 from .expr import Expr
 from .surrealql import escape_identifier, escape_literal
 from .record_id_utils import RecordIdUtils
+from surrealdb import RecordID
 from .schema import (
     get_document_classes,
     create_tables_from_module,
@@ -246,6 +247,7 @@ __all__ = [
     "surreal_func", 
     "SurrealFunction",
     "RecordIDField",
+    "RecordID",
     "VectorField",
 ]
 

@@ -405,7 +405,10 @@ class MaterializedView:
             The custom query string
         """
         # Get the base query string
-        base_query = self.query._build_query()
+        if hasattr(self.query, "build_query"):
+            base_query = self.query.build_query()
+        else:
+            base_query = self.query._build_query()
 
         # If there are no aggregations or select fields, return the base query
         if not self.aggregations and not self.select_fields:
@@ -595,7 +598,7 @@ class MaterializedView:
         """
         # Create a temporary document class for the materialized view
         view_class = type(f"{self.name.capitalize()}View", (self.document_class,), {
-            "Meta": type("Meta", (), {"collection": self.name})
+            "Meta": type("Meta", (), {"collection": self.name, "strict": False})
         })
 
         # Return a QuerySet for the view class
