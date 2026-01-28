@@ -16,10 +16,24 @@ class DocumentMetaOptions:
     List of index definitions. Each index dict can contain:
     - name (str): Custom name for the index
     - fields (List[str]): Field names to include in the index
-    - unique (bool): Whether the index enforces uniqueness (default: False)
-    - search (bool): Whether the index is a search index
+    - unique (bool): Whether the index enforces uniqueness
+    - search (bool): Whether the index is a search index (simple)
     - analyzer (str): Analyzer to use for search indexes
+    # Vector Search specific
+    - dimension (int): Dimension of the vector (implies HNSW)
+    - dist (str): Distance function ('COSINE', 'EUCLIDEAN', 'MANHATTAN', 'HAMMING')
+    - m (int): HNSW M parameter
+    - efc (int): HNSW EFC parameter
+    - m0 (int): HNSW M0 parameter
+    # Full Text Search specific
+    - highlights (bool): Enable highlighting for FTS
+    - bm25 (bool): Enable BM25 scoring for FTS
     - comment (str): Optional comment for the index
+    """
+
+    events: Optional[List[Any]] = None
+    """
+    List of Event objects defining triggers for this table.
     """
 
     id_field: Optional[str] = None

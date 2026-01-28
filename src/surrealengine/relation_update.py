@@ -5,14 +5,13 @@ This module provides update methods for RelationDocument instances
 that allow updating specific fields without deleting existing data.
 """
 
-import json
-from typing import Any, Optional, Dict, Type
+from typing import Any, Optional
 
 from .document import RelationDocument
 from .connection import ConnectionRegistry
 
 
-async def update_relation_document(relation_doc: RelationDocument, 
+async def update_relation_document(self, 
                                   connection: Optional[Any] = None, 
                                   **attrs: Any) -> RelationDocument:
     """Update the relation document without deleting existing data.
@@ -21,7 +20,7 @@ async def update_relation_document(relation_doc: RelationDocument,
     without affecting other attributes, unlike the save() method which uses upsert.
     
     Args:
-        relation_doc: The RelationDocument instance to update
+        self: The RelationDocument instance to update
         connection: The database connection to use (optional)
         **attrs: Attributes to update on the relation
         
@@ -31,25 +30,28 @@ async def update_relation_document(relation_doc: RelationDocument,
     Raises:
         ValueError: If the document is not saved
     """
-    if not relation_doc.id:
+    if not self.id:
         raise ValueError("Cannot update unsaved relation document")
         
     if connection is None:
         connection = ConnectionRegistry.get_default_connection(async_mode=True)
         
+    if connection is None:
+        raise RuntimeError("No connection available")
+        
     # Update only the specified attributes
-    update_query = f"UPDATE {relation_doc.id} SET"
+    update_query = f"UPDATE {self.id} SET"
     
     # Add attributes
     updates = []
     from .document import _serialize_for_surreal as _ser
     for key, value in attrs.items():
         # Update the instance
-        setattr(relation_doc, key, value)
+        setattr(self, key, value)
         updates.append(f" {key} = {_ser(value)}")
         
     if not updates:
-        return relation_doc
+        return self
         
     update_query += ",".join(updates)
     
@@ -58,17 +60,17 @@ async def update_relation_document(relation_doc: RelationDocument,
     if result and result[0]:
         # Mark the updated fields as clean
         for key in attrs:
-            if key in relation_doc._changed_fields:
-                relation_doc._changed_fields.remove(key)
+            if key in self._changed_fields:
+                self._changed_fields.remove(key)
                 
         # Update the original values
         for key, value in attrs.items():
-            if hasattr(relation_doc, '_original_data'):
-                relation_doc._original_data[key] = value
+            if hasattr(self, '_original_data'):
+                self._original_data[key] = value
             
-    return relation_doc
+    return self
     
-def update_relation_document_sync(relation_doc: RelationDocument, 
+def update_relation_document_sync(self, 
                                  connection: Optional[Any] = None, 
                                  **attrs: Any) -> RelationDocument:
     """Update the relation document without deleting existing data synchronously.
@@ -77,7 +79,7 @@ def update_relation_document_sync(relation_doc: RelationDocument,
     without affecting other attributes, unlike the save() method which uses upsert.
     
     Args:
-        relation_doc: The RelationDocument instance to update
+        self: The RelationDocument instance to update
         connection: The database connection to use (optional)
         **attrs: Attributes to update on the relation
         
@@ -87,25 +89,28 @@ def update_relation_document_sync(relation_doc: RelationDocument,
     Raises:
         ValueError: If the document is not saved
     """
-    if not relation_doc.id:
+    if not self.id:
         raise ValueError("Cannot update unsaved relation document")
         
     if connection is None:
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
         
+    if connection is None:
+        raise RuntimeError("No connection available")
+        
     # Update only the specified attributes
-    update_query = f"UPDATE {relation_doc.id} SET"
+    update_query = f"UPDATE {self.id} SET"
     
     # Add attributes
     updates = []
     from .document import _serialize_for_surreal as _ser
     for key, value in attrs.items():
         # Update the instance
-        setattr(relation_doc, key, value)
+        setattr(self, key, value)
         updates.append(f" {key} = {_ser(value)}")
         
     if not updates:
-        return relation_doc
+        return self
         
     update_query += ",".join(updates)
     
@@ -114,15 +119,15 @@ def update_relation_document_sync(relation_doc: RelationDocument,
     if result and result[0]:
         # Mark the updated fields as clean
         for key in attrs:
-            if key in relation_doc._changed_fields:
-                relation_doc._changed_fields.remove(key)
+            if key in self._changed_fields:
+                self._changed_fields.remove(key)
                 
         # Update the original values
         for key, value in attrs.items():
-            if hasattr(relation_doc, '_original_data'):
-                relation_doc._original_data[key] = value
+            if hasattr(self, '_original_data'):
+                self._original_data[key] = value
             
-    return relation_doc
+    return self
 
 # Monkey patch the RelationDocument class to add the update methods
 def patch_relation_document():

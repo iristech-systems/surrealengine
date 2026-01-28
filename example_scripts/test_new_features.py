@@ -13,7 +13,7 @@ from surrealengine import (
     Document, create_connection,
     StringField, IntField, FloatField, DateTimeField, EmailField, URLField, DictField,
     IPAddressField, SlugField, ChoiceField, SetField, ReferenceField,
-    Count, Mean, Sum, Min, Max, Median, StdDev, Variance, Percentile, Distinct, GroupConcat
+    Count, Mean, Sum, Min, Max, Median, StdDev
 )
 from surrealengine.logging import logger
 
@@ -220,7 +220,7 @@ async def main():
             .project(
                 name=True,
                 email=True,
-                location=f"string::concat(city, ', ', country)",
+                location="string::concat(city, ', ', country)",
                 is_adult="age >= 18"
             ) \
             .execute()

@@ -3,7 +3,6 @@
 This module provides utilities for building complex expressions
 that can be used in conditional aggregations and filtering.
 """
-import json
 from typing import Any, Union, Optional
 from .record_id_utils import RecordIdUtils
 from .surrealql import escape_identifier, escape_literal

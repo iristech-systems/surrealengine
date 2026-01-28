@@ -2,8 +2,7 @@ import asyncio
 import datetime
 from surrealengine import (
     Document, RelationDocument, StringField, IntField, FloatField,
-    BooleanField, DateTimeField, ListField, ReferenceField,
-    create_connection
+    BooleanField, DateTimeField, create_connection
 )
 
 

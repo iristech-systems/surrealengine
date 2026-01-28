@@ -4,10 +4,9 @@ This module provides support for building and executing aggregation pipelines
 in SurrealEngine. Aggregation pipelines allow for complex data transformations
 and analysis through a series of stages.
 """
-import json
 from .surrealql import escape_literal
 import re
-from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from .connection import ConnectionRegistry
 
@@ -176,13 +175,11 @@ class AggregationPipeline:
         base_query = self.query_set.get_raw_query()
         
         # Extract the FROM clause and any clauses that come after it
-        from_index = base_query.upper().find("FROM")
-        if from_index == -1:
+        from .utils.parsing import split_query_on_from
+        select_part, rest_part = split_query_on_from(base_query)
+        
+        if not rest_part:
             return base_query
-            
-        # Split the query into the SELECT part and the rest
-        select_part = base_query[:from_index].strip()
-        rest_part = base_query[from_index:].strip()
         
         # Process the stages to modify the query
         for stage in self.stages:
@@ -450,39 +447,49 @@ class AggregationPipeline:
         
         return final_query
         
-    async def execute(self, connection=None):
+    def execute(self, connection=None):
         """Execute the pipeline and return results.
         
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
+
         Args:
             connection: Optional connection to use
             
         Returns:
-            A list of result rows (dicts) from the final SELECT statement
+            A list of result rows (dicts) (or awaitable)
         """
         query = self.build_query()
-        connection = connection or self.connection or ConnectionRegistry.get_default_connection()
-        results = await connection.client.query(query)
+        connection = connection or self.connection or ConnectionRegistry.get_default_connection(async_mode=None)
+        
+        if not connection.is_async():
+            return self.execute_sync(connection)
+            
+        async def _execute_async():
+            results = await connection.client.query(query)
 
-        # Normalize RPC response to a list of row dicts, similar to QuerySet.all()
-        if not results:
-            return []
+            # Normalize RPC response to a list of row dicts, similar to QuerySet.all()
+            if not results:
+                return []
 
-        rows = None
-        if isinstance(results, list):
-            if results and isinstance(results[0], dict):
-                rows = results
+            rows = None
+            if isinstance(results, list):
+                if results and isinstance(results[0], dict):
+                    rows = results
+                else:
+                    for part in reversed(results):
+                        if isinstance(part, list):
+                            rows = part
+                            break
             else:
-                for part in reversed(results):
-                    if isinstance(part, list):
-                        rows = part
-                        break
-        else:
-            rows = results
-        if not rows:
-            return []
-        if isinstance(rows, dict):
-            rows = [rows]
-        return rows
+                rows = results
+            if not rows:
+                return []
+            if isinstance(rows, dict):
+                rows = [rows]
+            return rows
+            
+        return _execute_async()
         
     def execute_sync(self, connection=None):
         """Execute the pipeline synchronously.

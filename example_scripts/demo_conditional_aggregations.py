@@ -5,12 +5,11 @@ without requiring a live database connection.
 """
 
 from surrealengine import (
-    Document, StringField, IntField, FloatField,
+    Document, StringField, FloatField,
     Count, Sum, Mean, CountIf, SumIf, MeanIf, MinIf, MaxIf, DistinctCountIf,
     Expr
 )
 from surrealengine.query.base import QuerySet
-from surrealengine.aggregation import AggregationPipeline
 
 
 class MockConnection:

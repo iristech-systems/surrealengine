@@ -2,7 +2,7 @@
 DataGrid Query Helpers for SurrealEngine - Efficient database querying for grid data
 """
 
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 from decimal import Decimal
 

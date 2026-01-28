@@ -5,12 +5,10 @@ a database connection, to verify the implementation is correct.
 """
 
 from surrealengine import (
-    Document, StringField, IntField, FloatField,
-    Count, Sum, Mean, CountIf, SumIf, MeanIf, MinIf, MaxIf, DistinctCountIf,
-    Expr
+    Document, StringField, FloatField,
+    Count, Sum, Mean, CountIf, SumIf, MeanIf, Expr
 )
 from surrealengine.query.base import QuerySet
-from surrealengine.aggregation import AggregationPipeline
 
 
 class MockConnection:

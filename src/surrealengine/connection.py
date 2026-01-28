@@ -1,5 +1,4 @@
-"""
-Connection management for SurrealDB with pooling and registry support.
+"""Connection management for SurrealDB with pooling and registry support.
 
 This module provides connection classes for both synchronous and asynchronous
 operations with SurrealDB. It includes connection pooling, retry logic,
@@ -26,9 +25,12 @@ from threading import Lock, Event
 import asyncio
 from contextvars import ContextVar
 from .schemaless import SurrealEngine
+from contextlib import contextmanager
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+
 
 # Optional OpenTelemetry
 try:
@@ -37,8 +39,6 @@ try:
 except Exception:
     _otel_trace = None
     _otel_tracer = None
-
-from contextlib import contextmanager
 
 @contextmanager
 def _maybe_span(name: str, attributes: Optional[Dict[str, Any]] = None):
@@ -62,6 +62,9 @@ def _maybe_span(name: str, attributes: Optional[Dict[str, Any]] = None):
 
 # ContextVar-backed default connection (per-task)
 _default_connection_var: ContextVar[Optional[Union['SurrealEngineAsyncConnection','SurrealEngineSyncConnection']]] = ContextVar("surrealengine_default_connection", default=None)
+
+# ContextVar for transaction connection pinning (per-task)
+_current_transaction_connection: ContextVar[Optional[Any]] = ContextVar("surrealengine_transaction_connection", default=None)
 
 def set_default_connection(conn: Union['SurrealEngineAsyncConnection','SurrealEngineSyncConnection']) -> None:
     """Set per-task default connection using ContextVar."""
@@ -101,6 +104,7 @@ class ConnectionPoolBase(ABC):
         retry_delay: Initial delay in seconds between retries
         retry_backoff: Backoff multiplier for retry delay
         validate_on_borrow: Whether to validate connections when borrowing from the pool
+
     """
 
     def __init__(self, 
@@ -134,6 +138,7 @@ class ConnectionPoolBase(ABC):
             retry_delay: Initial delay in seconds between retries
             retry_backoff: Backoff multiplier for retry delay
             validate_on_borrow: Whether to validate connections when borrowing from the pool
+
         """
         self.url = url
         self.namespace = namespace
@@ -162,6 +167,7 @@ class ConnectionPoolBase(ABC):
 
         Returns:
             A new connection
+
         """
         pass
 
@@ -174,6 +180,7 @@ class ConnectionPoolBase(ABC):
 
         Returns:
             True if the connection is valid, False otherwise
+
         """
         pass
 
@@ -183,6 +190,7 @@ class ConnectionPoolBase(ABC):
 
         Args:
             connection: The connection to close
+
         """
         pass
 
@@ -192,6 +200,7 @@ class ConnectionPoolBase(ABC):
 
         Returns:
             A connection from the pool
+
         """
         pass
 
@@ -201,6 +210,7 @@ class ConnectionPoolBase(ABC):
 
         Args:
             connection: The connection to return
+
         """
         pass
 
@@ -226,6 +236,7 @@ class SyncConnectionPool(ConnectionPoolBase):
         in_use: Set of connections currently in use
         lock: Lock for thread-safe operations
         closed: Whether the pool is closed
+
     """
 
     def __init__(self, 
@@ -259,6 +270,7 @@ class SyncConnectionPool(ConnectionPoolBase):
             retry_delay: Initial delay in seconds between retries
             retry_backoff: Backoff multiplier for retry delay
             validate_on_borrow: Whether to validate connections when borrowing from the pool
+
         """
         super().__init__(
             url, namespace, database, username, password, 
@@ -287,6 +299,7 @@ class SyncConnectionPool(ConnectionPoolBase):
 
         Raises:
             Exception: If the connection cannot be created
+
         """
         try:
             # Create a SurrealEngineSyncConnection
@@ -317,6 +330,7 @@ class SyncConnectionPool(ConnectionPoolBase):
 
         Returns:
             True if the connection is valid, False otherwise
+
         """
         try:
             # Execute a simple query to check if the connection is valid
@@ -333,6 +347,7 @@ class SyncConnectionPool(ConnectionPoolBase):
 
         Args:
             connection: The connection to close (SurrealEngineSyncConnection)
+
         """
         try:
             connection.disconnect()
@@ -350,6 +365,7 @@ class SyncConnectionPool(ConnectionPoolBase):
         Raises:
             RuntimeError: If the pool is closed
             Exception: If a connection cannot be obtained
+
         """
         if self.closed:
             raise RuntimeError("Connection pool is closed")
@@ -395,6 +411,7 @@ class SyncConnectionPool(ConnectionPoolBase):
 
         Args:
             connection: The connection to return (SurrealEngineSyncConnection)
+
         """
         if self.closed:
             # Pool is closed, just close the connection
@@ -501,6 +518,7 @@ class AsyncConnectionPool(ConnectionPoolBase):
         in_use: Dictionary of connections currently in use and their timestamps
         lock: Asyncio lock for thread-safe operations
         closed: Whether the pool is closed
+
     """
 
     def __init__(self, 
@@ -534,6 +552,7 @@ class AsyncConnectionPool(ConnectionPoolBase):
             retry_delay: Initial delay in seconds between retries
             retry_backoff: Backoff multiplier for retry delay
             validate_on_borrow: Whether to validate connections when borrowing from the pool
+
         """
         super().__init__(
             url, namespace, database, username, password, 
@@ -564,6 +583,7 @@ class AsyncConnectionPool(ConnectionPoolBase):
 
         Raises:
             Exception: If the connection cannot be created
+
         """
         try:
             # Create a SurrealEngineAsyncConnection
@@ -594,6 +614,7 @@ class AsyncConnectionPool(ConnectionPoolBase):
 
         Returns:
             True if the connection is valid, False otherwise
+
         """
         try:
             # Execute a simple query to check if the connection is valid
@@ -610,6 +631,7 @@ class AsyncConnectionPool(ConnectionPoolBase):
 
         Args:
             connection: The connection to close (SurrealEngineAsyncConnection)
+
         """
         try:
             await connection.disconnect()
@@ -627,6 +649,7 @@ class AsyncConnectionPool(ConnectionPoolBase):
         Raises:
             RuntimeError: If the pool is closed
             Exception: If a connection cannot be obtained
+
         """
         if self.closed:
             raise RuntimeError("Async connection pool is closed")
@@ -695,6 +718,7 @@ class AsyncConnectionPool(ConnectionPoolBase):
 
         Args:
             connection: The connection to return (SurrealEngineAsyncConnection)
+
         """
         if self.closed:
             # Pool is closed, just close the connection
@@ -828,6 +852,7 @@ class ConnectionEvent:
 
     This class defines the event types that can be emitted by connections.
     """
+
     CONNECTED = "connected"
     DISCONNECTED = "disconnected"
     RECONNECTING = "reconnecting"
@@ -850,6 +875,7 @@ class ConnectionEventListener:
             event_type: The type of event
             connection: The connection that emitted the event
             **kwargs: Additional event data
+
         """
         pass
 
@@ -861,6 +887,7 @@ class ConnectionEventEmitter:
 
     Attributes:
         listeners: List of registered event listeners
+
     """
 
     def __init__(self) -> None:
@@ -872,6 +899,7 @@ class ConnectionEventEmitter:
 
         Args:
             listener: The listener to add
+
         """
         if listener not in self.listeners:
             self.listeners.append(listener)
@@ -881,6 +909,7 @@ class ConnectionEventEmitter:
 
         Args:
             listener: The listener to remove
+
         """
         if listener in self.listeners:
             self.listeners.remove(listener)
@@ -892,6 +921,7 @@ class ConnectionEventEmitter:
             event_type: The type of event
             connection: The connection that emitted the event
             **kwargs: Additional event data
+
         """
         for listener in self.listeners:
             try:
@@ -913,13 +943,16 @@ class OperationQueue:
         is_reconnecting: Whether the connection is currently reconnecting
         reconnection_event: Event that is set when reconnection is complete
         async_reconnection_event: Asyncio event that is set when reconnection is complete
+
     """
 
     def __init__(self, maxsize: int = 0, drop_policy: str = "block") -> None:
         """Initialize a new OperationQueue.
+
         Args:
             maxsize: Maximum queued operations per list (0 = unbounded)
             drop_policy: One of 'block' | 'drop_oldest' | 'error'
+
         """
         self.sync_operations: List[Tuple[Callable, List, Dict]] = []
         self.async_operations: List[Tuple[Callable, List, Dict]] = []
@@ -962,6 +995,7 @@ class OperationQueue:
             operation: The operation to queue
             args: The positional arguments for the operation
             kwargs: The keyword arguments for the operation
+
         """
         if args is None:
             args = []
@@ -990,6 +1024,7 @@ class OperationQueue:
             operation: The operation to queue
             args: The positional arguments for the operation
             kwargs: The keyword arguments for the operation
+
         """
         if args is None:
             args = []
@@ -1052,6 +1087,7 @@ class OperationQueue:
 
         Returns:
             True if reconnection completed, False if timed out
+
         """
         if not self.is_reconnecting:
             return True
@@ -1066,6 +1102,7 @@ class OperationQueue:
 
         Returns:
             True if reconnection completed, False if timed out
+
         """
         if not self.is_reconnecting:
             return True
@@ -1091,6 +1128,7 @@ class ReconnectionStrategy:
         initial_delay: Initial delay in seconds between reconnection attempts
         max_delay: Maximum delay in seconds between reconnection attempts
         backoff_factor: Backoff multiplier for reconnection delay
+
     """
 
     def __init__(self, max_attempts: int = 10, initial_delay: float = 1.0, 
@@ -1102,6 +1140,7 @@ class ReconnectionStrategy:
             initial_delay: Initial delay in seconds between reconnection attempts
             max_delay: Maximum delay in seconds between reconnection attempts
             backoff_factor: Backoff multiplier for reconnection delay
+
         """
         self.max_attempts = max(1, max_attempts)
         self.initial_delay = max(0.1, initial_delay)
@@ -1116,6 +1155,7 @@ class ReconnectionStrategy:
 
         Returns:
             The delay in seconds for the reconnection attempt
+
         """
         delay = self.initial_delay * (self.backoff_factor ** attempt)
         return min(delay, self.max_delay)
@@ -1131,6 +1171,7 @@ class RetryStrategy:
         retry_limit: Maximum number of retries
         retry_delay: Initial delay in seconds between retries
         retry_backoff: Backoff multiplier for retry delay
+
     """
 
     def __init__(self, retry_limit: int = 3, retry_delay: float = 1.0, retry_backoff: float = 2.0) -> None:
@@ -1140,6 +1181,7 @@ class RetryStrategy:
             retry_limit: Maximum number of retries
             retry_delay: Initial delay in seconds between retries
             retry_backoff: Backoff multiplier for retry delay
+
         """
         self.retry_limit = max(0, retry_limit)
         self.retry_delay = max(0.1, retry_delay)
@@ -1153,6 +1195,7 @@ class RetryStrategy:
 
         Returns:
             The delay in seconds for the retry attempt
+
         """
         return self.retry_delay * (self.retry_backoff ** attempt)
 
@@ -1165,6 +1208,7 @@ class RetryStrategy:
 
         Returns:
             True if the operation should be retried, False otherwise
+
         """
         # Don't retry if we've reached the retry limit
         if attempt >= self.retry_limit:
@@ -1186,6 +1230,7 @@ class RetryStrategy:
 
         Raises:
             Exception: If the operation fails after all retries
+
         """
         last_exception = None
 
@@ -1225,6 +1270,7 @@ class RetryStrategy:
 
         Raises:
             Exception: If the operation fails after all retries
+
         """
         last_exception = None
 
@@ -1282,6 +1328,7 @@ def parse_connection_string(connection_string: str) -> Dict[str, Any]:
 
     Raises:
         ValueError: If the connection string is invalid
+
     """
     # Validate the connection string
     if not connection_string:
@@ -1437,6 +1484,7 @@ class BaseSurrealEngineConnection(Protocol):
     This protocol defines the common interface that both synchronous and
     asynchronous connections must implement.
     """
+
     url: Optional[str]
     namespace: Optional[str]
     database: Optional[str]
@@ -1449,6 +1497,10 @@ class BaseSurrealEngineConnection(Protocol):
         """Get dynamic table accessor."""
         ...
 
+    def is_async(self) -> bool:
+        """Check if the connection is asynchronous."""
+        ...
+
 class ConnectionPoolClient:
     """Client that proxies requests to connections from a connection pool.
 
@@ -1457,6 +1509,7 @@ class ConnectionPoolClient:
 
     Attributes:
         pool: The connection pool to get connections from
+
     """
 
     def __init__(self, pool: 'AsyncConnectionPool') -> None:
@@ -1464,8 +1517,23 @@ class ConnectionPoolClient:
 
         Args:
             pool: The connection pool to get connections from
+
         """
         self.pool = pool
+
+
+    async def _get_connection(self) -> Tuple[Any, bool]:
+        """Get a connection, either from the transaction context or the pool."""
+        txn_conn = _current_transaction_connection.get()
+        if txn_conn:
+            return txn_conn, False
+        conn = await self.pool.get_connection()
+        return conn, True
+        
+    async def _return_connection(self, connection: Any, should_return: bool) -> None:
+        """Return a connection if it was borrowed from the pool."""
+        if should_return:
+            await self.pool.return_connection(connection)
 
     async def create(self, collection: str, data: Dict[str, Any]) -> Any:
         """Create a new record in the database.
@@ -1476,9 +1544,10 @@ class ConnectionPoolClient:
 
         Returns:
             The created record
+
         """
         with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "create", "db.collection": collection}):
-            connection = await self.pool.get_connection()
+            connection, should_return = await self._get_connection()
             try:
                 from .document import serialize_http_safe
                 data = serialize_http_safe(data)
@@ -1495,15 +1564,16 @@ class ConnectionPoolClient:
 
         Returns:
             The updated record
+
         """
         with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "update"}):
-            connection = await self.pool.get_connection()
+            connection, should_return = await self._get_connection()
             try:
                 from .document import serialize_http_safe
                 data = serialize_http_safe(data)
                 return await connection.client.update(id, data)
             finally:
-                await self.pool.return_connection(connection)
+                await self._return_connection(connection, should_return)
 
     async def delete(self, id: str) -> Any:
         """Delete a record from the database.
@@ -1513,12 +1583,13 @@ class ConnectionPoolClient:
 
         Returns:
             The result of the delete operation
+
         """
-        connection = await self.pool.get_connection()
+        connection, should_return = await self._get_connection()
         try:
             return await connection.client.delete(id)
         finally:
-            await self.pool.return_connection(connection)
+            await self._return_connection(connection, should_return)
 
     async def select(self, id: str) -> Any:
         """Select a record from the database.
@@ -1528,12 +1599,13 @@ class ConnectionPoolClient:
 
         Returns:
             The selected record
+
         """
-        connection = await self.pool.get_connection()
+        connection, should_return = await self._get_connection()
         try:
             return await connection.client.select(id)
         finally:
-            await self.pool.return_connection(connection)
+            await self._return_connection(connection, should_return)
 
     async def query(self, query: str) -> Any:
         """Execute a query against the database.
@@ -1543,12 +1615,13 @@ class ConnectionPoolClient:
 
         Returns:
             The result of the query
+
         """
-        connection = await self.pool.get_connection()
+        connection, should_return = await self._get_connection()
         try:
             return await connection.client.query(query)
         finally:
-            await self.pool.return_connection(connection)
+            await self._return_connection(connection, should_return)
 
     async def insert(self, collection: str, data: List[Dict[str, Any]]) -> Any:
         """Insert multiple records into the database.
@@ -1559,15 +1632,16 @@ class ConnectionPoolClient:
 
         Returns:
             The inserted records
+
         """
         with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.namespace": self.pool.namespace, "db.operation": "insert", "db.collection": collection, "db.row_count": len(data) if isinstance(data, list) else 1}):
-            connection = await self.pool.get_connection()
+            connection, should_return = await self._get_connection()
             try:
                 from .document import serialize_http_safe
                 data = [serialize_http_safe(d) for d in data] if isinstance(data, list) else serialize_http_safe(data)
                 return await connection.client.insert(collection, data)
             finally:
-                await self.pool.return_connection(connection)
+                await self._return_connection(connection, should_return)
 
     async def signin(self, credentials: Dict[str, str]) -> Any:
         """Sign in to the database.
@@ -1577,12 +1651,13 @@ class ConnectionPoolClient:
 
         Returns:
             The result of the sign-in operation
+
         """
-        connection = await self.pool.get_connection()
+        connection, should_return = await self._get_connection()
         try:
             return await connection.client.signin(credentials)
         finally:
-            await self.pool.return_connection(connection)
+            await self._return_connection(connection, should_return)
 
     async def use(self, namespace: str, database: str) -> Any:
         """Use a specific namespace and database.
@@ -1593,12 +1668,13 @@ class ConnectionPoolClient:
 
         Returns:
             The result of the use operation
+
         """
-        connection = await self.pool.get_connection()
+        connection, should_return = await self._get_connection()
         try:
             return await connection.client.use(namespace, database)
         finally:
-            await self.pool.return_connection(connection)
+            await self._return_connection(connection, should_return)
 
     async def close(self) -> None:
         """Close the connection pool."""
@@ -1617,6 +1693,7 @@ class ConnectionRegistry:
         _default_sync_connection: The default sync connection to use when none is specified
         _async_connections: Dictionary of named async connections
         _sync_connections: Dictionary of named sync connections
+
     """
 
     _default_async_connection: Optional['SurrealEngineAsyncConnection'] = None
@@ -1630,6 +1707,7 @@ class ConnectionRegistry:
 
         Args:
             connection: The async connection to set as default
+
         """
         cls._default_async_connection = connection
 
@@ -1639,6 +1717,7 @@ class ConnectionRegistry:
 
         Args:
             connection: The sync connection to set as default
+
         """
         cls._default_sync_connection = connection
 
@@ -1648,6 +1727,7 @@ class ConnectionRegistry:
 
         Args:
             connection: The connection to set as default
+
         """
         if isinstance(connection, SurrealEngineAsyncConnection):
             cls.set_default_async_connection(connection)
@@ -1665,6 +1745,7 @@ class ConnectionRegistry:
 
         Raises:
             RuntimeError: If no default async connection has been set
+
         """
         if cls._default_async_connection is None:
             raise RuntimeError("No default async connection has been set. Call set_default_async_connection() first.")
@@ -1679,24 +1760,35 @@ class ConnectionRegistry:
 
         Raises:
             RuntimeError: If no default sync connection has been set
+
         """
         if cls._default_sync_connection is None:
             raise RuntimeError("No default sync connection has been set. Call set_default_sync_connection() first.")
         return cls._default_sync_connection
 
     @classmethod
-    def get_default_connection(cls, async_mode: bool = True) -> Union['SurrealEngineAsyncConnection', 'SurrealEngineSyncConnection']:
+    def get_default_connection(cls, async_mode: Optional[bool] = True) -> Union['SurrealEngineAsyncConnection', 'SurrealEngineSyncConnection']:
         """Get the default connection based on the mode.
 
         Args:
-            async_mode: Whether to get the async or sync connection
+            async_mode: Whether to get the async (True) or sync (False) connection.
+                       If None, tries to get the async connection first, then sync.
 
         Returns:
-            The default connection of the requested type
+            The default connection of the requested type (or available type if None)
 
         Raises:
-            RuntimeError: If no default connection of the requested type has been set
+            RuntimeError: If no default connection is found
         """
+        if async_mode is None:
+            # Auto-detect: prefer async, then sync
+            if cls._default_async_connection is not None:
+                return cls._default_async_connection
+            if cls._default_sync_connection is not None:
+                return cls._default_sync_connection
+            # If neither is set, let get_default_async_connection raise the error
+            return cls.get_default_async_connection()
+
         if async_mode:
             return cls.get_default_async_connection()
         else:
@@ -1709,6 +1801,7 @@ class ConnectionRegistry:
         Args:
             name: The name to register the connection under
             connection: The async connection to register
+
         """
         cls._async_connections[name] = connection
 
@@ -1719,6 +1812,7 @@ class ConnectionRegistry:
         Args:
             name: The name to register the connection under
             connection: The sync connection to register
+
         """
         cls._sync_connections[name] = connection
 
@@ -1729,6 +1823,7 @@ class ConnectionRegistry:
         Args:
             name: The name to register the connection under
             connection: The connection to register
+
         """
         if isinstance(connection, SurrealEngineAsyncConnection):
             cls.add_async_connection(name, connection)
@@ -1749,6 +1844,7 @@ class ConnectionRegistry:
 
         Raises:
             KeyError: If no async connection with the given name exists
+
         """
         if name not in cls._async_connections:
             raise KeyError(f"No async connection named '{name}' exists.")
@@ -1766,6 +1862,7 @@ class ConnectionRegistry:
 
         Raises:
             KeyError: If no sync connection with the given name exists
+
         """
         if name not in cls._sync_connections:
             raise KeyError(f"No sync connection named '{name}' exists.")
@@ -1784,6 +1881,7 @@ class ConnectionRegistry:
 
         Raises:
             KeyError: If no connection of the requested type with the given name exists
+
         """
         if async_mode:
             return cls.get_async_connection(name)
@@ -1804,11 +1902,12 @@ class SurrealEngineAsyncConnection:
         database: The database to use
         username: The username for authentication
         password: The password for authentication
-        client: The SurrealDB async client instance or ConnectionPoolClient
+        client: The SurrealDB async client instance or ConnectionPoolClient if pooling is used
         use_pool: Whether to use a connection pool
         pool: The connection pool if use_pool is True
         pool_size: The size of the connection pool
         max_idle_time: Maximum time in seconds a connection can be idle before being closed
+
     """
 
     def __init__(self, url: Optional[str] = None, namespace: Optional[str] = None, 
@@ -1839,6 +1938,7 @@ class SurrealEngineAsyncConnection:
             retry_delay: Initial delay in seconds between retries
             retry_backoff: Backoff multiplier for retry delay
             validate_on_borrow: Whether to validate connections when borrowing from the pool
+
         """
         self.url = url
         self.namespace = namespace
@@ -1868,8 +1968,11 @@ class SurrealEngineAsyncConnection:
 
         Returns:
             The connection instance
+
         """
         await self.connect()
+        from .context import set_active_context_connection
+        self._context_token = set_active_context_connection(self)
         return self
 
     async def __aexit__(self, exc_type: Optional[Type[BaseException]], 
@@ -1881,7 +1984,11 @@ class SurrealEngineAsyncConnection:
             exc_type: The exception type, if an exception was raised
             exc_val: The exception value, if an exception was raised
             exc_tb: The exception traceback, if an exception was raised
+
         """
+        from .context import reset_active_context_connection
+        if hasattr(self, '_context_token'):
+            reset_active_context_connection(self._context_token)
         await self.disconnect()
 
     @property
@@ -1890,8 +1997,18 @@ class SurrealEngineAsyncConnection:
 
         Returns:
             A SurrealEngine instance for accessing tables dynamically
+
         """
         return SurrealEngine(self)
+
+    def is_async(self) -> bool:
+        """Check if the connection is asynchronous.
+
+        Returns:
+            True
+
+        """
+        return True
 
     async def connect(self) -> Any:
         """Connect to the database.
@@ -1902,6 +2019,7 @@ class SurrealEngineAsyncConnection:
 
         Returns:
             The SurrealDB client instance or ConnectionPoolClient
+
         """
         if not self.client:
             if self.use_pool:
@@ -1956,31 +2074,56 @@ class SurrealEngineAsyncConnection:
     async def transaction(self, coroutines: list) -> list:
         """Execute multiple operations in a transaction.
 
-        This method executes a list of coroutines within a transaction,
-        committing the transaction if all operations succeed or canceling
-        it if any operation fails.
+        This method executes a list of coroutines within a transaction context.
+        
+        When using a connection pool, this method **pins a single connection** to the current
+        asyncio task for the duration of the transaction. This ensures that all operations 
+        within the loop use the same underlying physical connection, guaranteeing ACUITY/atomicity.
+
+        Warning:
+            - Do not manually commit or cancel transactions within the coroutines.
+            - All operations must await; mixing sync/async inside may have unexpected results if not careful.
 
         Args:
             coroutines: List of coroutines to execute in the transaction
 
         Returns:
-            List of results from the coroutines
+            List of results from the executed coroutines (in order)
 
         Raises:
-            Exception: If any operation in the transaction fails
+            Exception: If any operation in the transaction fails, the transaction is rolled back (CANCEL TRANSACTION).
+
         """
-        with _maybe_span("surreal.transaction", {"db.system": "surrealdb", "db.name": self.database, "db.namespace": self.namespace, "db.operation": "transaction"}):
-            await self.client.query("BEGIN TRANSACTION;")
-            try:
-                results = []
-                for coro in coroutines:
-                    result = await coro
-                    results.append(result)
-                await self.client.query("COMMIT TRANSACTION;")
-                return results
-            except Exception as e:
-                await self.client.query("CANCEL TRANSACTION;")
-                raise e
+        # Connection pinning context if using pool
+        pinned_connection = None
+        token = None
+        
+        if self.use_pool:
+            pinned_connection = await self.pool.get_connection()
+            token = _current_transaction_connection.set(pinned_connection)
+
+        try:
+            with _maybe_span("surreal.transaction", {"db.system": "surrealdb", "db.name": self.database, "db.namespace": self.namespace, "db.operation": "transaction"}):
+                await self.client.query("BEGIN TRANSACTION; RETURN 1;")
+                try:
+                    results = []
+                    for coro in coroutines:
+                        result = await coro
+                        results.append(result)
+                    await self.client.query("COMMIT TRANSACTION; RETURN 1;")
+                    return results
+                except Exception as e:
+                    logger.error(f"Transaction failed: {e}", exc_info=True)
+                    try:
+                        await self.client.query("CANCEL TRANSACTION; RETURN 1;")
+                    except Exception:
+                        pass
+                    raise e
+        finally:
+            if token:
+                _current_transaction_connection.reset(token)
+            if pinned_connection:
+                await self.pool.return_connection(pinned_connection)
 
 
 def create_connection(url: Optional[str] = None, namespace: Optional[str] = None, 
@@ -2071,6 +2214,7 @@ def create_connection(url: Optional[str] = None, namespace: Optional[str] = None
         >>> # async with connection:  # in async context
         ... #     # Use connection
         ... #     pass
+
     """
     if async_mode:
         connection = SurrealEngineAsyncConnection(
@@ -2132,6 +2276,7 @@ class SurrealEngineSyncConnection:
         username: The username for authentication
         password: The password for authentication
         client: The SurrealDB sync client instance
+
     """
 
     def __init__(self, url: Optional[str] = None, namespace: Optional[str] = None, 
@@ -2148,6 +2293,7 @@ class SurrealEngineSyncConnection:
             password: The password for authentication
             name: The name to register this connection under in the registry
             make_default: Whether to set this connection as the default
+
         """
         self.url = url
         self.namespace = namespace
@@ -2166,8 +2312,11 @@ class SurrealEngineSyncConnection:
 
         Returns:
             The connection instance
+
         """
         self.connect()
+        from .context import set_active_context_connection
+        self._context_token = set_active_context_connection(self)
         return self
 
     def __exit__(self, exc_type: Optional[Type[BaseException]], 
@@ -2179,7 +2328,11 @@ class SurrealEngineSyncConnection:
             exc_type: The exception type, if an exception was raised
             exc_val: The exception value, if an exception was raised
             exc_tb: The exception traceback, if an exception was raised
+
         """
+        from .context import reset_active_context_connection
+        if hasattr(self, '_context_token'):
+            reset_active_context_connection(self._context_token)
         self.disconnect()
 
     @property
@@ -2188,8 +2341,18 @@ class SurrealEngineSyncConnection:
 
         Returns:
             A SurrealEngine instance for accessing tables dynamically
+
         """
         return SurrealEngine(self)
+
+    def is_async(self) -> bool:
+        """Check if the connection is asynchronous.
+
+        Returns:
+            False
+
+        """
+        return False
 
     def connect(self) -> Any:
         """Connect to the database.
@@ -2199,6 +2362,7 @@ class SurrealEngineSyncConnection:
 
         Returns:
             The SurrealDB client instance
+
         """
         if not self.client:
             # Create the client directly
@@ -2238,6 +2402,7 @@ class SurrealEngineSyncConnection:
 
         Raises:
             Exception: If any operation in the transaction fails
+
         """
         self.client.query("BEGIN TRANSACTION;")
         try:

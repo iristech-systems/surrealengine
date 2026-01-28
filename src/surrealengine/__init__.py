@@ -55,9 +55,9 @@ from .connection import (
     create_connection,
     BaseSurrealEngineConnection
 )
+from .raw_connection import RawSurrealConnection
 
-# For backward compatibility
-SurrealEngineConnection = SurrealEngineAsyncConnection
+
 from .schemaless import SurrealEngine
 from .document import Document, RelationDocument, RelationshipAccessor
 from .signals import receiver
@@ -91,8 +91,12 @@ from .fields import (
     URLField,
     IPAddressField,
     SlugField,
-    ChoiceField
+    ChoiceField,
+    EmbeddedField,
+    RecordIDField,
+    VectorField
 )
+from .embedded import EmbeddedDocument
 from .materialized_view import (
     MaterializedView, 
     Aggregation, 
@@ -122,6 +126,7 @@ from .aggregation import AggregationPipeline
 from .expr import Expr
 from .surrealql import escape_identifier, escape_literal
 from .record_id_utils import RecordIdUtils
+from surrealdb import RecordID
 from .schema import (
     get_document_classes,
     create_tables_from_module,
@@ -136,9 +141,16 @@ from .datagrid_api import (
     parse_datatables_params,
     format_datatables_response
 )
+from .context import using_connection, get_active_connection
+from .reactive import ReactiveQuerySet
+from .events import LiveEvent, Event
+from .functions import surreal_func, SurrealFunction
 from .relation_update import patch_relation_document
 
-__version__ = "0.6.0"
+# For backward compatibility
+SurrealEngineConnection = SurrealEngineAsyncConnection
+
+__version__ = "0.7.0"
 __all__ = [
     "SurrealEngine",
     "SurrealEngineAsyncConnection",
@@ -147,6 +159,7 @@ __all__ = [
     "BaseSurrealEngineConnection",
     "create_connection",
     "ConnectionRegistry",
+    "RawSurrealConnection",
     "Document",
     "DocumentMetaOptions",
     "RelationDocument",
@@ -155,7 +168,9 @@ __all__ = [
     "DoesNotExist",
     "MultipleObjectsReturned",
     "ValidationError",
+    "EmbeddedDocument",
     "Field",
+    "EmbeddedField",
     "StringField",
     "NumberField",
     "IntField",
@@ -175,6 +190,8 @@ __all__ = [
     "RecordIdUtils",
     "DurationField",
     "OptionField",
+    "FutureField",
+    "DecimalField",
     "LiteralField",
     "RangeField",
     "SetField",
@@ -221,6 +238,17 @@ __all__ = [
     # SurrealQL helpers
     "escape_identifier",
     "escape_literal",
+    # Context management
+    "using_connection",
+    "get_active_connection",
+    "ReactiveQuerySet",
+    "LiveEvent",
+    "Event",
+    "surreal_func", 
+    "SurrealFunction",
+    "RecordIDField",
+    "RecordID",
+    "VectorField",
 ]
 
 # Apply the patch to add update methods to RelationDocument

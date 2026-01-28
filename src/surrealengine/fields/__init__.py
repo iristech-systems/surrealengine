@@ -16,11 +16,12 @@ from .geometry import GeometryField
 from .id import RecordIDField
 from .specialized import (
     BytesField, RegexField, DecimalField, UUIDField, LiteralField,
-    EmailField, URLField, IPAddressField, SlugField, ChoiceField
+    EmailField, URLField, IPAddressField, SlugField, ChoiceField, VectorField
 )
 from .additional import (
     OptionField, FutureField, TableField, RangeField
 )
+from .embedded import EmbeddedField
 
 # Export all classes at the top level to maintain the same import interface
 __all__ = [
@@ -32,6 +33,6 @@ __all__ = [
     'GeometryField',
     'RecordIDField',
     'BytesField', 'RegexField', 'DecimalField', 'UUIDField', 'LiteralField',
-    'EmailField', 'URLField', 'IPAddressField', 'SlugField', 'ChoiceField',
-    'OptionField', 'FutureField', 'TableField', 'RangeField',
+    'EmailField', 'URLField', 'IPAddressField', 'SlugField', 'ChoiceField', 'VectorField',
+    'OptionField', 'FutureField', 'TableField', 'RangeField', 'EmbeddedField',
 ]

@@ -15,19 +15,12 @@ Key Features:
     - Signal support for field operations
     - Extensible validation system
 """
-import datetime
-import re
-import uuid
-from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional, Pattern, Type, TypeVar, Union, cast
+from typing import Any, List, Optional, Type, TypeVar
 
-from surrealdb import RecordID
-from ..exceptions import ValidationError
 from ..signals import (
     pre_validate, post_validate, pre_to_db, post_to_db,
     pre_from_db, post_from_db, SIGNAL_SUPPORT
 )
-import json
 
 # Type variable for field types
 T = TypeVar('T')

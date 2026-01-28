@@ -3,17 +3,24 @@
     "dockerComposeFile": "compose.yml",
     "service": "app",
     "workspaceFolder": "/workspace",
-    "extensions": [
-        "ms-python.python",
-        "ms-python.vscode-pylance",
-        "ms-toolsai.jupyter"
-    ],
-    "settings": {
-        "python.defaultInterpreterPath": "/usr/local/bin/python3.13",
-        "python.linting.enabled": true,
-        "python.linting.pylintEnabled": true
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "ms-toolsai.jupyter"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/local/bin/python3.12",
+                "python.linting.enabled": true,
+                "python.linting.pylintEnabled": true
+            }
+        }
     },
-    "forwardPorts": [8888, 8001],
-    "postCreateCommand": "pip install --no-cache-dir -r requirements.txt",
+    "forwardPorts": [
+        8888,
+        8001
+    ],
+    "postCreateCommand": "pip install --no-cache-dir maturin && pip install -e .[dev,all]",
     "remoteUser": "root"
 }

@@ -5,8 +5,7 @@ This module provides a query expression system that allows building complex
 queries programmatically and passing them to objects() and filter() methods.
 """
 
-from typing import Any, Dict, List, Optional, Union
-import json
+from typing import List, Optional
 from .surrealql import escape_literal
 
 

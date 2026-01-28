@@ -4,19 +4,29 @@ __pycache__/
 .vscode/
 .devcontainer/devcontainer-lock.json
 notebooks/*.ipynb_checkpoints/
+verify.log
+/verify_*.py
+road-to-1.0.md
+design_discussion.md
+check_id.py
 
 # Archive directories
 archive_*/
 *_archive/
 /external_docs/
-surrealdb_documentation/
 test_data/
 notebooks/v0_5_0_features.ipynb
 example_scripts/verify_v0_5_0_features.py
-
+surrealdb_documentation/
 
 # Build artifacts
 *.egg-info/
 dist/
 build/
 tests/
+
+# Rust
+target/
+
+docs/iristech_logo.png
+ROADMAP.md

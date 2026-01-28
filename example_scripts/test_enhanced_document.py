@@ -11,7 +11,6 @@ All using your existing User.objects.filter() patterns!
 """
 
 import asyncio
-import datetime
 from surrealengine import Document, StringField, IntField, create_connection
 from surrealengine.logging import logger
 

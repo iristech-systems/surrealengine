@@ -1,5 +1,5 @@
 import re
-from typing import Any, List, Optional, Pattern, Type, Union
+from typing import Any, Optional, Pattern, Union
 
 from .base import Field
 

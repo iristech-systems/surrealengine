@@ -1,5 +1,4 @@
-"""
-Document classes for object-document mapping with SurrealDB.
+"""Document classes for object-document mapping with SurrealDB.
 
 This module provides the foundation for defining and working with documents
 in SurrealDB using an Object-Document Mapper (ODM) pattern. It includes
@@ -15,11 +14,12 @@ Classes:
 import json
 import datetime
 import logging
-from dataclasses import dataclass, field as dataclass_field, make_dataclass
-from typing import Any, Dict, List, Optional, Type, Union, ClassVar
+from dataclasses import field as dataclass_field, make_dataclass
+from typing import Any, Dict, List, Optional, Type, Union
 from .query import QuerySet, RelationQuerySet, QuerySetDescriptor
 from .fields import Field, RecordIDField, ReferenceField, DictField
-from .connection import ConnectionRegistry, SurrealEngineAsyncConnection, SurrealEngineSyncConnection
+from .connection import ConnectionRegistry
+from .context import get_active_connection
 from .exceptions import ValidationError
 from surrealdb import RecordID
 from .signals import (
@@ -56,7 +56,7 @@ def _iso_from_wrapper(w) -> str:
     return str(w)
 
 # Universal HTTP-safe serializer for outgoing payloads
-def _serialize_http_safe(value: Any):
+def serialize_http_safe(value: Any):
     """Recursively process values for SurrealDB SDK.
 
     Convert IsoDateTimeWrapper back to raw datetime - the SDK handles that better.
@@ -95,15 +95,15 @@ def _serialize_http_safe(value: Any):
         if isinstance(iso_val, str):
             try:
                 return _dt.datetime.fromisoformat(iso_val.replace('Z', '+00:00'))
-            except:
+            except Exception:
                 pass
         return value
 
     # Recursively handle collections
     if isinstance(value, list):
-        return [_serialize_http_safe(v) for v in value]
+        return [serialize_http_safe(v) for v in value]
     if isinstance(value, dict):
-        return {k: _serialize_http_safe(v) for k, v in value.items()}
+        return {k: serialize_http_safe(v) for k, v in value.items()}
 
     # Pass through everything else unchanged
     return value
@@ -174,7 +174,11 @@ class DocumentMetaclass(type):
         _meta: Dictionary of metadata for the document class
         _fields: Dictionary of fields for the document class
         _fields_ordered: List of field names in order of definition
+        _registry: Dictionary mapping collection names to Document classes
+
     """
+
+    _registry: Dict[str, Type] = {}
 
     def __new__(mcs, name: str, bases: tuple, attrs: Dict[str, Any]) -> Type:
         """Create a new Document class.
@@ -189,6 +193,7 @@ class DocumentMetaclass(type):
 
         Returns:
             The new Document class
+
         """
         # Skip processing for the base Document class
         if name == 'Document' and attrs.get('__module__') == __name__:
@@ -204,6 +209,7 @@ class DocumentMetaclass(type):
             'time_series': getattr(meta, 'time_series', False),
             'time_field': getattr(meta, 'time_field', None),
             'abstract': getattr(meta, 'abstract', False),
+            'events': getattr(meta, 'events', []),
         }
 
         # Process fields
@@ -266,15 +272,78 @@ class DocumentMetaclass(type):
                     # Connect with weak=False to ensure the handler persists (since it's a closure)
                     signal.connect(handler, sender=new_class, weak=False)
 
+        # Register the class in the global registry
+        collection = new_class._meta.get('collection')
+        if collection:
+            DocumentMetaclass._registry[collection] = new_class
+
         return new_class
 
+
+
+class CallableRelationship:
+    """Proxy that behaves like a QuerySet but can be called to refine the relation target.
+    
+    returned by: document.rel.edge_name
+    usage:
+      - await document.rel.edge_name              (wildcard ->edge->?)
+      - await document.rel.edge_name(User)        (specific ->edge->user)
+    """
+
+    def __init__(self, queryset, edge_name: str):
+        self._qs = queryset
+        self._edge_name = edge_name
+        # Default behavior: ->edge->?
+        self._default_qs = queryset.out(edge_name)
+
+    def __call__(self, target: Any = None):
+        if target is None:
+            return self._default_qs
+            
+        # Refine target: ->edge->target_collection
+        collection = target
+        is_model = False
+        
+        # Check if target is a Document model
+        if hasattr(target, "_get_collection_name"):
+            collection = target._get_collection_name()
+            is_model = True
+            
+        # Manually construct the traversal path
+        # We start from the base queryset (which has no traversal yet)
+        clone = self._qs._clone()
+        base_path = getattr(clone, "_traversal_path", "") or ""
+        # Append explicit path: ->edge->collection
+        clone._traversal_path = f"{base_path}->{self._edge_name}->{collection}"
+        
+        # Configure hydration if target is a model
+        if is_model:
+            clone._traversal_target_is_model = True
+            clone.document_class = target
+            
+        return clone
+
+    def __getattr__(self, name):
+        return getattr(self._default_qs, name)
+        
+    def __iter__(self):
+        return iter(self._default_qs)
+        
+    def __await__(self):
+        return self._default_qs.__await__()
+        
+    def __repr__(self):
+        return repr(self._default_qs)
 
 
 class RelationshipAccessor:
     """Helper for magic relation access via .rel property.
     
-    Allows syntax like: document.rel.knows.out()
+    Allows syntax like: 
+    - document.rel.knows.all()
+    - document.rel.knows(User).all()
     """
+
     def __init__(self, document):
         self._document = document
 
@@ -285,7 +354,8 @@ class RelationshipAccessor:
             name: The name of the relation/edge to traverse.
             
         Returns:
-            A QuerySet pre-configured to traverse this relation from the current document.
+            A CallableRelationship proxy that defaults to wildcard traversal but can be called with a target.
+
         """
         # Get a fresh QuerySet for the document's class
         qs = self._document.__class__.objects
@@ -293,8 +363,8 @@ class RelationshipAccessor:
         # Filter to this specific document
         qs = qs.filter(id=self._document.id)
         
-        # Add the OUT traversal step using the attribute name as the edge
-        return qs.out(name)
+        # Return the callable proxy
+        return CallableRelationship(qs, name)
 
 
 class Document(metaclass=DocumentMetaclass):
@@ -340,7 +410,9 @@ class Document(metaclass=DocumentMetaclass):
                     {"fields": ["email"], "unique": True},
                     {"fields": ["name", "created_at"]}
                 ]
+
     """
+
     objects = QuerySetDescriptor()
     id = RecordIDField()
 
@@ -361,9 +433,14 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             AttributeError: If strict mode is enabled and an unknown field is provided
+
         """
         if 'id' not in self._fields:
-            self._fields['id'] = RecordIDField()
+            id_field = RecordIDField()
+            id_field.name = 'id'
+            id_field.db_field = 'id'
+            id_field.owner_document = self.__class__
+            self._fields['id'] = id_field
 
         # Trigger pre_init signal
         if SIGNAL_SUPPORT:
@@ -379,6 +456,10 @@ class Document(metaclass=DocumentMetaclass):
             if callable(value):
                 value = value()
             self._data[field_name] = value
+
+            # Register parent for tracked objects
+            if hasattr(value, '_set_parent') and callable(value._set_parent):
+                value._set_parent(self, field_name)
 
         # Set values from kwargs
         for key, value in values.items():
@@ -410,11 +491,37 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             AttributeError: If the attribute is not a field
+
         """
         if name in self._fields:
             # Return the value directly from _data instead of the field instance
             return self._data.get(name)
+        
+        # Also check _data for dynamic fields (e.g. from aggregations)
+        if name in self._data:
+            return self._data[name]
+            
         raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+
+    def __contains__(self, key: str) -> bool:
+        """Check if a field exists."""
+        return key in self._fields or key in self._data
+
+    def __getitem__(self, key: str) -> Any:
+        """Get a field value using dictionary syntax."""
+        try:
+            if key in self._fields:
+                return self._data.get(key)
+            return self._data[key]
+        except KeyError:
+            raise KeyError(f"'{self.__class__.__name__}' object has no field '{key}'")
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        """Set a field value using dictionary syntax."""
+        if key in self._fields:
+            setattr(self, key, value)
+        else:
+            self._data[key] = value
 
     def __setattr__(self, name: str, value: Any) -> None:
         """Set a field value.
@@ -425,6 +532,7 @@ class Document(metaclass=DocumentMetaclass):
         Args:
             name: Name of the attribute to set
             value: Value to set
+
         """
         if name.startswith('_'):
             super().__setattr__(name, value)
@@ -433,38 +541,20 @@ class Document(metaclass=DocumentMetaclass):
             # Store original value before changing (if not already tracked)
             if name not in self._changed_fields and hasattr(self, '_original_data'):
                 self._original_data[name] = self._data.get(name)
-            self._data[name] = field.validate(value)
+            
+            validated_value = field.validate(value)
+            self._data[name] = validated_value
+            
+            # Register parent for tracked objects
+            if hasattr(validated_value, '_set_parent') and callable(validated_value._set_parent):
+                validated_value._set_parent(self, name)
+                
             if name not in self._changed_fields:
                 self._changed_fields.append(name)
         else:
             super().__setattr__(name, value)
 
-    @property
-    def id(self) -> Any:
-        """Get the document ID.
 
-        Returns:
-            The document ID
-        """
-        return self._data.get('id')
-
-    @id.setter
-    def id(self, value: Any) -> None:
-        """Set the document ID.
-
-        Args:
-            value: The document ID to set
-        """
-        if 'id' in self._fields:
-            field = self._fields['id']
-            # Store original value before changing (if not already tracked)
-            if 'id' not in self._changed_fields and hasattr(self, '_original_data'):
-                self._original_data['id'] = self._data.get('id')
-            self._data['id'] = field.validate(value)
-            if 'id' not in self._changed_fields:
-                self._changed_fields.append('id')
-        else:
-            self._data['id'] = value
 
     @classmethod
     def _get_collection_name(cls) -> str:
@@ -472,6 +562,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The collection name
+
         """
         return cls._meta.get('collection')
 
@@ -495,6 +586,7 @@ class Document(metaclass=DocumentMetaclass):
             >>> user.has_changed()  # True
             >>> user.has_changed('age')  # True 
             >>> user.has_changed('name')  # False
+
         """
         if field:
             return field in self._changed_fields
@@ -510,6 +602,7 @@ class Document(metaclass=DocumentMetaclass):
             >>> user.age = 31
             >>> user.name = "Jane"
             >>> user.get_changes()  # {'age': 31, 'name': 'Jane'}
+
         """
         return {field: self._data.get(field) for field in self._changed_fields}
     
@@ -525,6 +618,7 @@ class Document(metaclass=DocumentMetaclass):
         Examples:
             >>> user.age = 31  # was 30
             >>> user.get_original_value('age')  # 30
+
         """
         return self._original_data.get(field)
     
@@ -539,6 +633,7 @@ class Document(metaclass=DocumentMetaclass):
             >>> user.name = "Jane" 
             >>> user.revert_changes(['age'])  # Only revert age
             >>> user.revert_changes()  # Revert all changes
+
         """
         if fields:
             # Revert specific fields
@@ -566,6 +661,7 @@ class Document(metaclass=DocumentMetaclass):
             >>> user.is_dirty  # True
             >>> await user.save()
             >>> user.is_dirty  # False
+
         """
         return len(self._changed_fields) > 0
     
@@ -575,6 +671,7 @@ class Document(metaclass=DocumentMetaclass):
         
         Returns:
             True if there are no unsaved changes, False otherwise
+
         """
         return len(self._changed_fields) == 0
     
@@ -589,6 +686,7 @@ class Document(metaclass=DocumentMetaclass):
             >>> user.age = 31
             >>> user.name = "Jane"
             >>> user.dirty_fields  # ['age', 'name']
+
         """
         return self._changed_fields.copy()
     
@@ -598,9 +696,31 @@ class Document(metaclass=DocumentMetaclass):
         This updates the original data to match current data and clears changed fields.
         Usually called automatically after successful save operations.
         """
-        from copy import deepcopy
-        self._original_data = deepcopy(self._data)
         self._changed_fields.clear()
+        if hasattr(self, '_original_data'):
+            self._original_data = self._data.copy()
+
+    def _mark_field_changed(self, field_name: str) -> None:
+        """Mark a field as changed.
+        
+        This is called by tracked nested objects (EmbeddedDocument, TrackedList, TrackedDict)
+        when they are modified in place.
+        """
+        if field_name not in self._fields:
+            return
+            
+        # Store original value if not already tracked
+        if field_name not in self._changed_fields and hasattr(self, '_original_data'):
+            # For mutable objects, we might be storing a reference to the now-changed object.
+            # Ideally we'd have a deep copy from before, but 'original_data' usually captures
+            # state at load time. If we modify in place, 'original_data' might also reflect change
+            # if it's a shared reference. 
+            # For now, just ensuring it's in _changed_fields is the priority.
+            if field_name not in self._original_data:
+                 self._original_data[field_name] = self._data.get(field_name)
+
+        if field_name not in self._changed_fields:
+            self._changed_fields.append(field_name)
     
     def get_changed_data_for_update(self) -> Dict[str, Any]:
         """Get only the changed fields formatted for database update.
@@ -609,6 +729,7 @@ class Document(metaclass=DocumentMetaclass):
             Dictionary of changed fields in database format
             
         This is used internally for optimized updates that only send changed fields.
+
         """
         if not self._changed_fields:
             return {}
@@ -637,6 +758,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValidationError: If a field fails validation
+
         """
         for field_name, field in self._fields.items():
             value = self._data.get(field_name)
@@ -652,6 +774,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             Dictionary of field values including ID
+
         """
         result = {}
         for k, v in self._data.items():
@@ -690,11 +813,21 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             Dictionary of field values for the database
+
         """
         result = {}
         for field_name, field in self._fields.items():
             value = self._data.get(field_name)
-            if value is not None or field.required:
+            # Only include the field if:
+            # 1. The value is not None, OR
+            # 2. The field is required (in which case we send None to let DB validate)
+            # But skip 'id' field if it's None (it will be auto-generated)
+            if field_name == 'id' and value is None:
+                continue
+            if value is not None:
+                db_field = field.db_field or field_name
+                result[db_field] = field.to_db(value)
+            elif field.required:
                 db_field = field.db_field or field_name
                 result[db_field] = field.to_db(value)
         return result
@@ -709,7 +842,9 @@ class Document(metaclass=DocumentMetaclass):
             partial: Whether the data is a partial document (default: False)
 
         Returns:
-            A new document instance
+            A new document instance with change tracking initialized (clean state).
+            Nested tracked objects (Lists, Dicts, EmbeddedDocuments) are automatically linked.
+
         """
         # Create an empty instance without triggering signals
         instance = cls.__new__(cls)
@@ -744,6 +879,7 @@ class Document(metaclass=DocumentMetaclass):
                         instance._data[field_name] = field.from_db(data[db_field])
 
             # Then, handle fields without db_field mapping (for backward compatibility)
+            # and extra fields if strict mode is disabled
             for key, value in data.items():
                 if key in instance._fields:
                     field = instance._fields[key]
@@ -752,6 +888,9 @@ class Document(metaclass=DocumentMetaclass):
                         instance._data[key] = field.from_db(value, dereference=dereference)
                     else:
                         instance._data[key] = field.from_db(value)
+                elif not instance._meta.get('strict', True):
+                    # In non-strict mode, store unknown fields directly
+                    instance._data[key] = value
         # If data is a RecordID or string, set it as the ID
         elif isinstance(data, (RecordID, str)):
             instance._data['id'] = data
@@ -762,6 +901,11 @@ class Document(metaclass=DocumentMetaclass):
             except (TypeError, ValueError):
                 # If conversion fails, just use the data as is
                 pass
+        
+        # Register parent for tracked objects in _data
+        for key, value in instance._data.items():
+             if hasattr(value, '_set_parent') and callable(value._set_parent):
+                value._set_parent(instance, key)
 
         # Initialize original data for change tracking
         from copy import deepcopy
@@ -769,18 +913,28 @@ class Document(metaclass=DocumentMetaclass):
         
         return instance
 
-    async def resolve_references(self, depth: int = 1) -> 'Document':
+    def resolve_references(self, depth: int = 1) -> Union['Document', Any]:
         """Resolve all references in this document using FETCH.
-
-        This method uses SurrealDB's FETCH clause to efficiently resolve references
-        instead of making individual queries for each reference.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             depth: Maximum depth of reference resolution (default: 1)
 
         Returns:
-            The document instance with resolved references
+            The document instance with resolved references (or awaitable resolving to it)
+
         """
+        # Get active connection to determine mode
+        connection = get_active_connection()
+        if not connection.is_async():
+            return self.resolve_references_sync(depth=depth)
+
+        return self._resolve_references_async(depth=depth)
+
+    async def _resolve_references_async(self, depth: int = 1) -> 'Document':
+        """Internal async implementation of resolve_references()."""
         if depth <= 0 or not self.id:
             return self
 
@@ -794,8 +948,8 @@ class Document(metaclass=DocumentMetaclass):
             return self
 
         # Use FETCH to resolve references in a single query
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
-        query = f"SELECT * FROM `{self.id}` FETCH {', '.join(fetch_fields)}"
+        connection = get_active_connection(async_mode=True)
+        # ... rest of implementation ...
         
         try:
             # Use FETCH with a WHERE clause instead of selecting from specific record
@@ -847,6 +1001,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The document instance with resolved references
+
         """
         if depth <= 0 or not self.id:
             return self
@@ -862,7 +1017,6 @@ class Document(metaclass=DocumentMetaclass):
 
         # Use FETCH to resolve references in a single query
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
-        query = f"SELECT * FROM `{self.id}` FETCH {', '.join(fetch_fields)}"
         
         try:
             # Use FETCH with a WHERE clause instead of selecting from specific record
@@ -904,11 +1058,11 @@ class Document(metaclass=DocumentMetaclass):
         return self
 
     @classmethod
-    async def get(cls, id: Any, dereference: bool = False, dereference_depth: int = 1, **kwargs: Any) -> 'Document':
+    def get(cls, id: Any, dereference: bool = False, dereference_depth: int = 1, **kwargs: Any) -> Union['Document', Any]:
         """Get a document by ID with optional dereferencing using FETCH.
-
-        This method retrieves a document by ID and optionally resolves references
-        using SurrealDB's FETCH clause for efficient reference resolution.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             id: The ID of the document to retrieve
@@ -917,29 +1071,21 @@ class Document(metaclass=DocumentMetaclass):
             **kwargs: Additional arguments to pass to the get method
 
         Returns:
-            The document instance with optionally resolved references
+            The document instance (or awaitable resolving to it)
 
-        Examples:
-            Get a document by ID:
-
-            >>> user = await User.get("user:123")
-            >>> print(f"Retrieved user: {user.name}")
-
-            Get with full record ID:
-
-            >>> task = await Task.get("tasks:abc123")
-            >>> print(f"Task: {task.title}")
-
-            Get with reference dereferencing:
-
-            >>> post = await Post.get("post:456", dereference=True)
-            >>> print(f"Post by: {post.author.name}")  # author is resolved
-
-            Get with deep dereferencing:
-
-            >>> post = await Post.get("post:456", dereference=True, dereference_depth=2)
-            # Resolves references 2 levels deep
         """
+        # Get active connection logic is handled by objects.get for simple cases,
+        # but here we need to know if we should call get_sync or _get_async
+        # We can check which connection QuerySet would use.
+        connection = get_active_connection()
+        if not connection.is_async():
+            return cls.get_sync(id=id, dereference=dereference, dereference_depth=dereference_depth, **kwargs)
+
+        return cls._get_async(id=id, dereference=dereference, dereference_depth=dereference_depth, **kwargs)
+
+    @classmethod
+    async def _get_async(cls, id: Any, dereference: bool = False, dereference_depth: int = 1, **kwargs: Any) -> 'Document':
+        """Internal async implementation of get()."""
         if not dereference:
             # No dereferencing needed, use regular get
             return await cls.objects.get(id=id, **kwargs)
@@ -1019,6 +1165,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The document instance with optionally resolved references
+
         """
         if not dereference:
             # No dereferencing needed, use regular get
@@ -1083,22 +1230,36 @@ class Document(metaclass=DocumentMetaclass):
             document.resolve_references_sync(depth=dereference_depth)
         return document
 
-    async def update(self, connection: Optional[Any] = None, **kwargs) -> 'Document':
+    def update(self, connection: Optional[Any] = None, **kwargs) -> Union['Document', Any]:
         """Update the document with new data.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: The database connection to use (optional)
             **kwargs: Fields to update
 
         Returns:
-            The updated document instance
+            The updated document instance (or awaitable resolving to it)
+
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.update_sync(connection=target_connection, **kwargs)
+
+        return self._update_async(connection=target_connection, **kwargs)
+
+    async def _update_async(self, connection: Optional[Any] = None, **kwargs) -> 'Document':
+        """Internal async implementation of update()."""
         # Trigger pre_save signal
         if SIGNAL_SUPPORT:
             pre_save.send(self.__class__, document=self)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
 
         # Update fields from kwargs
         for key, value in kwargs.items():
@@ -1114,7 +1275,7 @@ class Document(metaclass=DocumentMetaclass):
         if not data:
             return self
             
-        data = _serialize_http_safe(data)
+        data = serialize_http_safe(data)
         
         # Use merge for partial update
         result = await connection.client.merge(self.id, data)
@@ -1127,7 +1288,12 @@ class Document(metaclass=DocumentMetaclass):
                 # Parse fields
                 for field_name, field in self._fields.items():
                     if field_name in doc_data:
-                        self._data[field_name] = field.from_db(doc_data[field_name])
+                        val = field.from_db(doc_data[field_name])
+                        self._data[field_name] = val
+                        
+                        # Register parent for tracked objects
+                        if hasattr(val, '_set_parent') and callable(val._set_parent):
+                            val._set_parent(self, field_name)
         else:
             from .exceptions import DoesNotExist
             raise DoesNotExist(f"Document with ID {self.id} does not exist.")
@@ -1148,13 +1314,14 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The updated document instance
+
         """
         # Trigger pre_save signal
         if SIGNAL_SUPPORT:
             pre_save.send(self.__class__, document=self)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
 
         # Update fields from kwargs
         for key, value in kwargs.items():
@@ -1170,7 +1337,7 @@ class Document(metaclass=DocumentMetaclass):
         if not data:
             return self
             
-        data = _serialize_http_safe(data)
+        data = serialize_http_safe(data)
         
         # Use merge for partial update
         result = connection.client.merge(self.id, data)
@@ -1183,7 +1350,12 @@ class Document(metaclass=DocumentMetaclass):
                 # Parse fields
                 for field_name, field in self._fields.items():
                     if field_name in doc_data:
-                        self._data[field_name] = field.from_db(doc_data[field_name])
+                        val = field.from_db(doc_data[field_name])
+                        self._data[field_name] = val
+                        
+                        # Register parent for tracked objects
+                        if hasattr(val, '_set_parent') and callable(val._set_parent):
+                            val._set_parent(self, field_name)
         else:
             from .exceptions import DoesNotExist
             raise DoesNotExist(f"Document with ID {self.id} does not exist.")
@@ -1195,18 +1367,35 @@ class Document(metaclass=DocumentMetaclass):
         self.mark_clean()
         return self
 
-    async def save(self, connection: Optional[Any] = None) -> 'Document':
-        """Save the document to the database asynchronously.
+    def save(self, connection: Optional[Any] = None) -> Union['Document', Any]:
+        """Save the document to the database.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
-        This method saves the document to the database, either creating
-        a new document or updating an existing one.
+        Args:
+            connection: The connection to use (optional)
+
+        Returns:
+            The saved document instance (or awaitable resolving to it)
+
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection(async_mode=None)
+        
+        if not target_connection.is_async():
+            return self.save_sync(connection=target_connection)
+
+        return self._save_async(connection=target_connection)
+
+    async def _save_async(self, connection: Optional[Any] = None) -> 'Document':
+        """Internal async implementation of save()."""
         # Trigger pre_save signal
         if SIGNAL_SUPPORT:
             pre_save.send(self.__class__, document=self)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
 
         self.validate()
 
@@ -1230,7 +1419,7 @@ class Document(metaclass=DocumentMetaclass):
             pre_save_post_validation.send(self.__class__, document=self)
 
         data = self.to_db()
-        safe_data = _serialize_http_safe(data)
+        safe_data = serialize_http_safe(data)
         
         result = await connection.client.create(
             self._get_collection_name(),
@@ -1246,7 +1435,12 @@ class Document(metaclass=DocumentMetaclass):
                     self._data['id'] = doc_data['id']
                 for field_name, field in self._fields.items():
                     if field_name in doc_data:
-                        self._data[field_name] = field.from_db(doc_data[field_name])
+                        val = field.from_db(doc_data[field_name])
+                        self._data[field_name] = val
+                        
+                        # Register parent for tracked objects
+                        if hasattr(val, '_set_parent') and callable(val._set_parent):
+                            val._set_parent(self, field_name)
         
         # Trigger post_save signal
         if SIGNAL_SUPPORT:
@@ -1270,13 +1464,14 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValidationError: If the document fails validation
+
         """
         # Trigger pre_save signal
         if SIGNAL_SUPPORT:
             pre_save.send(self.__class__, document=self)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
 
         self.validate()
         
@@ -1300,7 +1495,7 @@ class Document(metaclass=DocumentMetaclass):
             pre_save_post_validation.send(self.__class__, document=self)
 
         data = self.to_db()
-        data = _serialize_http_safe(data)
+        data = serialize_http_safe(data)
         
         result = connection.client.create(
             self._get_collection_name(),
@@ -1326,7 +1521,12 @@ class Document(metaclass=DocumentMetaclass):
                 # Then properly convert each field using its from_db method
                 for field_name, field in self._fields.items():
                     if field_name in doc_data:
-                        self._data[field_name] = field.from_db(doc_data[field_name])
+                        val = field.from_db(doc_data[field_name])
+                        self._data[field_name] = val
+                        
+                        # Register parent for tracked objects
+                        if hasattr(val, '_set_parent') and callable(val._set_parent):
+                            val._set_parent(self, field_name)
 
         # Trigger post_save signal
         if SIGNAL_SUPPORT:
@@ -1337,42 +1537,35 @@ class Document(metaclass=DocumentMetaclass):
 
         return self
 
-    async def delete(self, connection: Optional[Any] = None) -> bool:
-        """Delete the document from the database asynchronously.
-
-        This method deletes the document from the database.
+    def delete(self, connection: Optional[Any] = None) -> Union[bool, Any]:
+        """Delete the document from the database.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: The database connection to use (optional)
 
         Returns:
-            True if the document was deleted
+            True if deleted (or awaitable resolving to it)
 
-        Raises:
-            ValueError: If the document doesn't have an ID
-
-        Examples:
-            Delete a document:
-
-            >>> user = await User.get("user:123")
-            >>> await user.delete()
-            >>> print("User deleted successfully")
-
-            Delete with custom connection:
-
-            >>> await user.delete(connection=custom_connection)
-
-            Bulk delete pattern:
-
-            >>> for task in await Task.objects.filter(completed=True).all():
-            ...     await task.delete()
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection(async_mode=None)
+        
+        if not target_connection.is_async():
+            return self.delete_sync(connection=target_connection)
+
+        return self._delete_async(connection=target_connection)
+
+    async def _delete_async(self, connection: Optional[Any] = None) -> bool:
+        """Internal async implementation of delete()."""
         # Trigger pre_delete signal
         if SIGNAL_SUPPORT:
             pre_delete.send(self.__class__, document=self)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         if not self.id:
             raise ValueError("Cannot delete a document without an ID")
 
@@ -1397,13 +1590,14 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValueError: If the document doesn't have an ID
+
         """
         # Trigger pre_delete signal
         if SIGNAL_SUPPORT:
             pre_delete.send(self.__class__, document=self)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         if not self.id:
             raise ValueError("Cannot delete a document without an ID")
 
@@ -1415,22 +1609,31 @@ class Document(metaclass=DocumentMetaclass):
 
         return True
 
-    async def refresh(self, connection: Optional[Any] = None) -> 'Document':
-        """Refresh the document from the database asynchronously.
-
-        This method refreshes the document's data from the database.
+    def refresh(self, connection: Optional[Any] = None) -> Union['Document', Any]:
+        """Refresh the document from the database.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: The database connection to use (optional)
 
         Returns:
-            The refreshed document instance
+            The refreshed document instance (or awaitable resolving to it)
 
-        Raises:
-            ValueError: If the document doesn't have an ID
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection(async_mode=None)
+        
+        if not target_connection.is_async():
+            return self.refresh_sync(connection=target_connection)
+
+        return self._refresh_async(connection=target_connection)
+
+    async def _refresh_async(self, connection: Optional[Any] = None) -> 'Document':
+        """Internal async implementation of refresh()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         if not self.id:
             raise ValueError("Cannot refresh a document without an ID")
 
@@ -1444,7 +1647,12 @@ class Document(metaclass=DocumentMetaclass):
             for field_name, field in self._fields.items():
                 db_field = field.db_field or field_name
                 if db_field in doc:
-                    self._data[field_name] = field.from_db(doc[db_field])
+                    val = field.from_db(doc[db_field])
+                    self._data[field_name] = val
+                    
+                    # Register parent for tracked objects
+                    if hasattr(val, '_set_parent') and callable(val._set_parent):
+                        val._set_parent(self, field_name)
 
             # Reset change tracking after refresh
             from copy import deepcopy
@@ -1465,9 +1673,10 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValueError: If the document doesn't have an ID
+
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         if not self.id:
             raise ValueError("Cannot refresh a document without an ID")
 
@@ -1481,7 +1690,12 @@ class Document(metaclass=DocumentMetaclass):
             for field_name, field in self._fields.items():
                 db_field = field.db_field or field_name
                 if db_field in doc:
-                    self._data[field_name] = field.from_db(doc[db_field])
+                    val = field.from_db(doc[db_field])
+                    self._data[field_name] = val
+                    
+                    # Register parent for tracked objects
+                    if hasattr(val, '_set_parent') and callable(val._set_parent):
+                        val._set_parent(self, field_name)
 
             # Reset change tracking after refresh
             from copy import deepcopy
@@ -1502,6 +1716,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             Function that creates a RelationQuerySet
+
         """
 
         def relation_query_builder(connection: Optional[Any] = None) -> RelationQuerySet:
@@ -1512,6 +1727,7 @@ class Document(metaclass=DocumentMetaclass):
 
             Returns:
                 A RelationQuerySet for the relation
+
             """
             if connection is None:
                 connection = ConnectionRegistry.get_default_connection()
@@ -1519,13 +1735,13 @@ class Document(metaclass=DocumentMetaclass):
 
         return relation_query_builder
 
-    async def fetch_relation(self, relation_name: str, target_document: Optional[Type] = None,
-                             relation_document: Optional[Type] = None, connection: Optional[Any] = None,
-                             **filters: Any) -> List[Any]:
-        """Fetch related documents asynchronously.
-
-        This method fetches documents related to this document through
-        the specified relation.
+    def fetch_relation(self, relation_name: str, target_document: Optional[Type] = None,
+                       relation_document: Optional[Type] = None, connection: Optional[Any] = None,
+                       **filters: Any) -> Union[List[Any], Any]:
+        """Fetch related documents.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             relation_name: Name of the relation
@@ -1535,10 +1751,27 @@ class Document(metaclass=DocumentMetaclass):
             **filters: Filters to apply to the related documents
 
         Returns:
-            List of related documents, relation documents, or relation records
+            List of related documents (or awaitable resolving to it)
+
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.fetch_relation_sync(
+                relation_name, target_document, relation_document, connection=target_connection, **filters
+            )
+
+        return self._fetch_relation_async(
+            relation_name, target_document, relation_document, connection=target_connection, **filters
+        )
+
+    async def _fetch_relation_async(self, relation_name: str, target_document: Optional[Type] = None,
+                              relation_document: Optional[Type] = None, connection: Optional[Any] = None,
+                              **filters: Any) -> List[Any]:
+        """Internal async implementation of fetch_relation()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         result = await relation_query.get_related(self, target_document, **filters)
 
@@ -1565,9 +1798,10 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             List of related documents, relation documents, or relation records
+
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         result = relation_query.get_related_sync(self, target_document, **filters)
 
@@ -1577,12 +1811,12 @@ class Document(metaclass=DocumentMetaclass):
 
         return result
 
-    async def resolve_relation(self, relation_name: str, target_document_class: Optional[Type] = None,
-                               relation_document: Optional[Type] = None, connection: Optional[Any] = None) -> List[Any]:
-        """Resolve related documents from a relation fetch result asynchronously.
-
-        This method resolves related documents from a relation fetch result.
-        It fetches the relation data and then resolves each related document.
+    def resolve_relation(self, relation_name: str, target_document_class: Optional[Type] = None,
+                         relation_document: Optional[Type] = None, connection: Optional[Any] = None) -> Union[List[Any], Any]:
+        """Resolve related documents from a relation fetch result.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             relation_name: Name of the relation to resolve
@@ -1591,10 +1825,26 @@ class Document(metaclass=DocumentMetaclass):
             connection: Database connection to use (optional)
 
         Returns:
-            List of resolved document instances
+            List of resolved document instances (or awaitable resolving to it)
+
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.resolve_relation_sync(
+                relation_name, target_document_class, relation_document, connection=target_connection
+            )
+
+        return self._resolve_relation_async(
+            relation_name, target_document_class, relation_document, connection=target_connection
+        )
+
+    async def _resolve_relation_async(self, relation_name: str, target_document_class: Optional[Type] = None,
+                                relation_document: Optional[Type] = None, connection: Optional[Any] = None) -> List[Any]:
+        """Internal async implementation of resolve_relation()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
 
         # If relation_document is specified, convert the relation records to RelationDocument instances
         if relation_document and not target_document_class:
@@ -1643,9 +1893,10 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             List of resolved document instances
+
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
 
         # If relation_document is specified, convert the relation records to RelationDocument instances
         if relation_document and not target_document_class:
@@ -1679,11 +1930,12 @@ class Document(metaclass=DocumentMetaclass):
 
         return resolved_documents
 
-    async def relate_to(self, relation_name: str, target_instance: Any,
-                        connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
-        """Create a relation to another document asynchronously.
-
-        This method creates a relation from this document to another document.
+    def relate_to(self, relation_name: str, target_instance: Any,
+                  connection: Optional[Any] = None, **attrs: Any) -> Union[Optional[Any], Any]:
+        """Create a relation to another document.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             relation_name: Name of the relation
@@ -1692,28 +1944,26 @@ class Document(metaclass=DocumentMetaclass):
             **attrs: Attributes to set on the relation
 
         Returns:
-            The created relation record or None if creation failed
+            The created relation record or None (or awaitable resolving to it)
 
-        Examples:
-            Create a simple relation:
-
-            >>> person = await Person.get("person:john")
-            >>> book = await Book.get("book:novel")
-            >>> relation = await person.relate_to("authored", book)
-
-            Create relation with attributes:
-
-            >>> await person.relate_to("authored", book,
-            ...     date_written="2022-01-15T00:00:00Z",
-            ...     is_primary_author=True)
-
-            Create multiple relations:
-
-            >>> for book in user_books:
-            ...     await author.relate_to("wrote", book, year=2023)
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.relate_to_sync(
+                relation_name, target_instance, connection=target_connection, **attrs
+            )
+
+        return self._relate_to_async(
+            relation_name, target_instance, connection=target_connection, **attrs
+        )
+
+    async def _relate_to_async(self, relation_name: str, target_instance: Any,
+                         connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
+        """Internal async implementation of relate_to()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.relate(self, target_instance, **attrs)
 
@@ -1731,17 +1981,19 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The created relation record or None if creation failed
+
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return relation_query.relate_sync(self, target_instance, **attrs)
 
-    async def update_relation_to(self, relation_name: str, target_instance: Any,
-                                 connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
-        """Update a relation to another document asynchronously.
-
-        This method updates a relation from this document to another document.
+    def update_relation_to(self, relation_name: str, target_instance: Any,
+                           connection: Optional[Any] = None, **attrs: Any) -> Union[Optional[Any], Any]:
+        """Update a relation to another document.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             relation_name: Name of the relation
@@ -1750,10 +2002,26 @@ class Document(metaclass=DocumentMetaclass):
             **attrs: Attributes to update on the relation
 
         Returns:
-            The updated relation record or None if update failed
+            The updated relation record or None (or awaitable resolving to it)
+
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.update_relation_to_sync(
+                relation_name, target_instance, connection=target_connection, **attrs
+            )
+
+        return self._update_relation_to_async(
+            relation_name, target_instance, connection=target_connection, **attrs
+        )
+
+    async def _update_relation_to_async(self, relation_name: str, target_instance: Any,
+                                  connection: Optional[Any] = None, **attrs: Any) -> Optional[Any]:
+        """Internal async implementation of update_relation_to()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.update_relation(self, target_instance, **attrs)
 
@@ -1771,19 +2039,19 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The updated relation record or None if update failed
+
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return relation_query.update_relation_sync(self, target_instance, **attrs)
 
-    async def delete_relation_to(self, relation_name: str, target_instance: Optional[Any] = None,
-                                 connection: Optional[Any] = None) -> int:
-        """Delete a relation to another document asynchronously.
-
-        This method deletes a relation from this document to another document.
-        If target_instance is not provided, it deletes all relations with the
-        specified name from this document.
+    def delete_relation_to(self, relation_name: str, target_instance: Optional[Any] = None,
+                           connection: Optional[Any] = None) -> Union[int, Any]:
+        """Delete a relation to another document.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             relation_name: Name of the relation
@@ -1791,10 +2059,26 @@ class Document(metaclass=DocumentMetaclass):
             connection: The database connection to use (optional)
 
         Returns:
-            Number of deleted relations
+            Number of deleted relations (or awaitable resolving to it)
+
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.delete_relation_to_sync(
+                relation_name, target_instance, connection=target_connection
+            )
+
+        return self._delete_relation_to_async(
+            relation_name, target_instance, connection=target_connection
+        )
+
+    async def _delete_relation_to_async(self, relation_name: str, target_instance: Optional[Any] = None,
+                                  connection: Optional[Any] = None) -> int:
+        """Internal async implementation of delete_relation_to()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return await relation_query.delete_relation(self, target_instance)
 
@@ -1813,19 +2097,19 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             Number of deleted relations
+
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         relation_query = RelationQuerySet(self.__class__, connection, relation=relation_name)
         return relation_query.delete_relation_sync(self, target_instance)
 
-    async def traverse_path(self, path_spec: str, target_document: Optional[Type] = None,
-                            connection: Optional[Any] = None, **filters: Any) -> List[Any]:
-        """Traverse a path in the graph asynchronously.
-
-        This method traverses a path in the graph starting from this document.
-        The path_spec is a string like "->[watched]->->[acted_in]->" which describes
-        a path through the graph.
+    def traverse_path(self, path_spec: str, target_document: Optional[Type] = None,
+                      connection: Optional[Any] = None, **filters: Any) -> Union[List[Any], Any]:
+        """Traverse a path in the graph.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             path_spec: String describing the path to traverse
@@ -1834,13 +2118,29 @@ class Document(metaclass=DocumentMetaclass):
             **filters: Filters to apply to the results
 
         Returns:
-            List of documents or path results
+            List of documents or path results (or awaitable resolving to it)
 
         Raises:
             ValueError: If the document is not saved
+
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return self.traverse_path_sync(
+                path_spec, target_document, connection=target_connection, **filters
+            )
+
+        return self._traverse_path_async(
+            path_spec, target_document, connection=target_connection, **filters
+        )
+
+    async def _traverse_path_async(self, path_spec: str, target_document: Optional[Type] = None,
+                             connection: Optional[Any] = None, **filters: Any) -> List[Any]:
+        """Internal async implementation of traverse_path()."""
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
         if not self.id:
             raise ValueError(f"Cannot traverse from unsaved {self.__class__.__name__}")
 
@@ -1896,9 +2196,10 @@ class Document(metaclass=DocumentMetaclass):
 
         Raises:
             ValueError: If the document is not saved
+
         """
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
         if not self.id:
             raise ValueError(f"Cannot traverse from unsaved {self.__class__.__name__}")
 
@@ -1936,10 +2237,13 @@ class Document(metaclass=DocumentMetaclass):
             return result[0]
 
     @classmethod
-    async def bulk_create(self, documents: List[Any], batch_size: int = 1000,
-                          validate: bool = True, return_documents: bool = True, connection: Optional[Any] = None) -> \
-            Union[List[Any], int]:
+    def bulk_create(cls, documents: List[Any], batch_size: int = 1000,
+                    validate: bool = True, return_documents: bool = True, connection: Optional[Any] = None) -> \
+            Union[Union[List[Any], int], Any]:
         """Create multiple documents in batches.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             documents: List of documents to create
@@ -1948,8 +2252,34 @@ class Document(metaclass=DocumentMetaclass):
             return_documents: Whether to return created documents
 
         Returns:
-            List of created documents if return_documents=True, else count of created documents
+            List of created documents or count (or awaitable resolving to it)
+
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return cls.bulk_create_sync(
+                documents, 
+                batch_size=batch_size, 
+                validate=validate, 
+                return_documents=return_documents,
+                connection=target_connection
+            )
+
+        return cls._bulk_create_async(
+            documents, 
+            batch_size=batch_size, 
+            validate=validate, 
+            return_documents=return_documents,
+            connection=target_connection
+        )
+
+    @classmethod
+    async def _bulk_create_async(cls, documents: List[Any], batch_size: int = 1000,
+                           validate: bool = True, return_documents: bool = True, connection: Optional[Any] = None) -> \
+            Union[List[Any], int]:
+        """Internal async implementation of bulk_create()."""
         results = []
         total_count = 0
 
@@ -1968,14 +2298,14 @@ class Document(metaclass=DocumentMetaclass):
             # Create the documents in the database
             collection = batch[0]._get_collection_name()
             if connection is None:
-                connection = ConnectionRegistry.get_default_connection()
+                connection = get_active_connection(async_mode=True)
             created = await connection.client.insert(collection, data)
 
             if created:
                 if return_documents:
                     # Convert created records back to documents
                     for record in created:
-                        doc = self.from_db(record)
+                        doc = cls.from_db(record)
                         results.append(doc)
                 total_count += len(created)
 
@@ -2001,13 +2331,14 @@ class Document(metaclass=DocumentMetaclass):
         Returns:
             List of created documents with their IDs set if return_documents=True,
             otherwise returns the count of created documents
+
         """
         # Trigger pre_bulk_insert signal
         if SIGNAL_SUPPORT:
             pre_bulk_insert.send(cls, documents=documents)
 
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
 
         result = cls.objects(connection).bulk_create_sync(
             documents,
@@ -2023,10 +2354,14 @@ class Document(metaclass=DocumentMetaclass):
         return result
 
     @classmethod
-    async def create_index(cls, index_name: str, fields: List[str], unique: bool = False,
-                           search: bool = False, analyzer: Optional[str] = None,
-                           comment: Optional[str] = None, connection: Optional[Any] = None) -> None:
-        """Create an index on the document's collection asynchronously.
+    def create_index(cls, index_name: str, fields: List[str], unique: bool = False,
+                     search: bool = False, analyzer: Optional[str] = None,
+                     comment: Optional[str] = None, connection: Optional[Any] = None,
+                     **kwargs) -> Union[None, Any]:
+        """Create an index on the document's collection.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             index_name: Name of the index
@@ -2036,10 +2371,28 @@ class Document(metaclass=DocumentMetaclass):
             analyzer: Analyzer to use for search indexes
             comment: Optional comment for the index
             connection: Optional connection to use
+
         """
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return cls.create_index_sync(
+                index_name, fields, unique, search, analyzer, comment, connection=target_connection, **kwargs
+            )
+
+        return cls._create_index_async(
+            index_name, fields, unique, search, analyzer, comment, connection=target_connection, **kwargs
+        )
+
+    @classmethod
+    async def _create_index_async(cls, index_name: str, fields: List[str], unique: bool = False,
+                            search: bool = False, analyzer: Optional[str] = None,
+                            comment: Optional[str] = None, connection: Optional[Any] = None,
+                            **kwargs) -> None:
+        """Internal async implementation of create_index()."""
         if connection is None:
-            from .connection import ConnectionRegistry
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=True)
 
         collection_name = cls._get_collection_name()
         fields_str = ", ".join(fields)
@@ -2050,8 +2403,30 @@ class Document(metaclass=DocumentMetaclass):
         # Add index type
         if unique:
             query += " UNIQUE"
-        elif search and analyzer:
-            query += f" SEARCH ANALYZER {analyzer}"
+        elif search:
+            if analyzer:
+                query += f" SEARCH ANALYZER {analyzer}"
+            else:
+                query += " SEARCH"
+            if kwargs.get('bm25'):
+                query += " BM25"
+            if kwargs.get('highlights'):
+                query += " HIGHLIGHTS"
+        elif kwargs.get('dimension'):
+            # HNSW Vector Index
+            dim = kwargs['dimension']
+            query += f" HNSW DIMENSION {dim}"
+            
+            if kwargs.get('dist'):
+                query += f" DIST {kwargs['dist']}"
+            if kwargs.get('m'):
+                query += f" M {kwargs['m']}"
+            if kwargs.get('efc'):
+                query += f" EFC {kwargs['efc']}"
+            if kwargs.get('m0'):
+                query += f" M0 {kwargs['m0']}"
+            if kwargs.get('lm'):
+                query += f" LM {kwargs['lm']}"
 
         # Add comment if provided
         if comment:
@@ -2063,7 +2438,8 @@ class Document(metaclass=DocumentMetaclass):
     @classmethod
     def create_index_sync(cls, index_name: str, fields: List[str], unique: bool = False,
                           search: bool = False, analyzer: Optional[str] = None,
-                          comment: Optional[str] = None, connection: Optional[Any] = None) -> None:
+                          comment: Optional[str] = None, connection: Optional[Any] = None,
+                          **kwargs) -> None:
         """Create an index on the document's collection synchronously.
 
         Args:
@@ -2074,10 +2450,11 @@ class Document(metaclass=DocumentMetaclass):
             analyzer: Analyzer to use for search indexes
             comment: Optional comment for the index
             connection: Optional connection to use
+            **kwargs: Additional index options (dimension, dist, bm25, highlights, etc.)
+
         """
         if connection is None:
-            from .connection import ConnectionRegistry
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            connection = get_active_connection(async_mode=False)
 
         collection_name = cls._get_collection_name()
         fields_str = ", ".join(fields)
@@ -2088,8 +2465,30 @@ class Document(metaclass=DocumentMetaclass):
         # Add index type
         if unique:
             query += " UNIQUE"
-        elif search and analyzer:
-            query += f" SEARCH ANALYZER {analyzer}"
+        elif search:
+            if analyzer:
+                query += f" SEARCH ANALYZER {analyzer}"
+            else:
+                query += " SEARCH"
+            if kwargs.get('bm25'):
+                query += " BM25"
+            if kwargs.get('highlights'):
+                query += " HIGHLIGHTS"
+        elif kwargs.get('dimension'):
+            # HNSW Vector Index
+            dim = kwargs['dimension']
+            query += f" HNSW DIMENSION {dim}"
+            
+            if kwargs.get('dist'):
+                query += f" DIST {kwargs['dist']}"
+            if kwargs.get('m'):
+                query += f" M {kwargs['m']}"
+            if kwargs.get('efc'):
+                query += f" EFC {kwargs['efc']}"
+            if kwargs.get('m0'):
+                query += f" M0 {kwargs['m0']}"
+            if kwargs.get('lm'):
+                query += f" LM {kwargs['lm']}"
 
         # Add comment if provided
         if comment:
@@ -2099,16 +2498,29 @@ class Document(metaclass=DocumentMetaclass):
         connection.client.query(query)
 
     @classmethod
-    async def create_indexes(cls, connection: Optional[Any] = None) -> None:
-        """Create all indexes defined for this document class asynchronously.
-
-        This method creates indexes defined in the Meta class and also creates
-        indexes for fields marked as indexed.
+    def create_indexes(cls, connection: Optional[Any] = None) -> Union[None, Any]:
+        """Create all indexes defined for this document class.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: Optional connection to use
+
         """
-        connection = connection or ConnectionRegistry.get_default_connection(async_mode=True)
+        # Determine target connection
+        target_connection = connection or get_active_connection()
+        
+        if not target_connection.is_async():
+            return cls.create_indexes_sync(connection=target_connection)
+
+        return cls._create_indexes_async(connection=target_connection)
+
+    @classmethod
+    async def _create_indexes_async(cls, connection: Optional[Any] = None) -> None:
+        """Internal async implementation of create_indexes()."""
+        if connection is None:
+            connection = get_active_connection(async_mode=True)
 
         # Track processed multi-field indexes to avoid duplicates
         processed_multi_field_indexes = set()
@@ -2144,7 +2556,8 @@ class Document(metaclass=DocumentMetaclass):
                     search=search,
                     analyzer=analyzer,
                     comment=comment,
-                    connection=connection
+                    connection=connection,
+                    **{k: v for k, v in index_def.items() if k not in ['name', 'fields', 'unique', 'search', 'analyzer', 'comment']}
                 )
 
                 # Mark this index as processed to avoid duplicates
@@ -2235,8 +2648,10 @@ class Document(metaclass=DocumentMetaclass):
 
         Args:
             connection: Optional connection to use
+
         """
-        connection = connection or ConnectionRegistry.get_default_connection(async_mode=False)
+        if connection is None:
+            connection = get_active_connection(async_mode=False)
 
         # Track processed multi-field indexes to avoid duplicates
         processed_multi_field_indexes = set()
@@ -2272,7 +2687,8 @@ class Document(metaclass=DocumentMetaclass):
                     search=search,
                     analyzer=analyzer,
                     comment=comment,
-                    connection=connection
+                    connection=connection,
+                    **{k: v for k, v in index_def.items() if k not in ['name', 'fields', 'unique', 'search', 'analyzer', 'comment']}
                 )
 
                 # Mark this index as processed to avoid duplicates
@@ -2355,6 +2771,48 @@ class Document(metaclass=DocumentMetaclass):
                     )
 
     @classmethod
+    async def create_events(cls, connection: Optional[Any] = None) -> None:
+        """Create events defined in Meta.events asynchronously.
+        
+        Args:
+            connection: Optional connection to use
+
+        """
+        if not hasattr(cls, '_meta') or not cls._meta.get('events'):
+            return
+
+        if connection is None:
+            connection = get_active_connection(async_mode=True)
+            
+        collection_name = cls._get_collection_name()
+        
+        for event in cls._meta['events']:
+            if hasattr(event, 'to_sql'):
+                query = event.to_sql(collection_name)
+                await connection.client.query(query)
+
+    @classmethod
+    def create_events_sync(cls, connection: Optional[Any] = None) -> None:
+        """Create events defined in Meta.events synchronously.
+        
+        Args:
+            connection: Optional connection to use
+
+        """
+        if not hasattr(cls, '_meta') or not cls._meta.get('events'):
+            return
+
+        if connection is None:
+            connection = get_active_connection(async_mode=False)
+            
+        collection_name = cls._get_collection_name()
+        
+        for event in cls._meta['events']:
+            if hasattr(event, 'to_sql'):
+                query = event.to_sql(collection_name)
+                connection.client.query(query)
+
+    @classmethod
     def _get_field_type_for_surreal(cls, field: Field) -> str:
         """Get the SurrealDB type for a field.
 
@@ -2363,13 +2821,14 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The SurrealDB type as a string
+
         """
         from .fields import (
             StringField, IntField, FloatField, BooleanField,
             DateTimeField, ListField, DictField, ReferenceField,
             GeometryField, RelationField, DecimalField, DurationField,
             BytesField, RegexField, OptionField, FutureField,
-            UUIDField, TableField, RecordIDField
+            UUIDField, TableField, RecordIDField, EmbeddedField
         )
 
         if isinstance(field, StringField):
@@ -2390,6 +2849,8 @@ class Document(metaclass=DocumentMetaclass):
                 return f"array<{inner_type}>"
             return "array"
         elif isinstance(field, DictField):
+            return "object"
+        elif isinstance(field, EmbeddedField):
             return "object"
         elif isinstance(field, ReferenceField):
             # Get the target collection name
@@ -2421,37 +2882,43 @@ class Document(metaclass=DocumentMetaclass):
         elif isinstance(field, FutureField):
             return "any"  # Future fields are computed at query time
 
+        if hasattr(field, 'get_surreal_type'):
+            custom_type = field.get_surreal_type()
+            if custom_type != "any":
+                return custom_type
+
         # Default to any type if we can't determine a specific type
         return "any"
 
     @classmethod
-    async def create_table(cls, connection: Optional[Any] = None, schemafull: bool = True) -> None:
+    def create_table(cls, connection: Optional[Any] = None, schemafull: bool = True) -> Union[None, Any]:
+        """Create the table for this document class.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
+
+        Args:
+            connection: Optional connection to use
+            schemafull: Whether to create a SCHEMAFULL table (default: True)
+
+        Returns:
+            None (or awaitable resolving to None)
+
+        """
+        # Get target connection
+        connection = connection or get_active_connection(async_mode=None)
+        if not connection.is_async():
+            return cls.create_table_sync(connection, schemafull)
+        return cls._create_table_async(connection, schemafull)
+
+    @classmethod
+    async def _create_table_async(cls, connection: Optional[Any] = None, schemafull: bool = True) -> None:
         """Create the table for this document class asynchronously.
 
         Args:
             connection: Optional connection to use
             schemafull: Whether to create a SCHEMAFULL table (default: True)
 
-        Examples:
-            Create a SCHEMAFULL table:
-
-            >>> await User.create_table()
-            >>> print("Created users table with strict schema")
-
-            Create a SCHEMALESS table:
-
-            >>> await FlexibleDoc.create_table(schemafull=False)
-            >>> print("Created flexible table without schema constraints")
-
-            Create with custom connection:
-
-            >>> await Person.create_table(connection=custom_connection)
-
-            Create multiple tables:
-
-            >>> await Person.create_table()
-            >>> await Address.create_table()
-            >>> await Organization.create_table()
         """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=True)
@@ -2500,6 +2967,9 @@ class Document(metaclass=DocumentMetaclass):
             # Only define fields if schemafull or if field is explicitly marked for schema definition
             if schemafull or field.define_schema:
                 field_type = cls._get_field_type_for_surreal(field)
+                # Wrap in option<> if field is not required (allows NULL/NONE values)
+                if not field.required:
+                    field_type = f"option<{field_type}>"
                 field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} TYPE {field_type}"
 
                 # Build constraints
@@ -2573,11 +3043,77 @@ class Document(metaclass=DocumentMetaclass):
 
                 await connection.client.query(field_query)
 
-                # Handle nested fields for DictField
-                if isinstance(field, DictField) and schemafull:
-                    if field.db_field == 'settings':
-                        nested_field_query = f"DEFINE FIELD {field.db_field}.theme ON {collection_name} TYPE string"
-                        await connection.client.query(nested_field_query)
+                # Handle Embedded fields
+                try:
+                    from .fields.embedded import EmbeddedField
+                except ImportError:
+                    EmbeddedField = None
+
+                if EmbeddedField and isinstance(field, EmbeddedField) and schemafull:
+                    await cls._define_embedded_fields(connection, collection_name, field.db_field or field_name, field.document_type)
+
+        # Create indexes
+        await cls.create_indexes(connection)
+        
+        # Create events
+        await cls.create_events(connection)
+
+    @classmethod
+    async def _define_embedded_fields(cls, connection, collection_name: str, parent_path: str, doc_cls: Type):
+        """Recursively define schema for embedded fields."""
+        for name, field in doc_cls._fields.items():
+            db_field = field.db_field or name
+            full_path = f"{parent_path}.{db_field}"
+            
+            # types
+            surreal_type = cls._get_field_type_for_surreal(field)
+            
+            # Construct query
+            query = f"DEFINE FIELD {full_path} ON {collection_name} TYPE {surreal_type}"
+            
+            # Constraints
+            exprs = []
+            if field.required:
+                exprs.append("$value != NONE")
+                
+            # Add type-specific constraints (simplified version of main loop)
+            # We can refactor to share logic later, for now adding key constraints
+            
+            try:
+                from .fields.scalar import StringField, NumberField
+            except Exception:
+                StringField = NumberField = None
+
+            if StringField and isinstance(field, StringField):
+                if getattr(field, 'min_length', None) is not None:
+                    exprs.append(f"string::len($value) >= {int(field.min_length)}")
+                if getattr(field, 'max_length', None) is not None:
+                     exprs.append(f"string::len($value) <= {int(field.max_length)}")
+                if getattr(field, 'choices', None):
+                     vals = []
+                     for v in field.choices:
+                         if isinstance(v, str):
+                             s = v.replace('\\', r'\\').replace('"', r'\"')
+                             vals.append(f'"{s}"')
+                         else:
+                             vals.append(str(v).lower() if isinstance(v, bool) else str(v))
+                     exprs.append(f"$value INSIDE [{', '.join(vals)}]")
+
+            if exprs:
+                query += " ASSERT " + " AND ".join(exprs)
+                
+            await connection.client.query(query)
+            
+            # Recurse
+            try:
+                from .fields.embedded import EmbeddedField
+            except ImportError:
+                EmbeddedField = None
+                
+            if EmbeddedField and isinstance(field, EmbeddedField):
+                await cls._define_embedded_fields(connection, collection_name, full_path, field.document_type)
+
+
 
     @classmethod
     def create_table_sync(cls, connection: Optional[Any] = None, schemafull: bool = True) -> None:
@@ -2630,6 +3166,9 @@ class Document(metaclass=DocumentMetaclass):
             # Only define fields if schemafull or if field is explicitly marked for schema definition
             if schemafull or field.define_schema:
                 field_type = cls._get_field_type_for_surreal(field)
+                # Wrap in option<> if field is not required (allows NULL/NONE values)
+                if not field.required:
+                    field_type = f"option<{field_type}>"
                 field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} TYPE {field_type}"
 
                 # Build constraints
@@ -2707,6 +3246,12 @@ class Document(metaclass=DocumentMetaclass):
                         nested_field_query = f"DEFINE FIELD {field.db_field}.theme ON {collection_name} TYPE string"
                         connection.client.query(nested_field_query)
 
+        # Create indexes
+        cls.create_indexes_sync(connection)
+        
+        # Create events
+        cls.create_events_sync(connection)
+
     @classmethod
     def to_dataclass(cls):
         """Convert the document class to a dataclass.
@@ -2719,6 +3264,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             A dataclass type based on the document's fields
+
         """
         fields = [('id', Optional[str], dataclass_field(default=None))]
         # Process fields
@@ -2769,8 +3315,9 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             A MaterializedView instance
+
         """
-        from .materialized_view import MaterializedView, Count, Mean, Sum, Min, Max, ArrayCollect
+        from .materialized_view import Count, Mean, Sum, Min, Max, ArrayCollect
 
         # Process aggregations if provided as keyword arguments
         if aggregations is None:
@@ -2816,6 +3363,7 @@ class Document(metaclass=DocumentMetaclass):
 
         Returns:
             The document class for the collection, or None if not found
+
         """
         # Initialize the document registry if it doesn't exist
         if not hasattr(cls, '_document_registry'):
@@ -2844,6 +3392,12 @@ class Document(metaclass=DocumentMetaclass):
         # Look up the document class in the registry
         return cls._document_registry.get(collection_name)
 
+# Fix for Document.id field: The metaclass skips processing the base Document class,
+# so the id field doesn't get its name/db_field set. We set them manually here.
+if hasattr(Document, 'id') and hasattr(Document.id, 'name'):
+    Document.id.name = 'id'
+    Document.id.db_field = 'id'
+
 class RelationDocument(Document):
     """A Document that represents a relationship between two documents.
 
@@ -2853,80 +3407,90 @@ class RelationDocument(Document):
 
     class Meta:
         """Meta options for RelationDocument."""
+
         abstract = True
 
     in_document = ReferenceField(Document, required=True, db_field="in")
     out_document = ReferenceField(Document, required=True, db_field="out")
 
-    async def save(self, connection: Optional[Any] = None) -> 'RelationDocument':
+    def save(self, connection: Optional[Any] = None) -> Union['RelationDocument', Any]:
         """Save the relation document.
         
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
+
         This overrides the default Document.save() to use RELATE statement
         which is required for proper graph edge creation.
         """
-        # Trigger pre_save
-        if SIGNAL_SUPPORT:
-            pre_save.send(self.__class__, document=self)
+        # Get the connection (implicit context or default async)
+        connection = connection or get_active_connection(async_mode=None)
 
-        if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        if not connection.is_async():
+            return self.save_sync(connection)
+
+        async def _save_async(conn):
+            # Trigger pre_save
+            if SIGNAL_SUPPORT:
+                pre_save.send(self.__class__, document=self)
+
+            self.validate()
             
-        self.validate()
-        
-        # If we have an ID and no changes, return self
-        if self.id and not self._changed_fields:
-            return self
-            
-        # If updating existing relation (has ID)
-        if self.id:
-            # For updates, we can verify if it's a simple update or if in/out changed
-            # But SurrealDB relations are edges - modifying in/out usually implies a new edge
-            # For now, fallback to super().save() for updates as generic UPDATE works for content
-            return await super().save(connection)
-
-        # Creating new relation
-        if not self.in_document or not self.out_document:
-            raise ValueError("RelationDocument must have both in_document and out_document set")
-
-        # Prepare attributes (exclude in/out/id)
-        attrs = {}
-        for field_name, field in self._fields.items():
-            if field_name in ['in_document', 'out_document', 'id']:
-                continue
-            val = getattr(self, field_name)
-            if val is not None:
-                attrs[field_name] = val
+            # If we have an ID and no changes, return self
+            if self.id and not self._changed_fields:
+                return self
                 
-        # Use existing create_relation logic
-        # We can't use create_relation directly because it creates a new instance
-        # We want to update THIS instance
-        
-        # Get relation name
-        relation_name = self.get_relation_name()
-        
-        # We need to construct the RELATE query manually or use RelationQuerySet
-        # Let's use RelationQuerySet to match create_relation behavior
-        from .query.relation import RelationQuerySet
-        qs = RelationQuerySet(self.in_document.__class__, connection, relation=relation_name)
-        
-        # create_relation logic uses .relate() which returns the record dict
-        record = await qs.relate(self.in_document, self.out_document, **attrs)
-        
-        if record:
-            self._data.update(record)
-            if 'id' in record:
-                self._data['id'] = record['id']
-            # Re-hydrate fields
+            # If updating existing relation (has ID)
+            if self.id:
+                # For updates, we can verify if it's a simple update or if in/out changed
+                # But SurrealDB relations are edges - modifying in/out usually implies a new edge
+                # For now, fallback to super().save() for updates as generic UPDATE works for content
+                return await super(RelationDocument, self).save(conn)
+
+            # Creating new relation
+            if not self.in_document or not self.out_document:
+                raise ValueError("RelationDocument must have both in_document and out_document set")
+
+            # Prepare attributes (exclude in/out/id)
+            attrs = {}
             for field_name, field in self._fields.items():
-                if field.db_field in record:
-                    self._data[field_name] = field.from_db(record[field.db_field])
-        
-        # Trigger post_save
-        if SIGNAL_SUPPORT:
-            post_save.send(self.__class__, document=self, created=True)
+                if field_name in ['in_document', 'out_document', 'id']:
+                    continue
+                val = getattr(self, field_name)
+                if val is not None:
+                    attrs[field_name] = val
+                    
+            # Use existing create_relation logic
+            # We can't use create_relation directly because it creates a new instance
+            # We want to update THIS instance
             
-        self.mark_clean()
-        return self
+            # Get relation name
+            relation_name = self.get_relation_name()
+            
+            # We need to construct the RELATE query manually or use RelationQuerySet
+            # Let's use RelationQuerySet to match create_relation behavior
+            from .query.relation import RelationQuerySet
+            qs = RelationQuerySet(self.in_document.__class__, conn, relation=relation_name)
+            
+            # create_relation logic uses .relate() which returns the record dict
+            record = await qs.relate(self.in_document, self.out_document, **attrs)
+            
+            if record:
+                self._data.update(record)
+                if 'id' in record:
+                    self._data['id'] = record['id']
+                # Re-hydrate fields
+                for field_name, field in self._fields.items():
+                    if field.db_field in record:
+                        self._data[field_name] = field.from_db(record[field.db_field])
+            
+            # Trigger post_save
+            if SIGNAL_SUPPORT:
+                post_save.send(self.__class__, document=self, created=True)
+                
+            self.mark_clean()
+            return self
+
+        return _save_async(connection)
 
     def save_sync(self, connection: Optional[Any] = None) -> 'RelationDocument':
         """Save the relation document synchronously.
@@ -2987,6 +3551,7 @@ class RelationDocument(Document):
 
         Returns:
             The name of the relation
+
         """
         return cls._meta.get('collection')
 
@@ -3003,6 +3568,7 @@ class RelationDocument(Document):
 
         Returns:
             Function that creates a RelationQuerySet
+
         """
         relation_name = cls.get_relation_name()
 
@@ -3014,6 +3580,7 @@ class RelationDocument(Document):
 
             Returns:
                 A RelationQuerySet for the relation
+
             """
             if connection is None:
                 connection = ConnectionRegistry.get_default_connection()
@@ -3038,6 +3605,7 @@ class RelationDocument(Document):
 
         Raises:
             ValueError: If either instance is not saved
+
         """
         if not from_instance.id:
             raise ValueError(f"Cannot create relation from unsaved {from_instance.__class__.__name__}")
@@ -3078,6 +3646,7 @@ class RelationDocument(Document):
 
         Raises:
             ValueError: If either instance is not saved
+
         """
         if not from_instance.id:
             raise ValueError(f"Cannot create relation from unsaved {from_instance.__class__.__name__}")
@@ -3103,8 +3672,7 @@ class RelationDocument(Document):
 
     @classmethod
     def find_by_in_document(cls, in_doc, **additional_filters):
-        """
-        Query RelationDocument by in_document field.
+        """Query RelationDocument by in_document field.
 
         Args:
             in_doc: The document instance or ID to filter by
@@ -3112,6 +3680,7 @@ class RelationDocument(Document):
 
         Returns:
             QuerySet filtered by in_document
+
         """
         # Get the default connection
         connection = ConnectionRegistry.get_default_connection(async_mode=True)
@@ -3123,8 +3692,7 @@ class RelationDocument(Document):
 
     @classmethod
     def find_by_in_document_sync(cls, in_doc, **additional_filters):
-        """
-        Query RelationDocument by in_document field synchronously.
+        """Query RelationDocument by in_document field synchronously.
 
         Args:
             in_doc: The document instance or ID to filter by
@@ -3132,6 +3700,7 @@ class RelationDocument(Document):
 
         Returns:
             QuerySet filtered by in_document
+
         """
         # Get the default connection
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
@@ -3143,18 +3712,32 @@ class RelationDocument(Document):
 
     @classmethod
     def find_by_in_documents(cls, in_docs, **additional_filters):
-        """
-        Query RelationDocument where the `in` reference is any of the provided records (async-ready queryset).
+        """Query RelationDocument where the `in` reference is any of the provided records (polyglot).
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             in_docs: Iterable of items; each item may be a Document instance, RecordID, 'table:id' string, or dict with 'id'.
             **additional_filters: Any additional filters to apply to the query.
 
         Returns:
-            QuerySet filtered by in__in
+            QuerySet filtered by in__in (or awaitable)
+
         """
-        # Get the default async connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
+        # Get the active connection (will try async first if available)
+        connection = get_active_connection(async_mode=None)
+        
+        if connection is None:
+            # Fallback if no context connection
+            try:
+                connection = ConnectionRegistry.get_default_async_connection()
+            except RuntimeError:
+                connection = ConnectionRegistry.get_default_sync_connection()
+        
+        if not connection.is_async():
+            return cls.find_by_in_documents_sync(in_docs, **additional_filters)
+            
         queryset = QuerySet(cls, connection)
 
         def _norm(v):
@@ -3180,6 +3763,7 @@ class RelationDocument(Document):
 
         Returns:
             QuerySet filtered by in__in
+
         """
         # Get the default sync connection
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
@@ -3198,17 +3782,18 @@ class RelationDocument(Document):
         filters = { 'in__in': in_ids, **additional_filters }
         return queryset.filter(**filters)
 
-    async def resolve_out(self, connection=None):
-        """Resolve the out_document field asynchronously.
+    def resolve_out(self, connection=None):
+        """Resolve the out_document field.
 
-        This method resolves the out_document field if it's currently just an ID reference.
-        If the out_document is already a document instance, it returns it directly.
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: Database connection to use (optional)
 
         Returns:
-            The resolved out_document instance
+            The resolved out_document instance (or awaitable)
+
         """
         # If out_document is already a document instance, return it
         if isinstance(self.out_document, Document):
@@ -3216,40 +3801,70 @@ class RelationDocument(Document):
 
         # Get the connection if not provided
         if connection is None:
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            connection = get_active_connection(async_mode=None)
+            if connection is None:
+                # Fallback if no context connection
+                try:
+                    connection = ConnectionRegistry.get_default_async_connection()
+                except RuntimeError:
+                    connection = ConnectionRegistry.get_default_sync_connection()
 
-        # If out_document is a string ID, fetch the document
-        if isinstance(self.out_document, str) and ':' in self.out_document:
-            try:
-                # Fetch the document using the ID
-                result = await connection.client.select(self.out_document)
+        if not connection.is_async():
+            return self.resolve_out_sync(connection)
 
-                # Process the result
-                if result:
-                    if isinstance(result, list) and result:
-                        doc = result[0]
-                    else:
-                        doc = result
-
+        async def _resolve_async(conn):
+            # Helper to hydrate doc from registry
+            def _hydrate(doc):
+                if not isinstance(doc, dict):
                     return doc
-            except Exception as e:
-                logger.error(f"Error resolving out_document {self.out_document}: {str(e)}")
-
-        elif isinstance(self.out_document, RecordID):
-            try:
-                result = await connection.client.select(self.out_document)
-                if result:
-                    if isinstance(result, list) and result:
-                        doc = result[0]
-                    else:
-                        doc = result
-
+                if 'id' not in doc:
                     return doc
-            except Exception as e:
-                logger.error(f"Error resolving out_document {self.out_document}: {str(e)}")
+                val = doc['id']
+                table = None
+                if hasattr(val, 'table_name'):
+                    table = val.table_name
+                elif isinstance(val, str) and ':' in val:
+                    table = val.split(':')[0]
+                if table:
+                    doc_cls = DocumentMetaclass._registry.get(table)
+                    if doc_cls:
+                        return doc_cls.from_db(doc)
+                return doc
+            
+            # If out_document is a string ID, fetch the document
+            if isinstance(self.out_document, str) and ':' in self.out_document:
+                try:
+                    # Fetch the document using the ID
+                    result = await conn.client.select(self.out_document)
 
-        # Return the current value if resolution failed
-        return self.out_document
+                    # Process the result
+                    if result:
+                        if isinstance(result, list) and result:
+                            doc = result[0]
+                        else:
+                            doc = result
+
+                        return _hydrate(doc)
+                except Exception as e:
+                    logger.error(f"Error resolving out_document {self.out_document}: {str(e)}")
+
+            elif isinstance(self.out_document, RecordID):
+                try:
+                    result = await conn.client.select(self.out_document)
+                    if result:
+                        if isinstance(result, list) and result:
+                            doc = result[0]
+                        else:
+                            doc = result
+
+                        return _hydrate(doc)
+                except Exception as e:
+                    logger.error(f"Error resolving out_document {self.out_document}: {str(e)}")
+
+            # Return the current value if resolution failed
+            return self.out_document
+            
+        return _resolve_async(connection)
 
     def resolve_out_sync(self, connection=None):
         """Resolve the out_document field synchronously.
@@ -3262,6 +3877,7 @@ class RelationDocument(Document):
 
         Returns:
             The resolved out_document instance
+
         """
         # If out_document is already a document instance, return it
         if isinstance(self.out_document, Document):
@@ -3283,8 +3899,50 @@ class RelationDocument(Document):
                         doc = result[0]
                     else:
                         doc = result
-
-                    return doc
+                    
+                    if doc:
+                        # Hydrate if we have the target document class
+                        if hasattr(self, 'out_document_class'):
+                            return self.out_document_class.from_db(doc)
+                        elif self._meta.get('out_document_type'):
+                            return self._meta['out_document_type'].from_db(doc)
+                        
+                        # Try to resolve class from registry based on 'id'
+                        if isinstance(doc, dict) and 'id' in doc:
+                            try:
+                                val = doc['id']
+                                table = None
+                                if hasattr(val, 'table_name'):
+                                     table = val.table_name
+                                else:
+                                     table = str(val).split(':')[0]
+                                
+                                if table:
+                                    doc_cls = DocumentMetaclass._registry.get(table)
+                                    if doc_cls:
+                                        return doc_cls.from_db(doc)
+                            except Exception:
+                                pass
+                        
+                        return doc
+                        # Try to resolve class from registry based on 'id'
+                        if isinstance(doc, dict) and 'id' in doc:
+                            try:
+                                val = doc['id']
+                                table = None
+                                if hasattr(val, 'table_name'):
+                                     table = val.table_name
+                                else:
+                                     table = str(val).split(':')[0]
+                                
+                                if table:
+                                    doc_cls = DocumentMetaclass._registry.get(table)
+                                    if doc_cls:
+                                        return doc_cls.from_db(doc)
+                            except Exception:
+                                pass
+                        
+                        return doc
             except Exception as e:
                 logger.error(f"Error resolving out_document {self.out_document}: {str(e)}")
 
@@ -3296,8 +3954,32 @@ class RelationDocument(Document):
                         doc = result[0]
                     else:
                         doc = result
+                    
+                    if doc:
+                         # Hydrate if we have the target document class
+                        if hasattr(self, 'out_document_class'):
+                            return self.out_document_class.from_db(doc)
+                        elif self._meta.get('out_document_type'):
+                            return self._meta['out_document_type'].from_db(doc)
+                        
+                        # Try to resolve class from registry based on RecordID (self.out_document.table_name)
+                        table = None
+                        if hasattr(self.out_document, 'table_name'):
+                            table = self.out_document.table_name
+                        elif 'id' in doc:
+                             # Check if ID in doc is RecordID
+                            val = doc['id']
+                            if hasattr(val, 'table_name'):
+                                table = val.table_name
+                            else:
+                                table = str(val).split(':')[0]
+                        
+                        if table:
+                            doc_cls = DocumentMetaclass._registry.get(table)
+                            if doc_cls:
+                                return doc_cls.from_db(doc)
 
-                    return doc
+                        return doc
             except Exception as e:
                 logger.error(f"Error resolving out_document {self.out_document}: {str(e)}")
 

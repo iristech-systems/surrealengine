@@ -11,7 +11,7 @@ import asyncio
 import datetime
 from surrealengine import (
     Document, create_connection,
-    StringField, IntField, FloatField, DateTimeField,
+    StringField, FloatField, DateTimeField,
     Count, Sum, Mean, CountIf, SumIf, MeanIf, MinIf, MaxIf, DistinctCountIf,
     Expr
 )

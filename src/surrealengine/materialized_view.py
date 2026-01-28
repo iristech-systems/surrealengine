@@ -5,12 +5,15 @@ Materialized views are precomputed views of data that can be used to
 improve query performance for frequently accessed aggregated data.
 """
 from __future__ import annotations  # Enable string-based type annotations
-from typing import Any, Dict, List, Optional, Type, Union, TYPE_CHECKING, Callable
+from typing import Dict, List, Type, Optional, TYPE_CHECKING
 
 # Remove the direct import of Document
 # from .document import Document
 from .query import QuerySet
 from .connection import ConnectionRegistry
+
+if TYPE_CHECKING:
+    from .document import Document
 
 
 class Aggregation:
@@ -370,7 +373,7 @@ class MaterializedView:
     """
 
     def __init__(self, name: str, query: QuerySet, refresh_interval: str = None,
-                 document_class: Type["Document"] = None, aggregations: Dict[str, Aggregation] = None,
+                 document_class: Optional[Type["Document"]] = None, aggregations: Dict[str, Aggregation] = None,
                  select_fields: List[str] = None) -> None:
         """Initialize a new MaterializedView.
 
@@ -402,21 +405,22 @@ class MaterializedView:
             The custom query string
         """
         # Get the base query string
-        base_query = self.query._build_query()
+        if hasattr(self.query, "build_query"):
+            base_query = self.query.build_query()
+        else:
+            base_query = self.query._build_query()
 
         # If there are no aggregations or select fields, return the base query
         if not self.aggregations and not self.select_fields:
             return base_query
 
         # Extract the FROM clause and any clauses that come after it
-        from_index = base_query.upper().find("FROM")
-        if from_index == -1:
+        from .utils.parsing import split_query_on_from
+        select_part, rest_part = split_query_on_from(base_query)
+        
+        if not rest_part:
             # If there's no FROM clause, we can't modify the query
             return base_query
-
-        # Split the query into the SELECT part and the rest
-        select_part = base_query[:from_index].strip()
-        rest_part = base_query[from_index:].strip()
 
         # If there are no aggregations or select fields, return the base query
         if not self.aggregations and not self.select_fields:
@@ -454,7 +458,8 @@ class MaterializedView:
                 group_by_fields_str = group_by_clause[len("GROUP BY"):].strip()
 
             # Split the GROUP BY fields and add them to the SELECT fields if not already included
-            group_by_fields = [field.strip() for field in group_by_fields_str.split(",")]
+            from .utils.parsing import split_fields
+            group_by_fields = split_fields(group_by_fields_str)
             for field in group_by_fields:
                 if field and field not in fields:
                     fields.append(field)
@@ -474,16 +479,22 @@ class MaterializedView:
         # Combine the new SELECT part with the rest of the query
         return f"{new_select_part} {rest_part}"
 
-    async def create(self, connection=None, overwrite: bool = False, if_not_exists: bool = False) -> None:
+    def create(self, connection=None, overwrite: bool = False, if_not_exists: bool = False) -> None:
         """Create the materialized view in the database.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: The database connection to use (optional)
             overwrite: Whether to overwrite the table if it exists (default: False)
             if_not_exists: Whether to create the table only if it does not exist (default: False)
         """
-        connection = connection or ConnectionRegistry.get_default_connection()
+        connection = connection or ConnectionRegistry.get_default_connection(async_mode=None)
         
+        if not connection.is_async():
+            return self.create_sync(connection, overwrite, if_not_exists)
+            
         modifier = ""
         if overwrite:
             modifier = "OVERWRITE "
@@ -494,11 +505,8 @@ class MaterializedView:
         query_str = self._build_custom_query()
         create_query = f"DEFINE TABLE {modifier}{self.name} TYPE NORMAL AS {query_str}"
 
-        # Note: SurrealDB materialized views are automatically updated when underlying data changes
-        # The refresh_interval parameter is ignored as SurrealDB doesn't support the EVERY clause
-
         # Execute the query
-        await connection.client.query(create_query)
+        return connection.client.query(create_query)
 
     def create_sync(self, connection=None, overwrite: bool = False, if_not_exists: bool = False) -> None:
         """Create the materialized view in the database synchronously.
@@ -523,20 +531,25 @@ class MaterializedView:
         # Execute the query
         connection.client.query(create_query)
 
-    async def drop(self, connection=None) -> None:
+    def drop(self, connection=None) -> None:
         """Drop the materialized view from the database.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             connection: The database connection to use (optional)
         """
-        connection = connection or ConnectionRegistry.get_default_connection()
+        connection = connection or ConnectionRegistry.get_default_connection(async_mode=None)
+        
+        if not connection.is_async():
+            return self.drop_sync(connection)
 
         # Build the query for dropping the materialized view
         drop_query = f"REMOVE TABLE {self.name}"
 
-
         # Execute the query
-        await connection.client.query(drop_query)
+        return connection.client.query(drop_query)
 
     def drop_sync(self, connection=None) -> None:
         """Drop the materialized view from the database synchronously.
@@ -553,7 +566,7 @@ class MaterializedView:
         # Execute the query
         connection.client.query(drop_query)
 
-    async def refresh(self, connection=None) -> None:
+    def refresh(self, connection=None) -> None:
         """Manually refresh the materialized view.
 
         DEPRECATED: SurrealDB views derived from TABLES are live and do not need manual refresh.
@@ -585,15 +598,18 @@ class MaterializedView:
         """
         # Create a temporary document class for the materialized view
         view_class = type(f"{self.name.capitalize()}View", (self.document_class,), {
-            "Meta": type("Meta", (), {"collection": self.name})
+            "Meta": type("Meta", (), {"collection": self.name, "strict": False})
         })
 
         # Return a QuerySet for the view class
         connection = ConnectionRegistry.get_default_connection()
         return QuerySet(view_class, connection)
 
-    async def execute_raw_query(self, connection=None):
+    def execute_raw_query(self, connection=None):
         """Execute a raw query against the materialized view.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         This is a workaround for the "no decoder for tag" error that can occur
         when querying materialized views using the objects property.
@@ -602,11 +618,15 @@ class MaterializedView:
             connection: The database connection to use (optional)
 
         Returns:
-            The query results
+            The query results (or awaitable)
         """
-        connection = connection or ConnectionRegistry.get_default_connection()
+        connection = connection or ConnectionRegistry.get_default_connection(async_mode=None)
+        
+        if not connection.is_async():
+            return self.execute_raw_query_sync(connection)
+            
         query = f"SELECT * FROM {self.name}"
-        return await connection.client.query(query)
+        return connection.client.query(query)
 
     def execute_raw_query_sync(self, connection=None):
         """Execute a raw query against the materialized view synchronously.

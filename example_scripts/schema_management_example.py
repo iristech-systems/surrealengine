@@ -6,9 +6,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import asyncio
 from src.surrealengine import (
-    Document, StringField, IntField, FloatField, BooleanField, DateTimeField,
-    ListField, ReferenceField, create_connection, generate_schema_statements,
-    generate_schema_statements_from_module
+    Document, StringField, IntField, BooleanField, ListField, ReferenceField, create_connection, generate_schema_statements
 )
 
 

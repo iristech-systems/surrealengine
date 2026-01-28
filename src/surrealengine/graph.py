@@ -1,5 +1,4 @@
-import json
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, List, Optional, Type
 
 
 class GraphQuery:
@@ -101,7 +100,7 @@ class GraphQuery:
 
         # Start with the FROM clause
         collection = self.start_class._get_collection_name()
-        query = f"SELECT "
+        query = "SELECT "
 
         # Define what to select
         if hasattr(self, 'end_class') and self.end_class:

@@ -1,4 +1,4 @@
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Optional
 from surrealdb import RecordID
 
 from .base import Field
@@ -66,7 +66,7 @@ class RecordIDField(Field):
             # Check table name constraint if specified
             if validated and self.table_name:
                 if isinstance(validated, RecordID):
-                    table = validated.table
+                    table = getattr(validated, 'table_name', getattr(validated, 'table', None))
                 else:
                     table, _ = validated.split(':', 1)
 

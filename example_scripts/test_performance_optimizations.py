@@ -14,7 +14,6 @@ import asyncio
 import sys
 import os
 import time
-from typing import List
 
 from surrealdb import RecordID
 
@@ -351,7 +350,7 @@ async def run_all_tests():
         results = []
         for test_name, test_func in tests:
             try:
-                print(f"\n" + "=" * 60)
+                print("\n" + "=" * 60)
                 success = await test_func()
                 results.append((test_name, success))
                 print(f"✅ {test_name}: {'PASSED' if success else 'FAILED'}")
@@ -360,7 +359,7 @@ async def run_all_tests():
                 results.append((test_name, False))
         
         # Print summary
-        print(f"\n" + "=" * 60)
+        print("\n" + "=" * 60)
         print("📋 TEST SUMMARY")
         print("=" * 60)
         

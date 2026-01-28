@@ -5,7 +5,6 @@ to the database for existing documents, optimizing update performance.
 """
 
 import asyncio
-import datetime
 from surrealengine import Document, StringField, IntField, create_connection
 from surrealengine.logging import logger
 
@@ -46,7 +45,6 @@ async def test_smart_save_with_changes():
     
     # Get changed data to verify what will be sent
     changed_data = user.get_changed_data_for_update()
-    expected_changes = {'age': 29, 'name': 'Alice Johnson-Smith'}
     logger.info(f"Changed data to be sent: {changed_data}")
     
     # Verify that only changed fields are included

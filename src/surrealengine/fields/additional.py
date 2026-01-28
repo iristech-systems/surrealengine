@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, Optional
 try:
     from surrealdb import Range
     from surrealdb.data.types.range import BoundIncluded, BoundExcluded
@@ -342,8 +342,6 @@ class RangeField(Field):
 
         if isinstance(value, Range):
             # Convert back to dict for consistency with python usage
-            from surrealdb import Range
-            from surrealdb.data.types.range import BoundIncluded, BoundExcluded
             res = {}
             if value.begin:
                 val = value.begin.value

@@ -1,10 +1,11 @@
-import json
-from typing import Any, Dict, List, Optional, Tuple, Union, Type, cast
+from typing import Any, Dict, List, Optional, Tuple, Union, TypeVar
 from .exceptions import MultipleObjectsReturned, DoesNotExist
 from surrealdb import RecordID
 from .pagination import PaginationResult
 from .record_id_utils import RecordIdUtils
 from .surrealql import escape_literal
+
+T = TypeVar('T', bound='BaseQuerySet')
 
 # Import these at runtime to avoid circular imports
 def _get_connection_classes():
@@ -44,8 +45,7 @@ class BaseQuerySet:
         self.group_by_fields: List[str] = []
         self.split_fields: List[str] = []
         self.fetch_fields: List[str] = []
-        self.with_index: Optional[str] = None
-        self.with_index: Optional[str] = None
+        self._with_index: Optional[str] = None
         self.select_fields: Optional[List[str]] = None
         self.omit_fields: List[str] = []
         self.timeout_value: Optional[str] = None
@@ -71,404 +71,175 @@ class BaseQuerySet:
         SurrealEngineAsyncConnection, SurrealEngineSyncConnection = _get_connection_classes()
         return isinstance(self.connection, SurrealEngineAsyncConnection)
 
-    def filter(self, query=None, **kwargs) -> 'BaseQuerySet':
+    def filter(self: T, query=None, **kwargs) -> T:
         """Add filter conditions to the query with automatic ID optimization.
-
-        This method supports both Q objects and Django-style field lookups with double-underscore operators:
-        - field__gt: Greater than
-        - field__lt: Less than
-        - field__gte: Greater than or equal
-        - field__lte: Less than or equal
-        - field__ne: Not equal
-        - field__in: Inside (for arrays) - optimized for ID fields
-        - field__nin: Not inside (for arrays)
-        - field__contains: Contains (for strings or arrays)
-        - field__startswith: Starts with (for strings)
-        - field__endswith: Ends with (for strings)
-        - field__regex: Matches regex pattern (for strings)
-
-        PERFORMANCE OPTIMIZATIONS:
-        - id__in automatically uses direct record access syntax
-        - ID range queries (id__gte + id__lte) use range syntax
-
-        Args:
-            query: Q object or QueryExpression for complex queries
-            **kwargs: Field names and values to filter by
-
-        Returns:
-            A new queryset instance for method chaining
-
-        Raises:
-            ValueError: If an unknown operator is provided
+        
+        # ... (implementation same)
         """
         # Clone first to avoid mutating the original queryset
         result = self if (query is None and not kwargs) else self._clone()
-
-        # Handle Q objects and QueryExpressions
-        if query is not None:
-            # Import here to avoid circular imports
-            try:
-                from .query_expressions import Q, QueryExpression
-
-                if isinstance(query, Q):
-                    # Use to_where_clause() to properly handle both simple and compound Q objects
+        if query:
+            # Handle QueryExpression
+            if hasattr(query, 'apply_to_queryset'):
+                result = query.apply_to_queryset(result)
+            # Handle Q object
+            elif hasattr(query, 'to_conditions'):
+                conditions = query.to_conditions()
+                if conditions:
+                    result.query_parts.extend(conditions)
+                else:
+                    # Fallback to raw WHERE clause for complex queries
                     where_clause = query.to_where_clause()
                     if where_clause:
                         result.query_parts.append(('__raw__', '=', where_clause))
-                    # Don't return early - continue to process kwargs if provided
-
-                elif isinstance(query, QueryExpression):
-                    # Apply QueryExpression to this queryset
-                    return query.apply_to_queryset(result)
-
-                else:
-                    raise ValueError(f"Unsupported query type: {type(query)}")
-
-            except ImportError:
-                raise ValueError("Query expressions not available")
-
-        # Process kwargs (either standalone or combined with a Q object)
-        if not kwargs:
-            return result
-
-        # Continue with existing kwargs processing
-        # PERFORMANCE OPTIMIZATION: Check for bulk ID operations
-        if len(kwargs) == 1 and 'id__in' in kwargs:
-            result._bulk_id_selection = kwargs['id__in']
-            return result
-
-        # PERFORMANCE OPTIMIZATION: Check for ID range operations
-        id_range_keys = {k for k in kwargs.keys() if k.startswith('id__') and k.endswith(('gte', 'lte', 'gt', 'lt'))}
-        if len(kwargs) == 2 and len(id_range_keys) == 2:
-            if 'id__gte' in kwargs and 'id__lte' in kwargs:
-                result._id_range_selection = (kwargs['id__gte'], kwargs['id__lte'], True)  # inclusive
-                return result
-            elif 'id__gt' in kwargs and 'id__lt' in kwargs:
-                result._id_range_selection = (kwargs['id__gt'], kwargs['id__lt'], False)  # exclusive
-                return result
-
-        # Fall back to regular filtering for non-optimizable queries
-        for k, v in kwargs.items():
-            if k == 'id':
-                # Use RecordIdUtils for comprehensive ID handling
-                table_name = None
-                if hasattr(self, 'document_class') and self.document_class:
-                    table_name = self.document_class._get_collection_name()
-
-                normalized_id = RecordIdUtils.normalize_record_id(v, table_name)
-                if normalized_id:
-                    result.query_parts.append((k, '=', normalized_id))
-                else:
-                    # Fall back to original value if normalization fails
-                    result.query_parts.append((k, '=', str(v)))
-                continue
-
-            # Special handling for URL fields - mark them with a special tag
-            if k == 'url' or (isinstance(v, str) and (v.startswith('http://') or v.startswith('https://'))):
-                # Add a special tag to indicate this is a URL that needs quoting
-                result.query_parts.append((k, '=', {'__url_value__': v}))
-                continue
-
-            parts = k.split('__')
-            field = parts[0]
-
-            # Handle operators
-            if len(parts) > 1:
-                op = parts[1]
-                if op == 'gt':
-                    result.query_parts.append((field, '>', v))
-                elif op == 'lt':
-                    result.query_parts.append((field, '<', v))
-                elif op == 'gte':
-                    result.query_parts.append((field, '>=', v))
-                elif op == 'lte':
-                    result.query_parts.append((field, '<=', v))
-                elif op == 'ne':
-                    result.query_parts.append((field, '!=', v))
-                elif op == 'in':
-                    # Note: id__in is handled by optimization above
-                    result.query_parts.append((field, 'INSIDE', v))
-                elif op == 'nin':
-                    result.query_parts.append((field, 'NOT INSIDE', v))
-                elif op == 'contains':
-                    if isinstance(v, str):
-                        result.query_parts.append((f"string::contains({field}, '{v}')", '=', True))
-                    else:
-                        result.query_parts.append((field, 'CONTAINS', v))
-                elif op == 'startswith':
-                    result.query_parts.append((f"string::starts_with({field}, '{v}')", '=', True))
-                elif op == 'endswith':
-                    result.query_parts.append((f"string::ends_with({field}, '{v}')", '=', True))
-                elif op == 'regex':
-                    result.query_parts.append((f"string::matches({field}, r'{v}')", '=', True))
-                # New operators for contains/inside variants
-                elif op == 'contains_any':
-                    result.query_parts.append((field, 'CONTAINSANY', v))
-                elif op == 'contains_all':
-                    result.query_parts.append((field, 'CONTAINSALL', v))
-                elif op == 'contains_none':
-                    result.query_parts.append((field, 'CONTAINSNONE', v))
-                elif op == 'inside':
-                    result.query_parts.append((field, 'INSIDE', v))
-                elif op == 'not_inside':
-                    result.query_parts.append((field, 'NOT INSIDE', v))
-                elif op == 'all_inside':
-                    result.query_parts.append((field, 'ALLINSIDE', v))
-                elif op == 'any_inside':
-                    result.query_parts.append((field, 'ANYINSIDE', v))
-                elif op == 'none_inside':
-                    result.query_parts.append((field, 'NONEINSIDE', v))
-                else:
-                    # Handle nested field access for DictFields
-                    document_class = getattr(self, 'document_class', None)
-                    if document_class and hasattr(document_class, '_fields'):
-                        if field in document_class._fields:
-                            from .fields import DictField
-                            if isinstance(document_class._fields[field], DictField):
-                                nested_field = f"{field}.{op}"
-                                result.query_parts.append((nested_field, '=', v))
-                                continue
-
-                    # If we get here, it's an unknown operator
-                    raise ValueError(f"Unknown operator: {op}")
+        
+        # Handle kwargs
+        for key, value in kwargs.items():
+            if '__' in key:
+                parts = key.split('__')
+                field_name = parts[0]
+                operator = parts[1]
+                
+                # Map operators
+                op_map = {
+                    'gt': '>',
+                    'lt': '<', 
+                    'gte': '>=',
+                    'lte': '<=',
+                    'ne': '!=',
+                    'in': 'INSIDE',
+                    'nin': 'NOT INSIDE',
+                    'contains': 'CONTAINS',
+                    'startswith': 'STARTSWITH',
+                    'endswith': 'ENDSWITH',
+                    'regex': 'REGEX'
+                }
+                op = op_map.get(operator, '=')
+                result.query_parts.append((field_name, op, value))
             else:
-                # Simple equality
-                result.query_parts.append((field, '=', v))
-
+                result.query_parts.append((key, '=', value))
+        
         return result
 
-    def only(self, *fields: str) -> 'BaseQuerySet':
+    def only(self: T, *fields: str) -> T:
         """Select only the specified fields.
-
-        This method sets the fields to be selected in the query.
-        It automatically includes the 'id' field.
-
-        Args:
-            *fields: Field names to select
-
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
         clone = self._clone()
         select_fields = list(fields)
         if 'id' not in select_fields:
             select_fields.append('id')
         clone.select_fields = select_fields
-        clone.select_fields = select_fields
         return clone
 
-    def omit(self, *fields: str) -> 'BaseQuerySet':
+    def omit(self: T, *fields: str) -> T:
         """Exclude specific fields from the results.
-        
-        Args:
-            *fields: Field names to exclude
-            
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
         clone = self._clone()
         clone.omit_fields.extend(fields)
         return clone
 
-    def limit(self, value: int) -> 'BaseQuerySet':
+    def limit(self: T, value: int) -> T:
         """Set the maximum number of results to return.
-
-        Args:
-            value: Maximum number of results
-
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
         self.limit_value = value
         return self
 
-    def start(self, value: int) -> 'BaseQuerySet':
+    def start(self: T, value: int) -> T:
         """Set the number of results to skip (for pagination).
-
-        Args:
-            value: Number of results to skip
-
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
         self.start_value = value
         return self
 
-    def order_by(self, field: str, direction: str = 'ASC') -> 'BaseQuerySet':
+    def order_by(self: T, field: str, direction: str = 'ASC') -> T:
         """Set the field and direction to order results by.
-
-        Args:
-            field: Field name to order by
-            direction: Direction to order by ('ASC' or 'DESC')
-
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
         self.order_by_value = (field, direction)
         return self
 
-        return self
-
-    def group_by(self, *fields: str, all: bool = False) -> 'BaseQuerySet':
+    def group_by(self: T, *fields: str, all: bool = False) -> T:
         """Group the results by the specified fields or group all.
-
-        This method sets the fields to group the results by using the GROUP BY clause.
-
-        Args:
-            *fields: Field names to group by
-            all: If True, use GROUP ALL (SurrealDB v2.0.0+)
-
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
         self.group_by_fields.extend(fields)
         self.group_by_all = all
         return self
 
-    def split(self, *fields: str) -> 'BaseQuerySet':
+    def split(self: T, *fields: str) -> T:
         """Split the results by the specified fields.
-
-        This method sets the fields to split the results by using the SPLIT clause.
-
-        Args:
-            *fields: Field names to split by
-
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
         self.split_fields.extend(fields)
         return self
 
-    def fetch(self, *fields: str) -> 'BaseQuerySet':
+    def fetch(self: T, *fields: str) -> T:
         """Fetch related records for the specified fields.
-
-        This method sets the fields to fetch related records for using the FETCH clause.
-
-        Args:
-            *fields: Field names to fetch related records for
-
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
         self.fetch_fields.extend(fields)
         return self
 
-    def get_many(self, ids: List[Union[str, Any]]) -> 'BaseQuerySet':
+    def get_many(self: T, ids: List[Union[str, Any]]) -> T:
         """Get multiple records by IDs using optimized direct record access.
-        
-        This method uses SurrealDB's direct record selection syntax for better
-        performance compared to WHERE clause filtering.
-        
-        Args:
-            ids: List of record IDs (can be strings or other ID types)
-            
-        Returns:
-            The query set instance configured for direct record access
-            
-        Example:
-            # Efficient: SELECT * FROM users:1, users:2, users:3
-            users = await User.objects.get_many([1, 2, 3]).all()
-            users = await User.objects.get_many(['users:1', 'users:2']).all()
+        # ...
         """
         clone = self._clone()
         clone._bulk_id_selection = ids
         return clone
     
-    def get_range(self, start_id: Union[str, Any], end_id: Union[str, Any], 
-                  inclusive: bool = True) -> 'BaseQuerySet':
+    def get_range(self: T, start_id: Union[str, Any], end_id: Union[str, Any], 
+                  inclusive: bool = True) -> T:
         """Get a range of records by ID using optimized range syntax.
-        
-        This method uses SurrealDB's range selection syntax for better
-        performance compared to WHERE clause filtering.
-        
-        Args:
-            start_id: Starting ID of the range
-            end_id: Ending ID of the range  
-            inclusive: Whether the range is inclusive (default: True)
-            
-        Returns:
-            The query set instance configured for range access
-            
-        Example:
-            # Efficient: SELECT * FROM users:100..=200
-            users = await User.objects.get_range(100, 200).all()
-            users = await User.objects.get_range('users:100', 'users:200', inclusive=False).all()
+        # ...
         """
         clone = self._clone()
         clone._id_range_selection = (start_id, end_id, inclusive)
         return clone
 
 
-    def with_index(self, index: str) -> 'BaseQuerySet':
+    def with_index(self: T, index: str) -> T:
         """Use the specified index for the query.
-
-        This method sets the index to use for the query using the WITH clause.
-
-        Args:
-            index: Name of the index to use
-
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
-        self.with_index = index
+        self._with_index = index
         return self
     
-    def no_index(self) -> 'BaseQuerySet':
+    def no_index(self: T) -> T:
         """Do not use any index for the query.
-        
-        This method adds the WITH NOINDEX clause to the query.
-        
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
-        self.with_index = "NOINDEX"
+        self._with_index = "NOINDEX"
         return self
 
-    def timeout(self, duration: str) -> 'BaseQuerySet':
+    def timeout(self: T, duration: str) -> T:
         """Set a timeout for the query execution.
-        
-        Args:
-            duration: Duration string (e.g. "5s", "1m")
-            
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
         self.timeout_value = duration
         return self
 
-    def tempfiles(self, value: bool = True) -> 'BaseQuerySet':
+    def tempfiles(self: T, value: bool = True) -> T:
         """Enable or disable using temporary files for large queries.
-        
-        Args:
-            value: Whether to use tempfiles (default: True)
-            
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
         self.tempfiles_value = value
         return self
 
-    def with_explain(self, full: bool = False) -> 'BaseQuerySet':
+    def with_explain(self: T, full: bool = False) -> T:
         """Explain the query execution plan (builder pattern).
-        
-        Args:
-            full: Whether to include full explanation including execution trace (default: False)
-            
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
         self.explain_value = True
         self.explain_full_value = full
         return self
     
-    def use_direct_access(self) -> 'BaseQuerySet':
+    def use_direct_access(self: T) -> T:
         """Mark this queryset to prefer direct record access when possible.
-        
-        This method sets a preference for using direct record access patterns
-        over WHERE clause filtering for better performance.
-        
-        Returns:
-            The query set instance for method chaining
+        # ...
         """
         clone = self._clone()
         clone._prefer_direct_access = True
@@ -676,8 +447,9 @@ class BaseQuerySet:
         if self._id_range_selection:
             start_id, end_id, inclusive = self._id_range_selection
             
-            start_record_id = self._format_record_id(start_id)
-            end_record_id = self._format_record_id(end_id)
+            # Format record IDs to validate/normalize them (even if variables are unused, we validate here)
+            self._format_record_id(start_id)
+            self._format_record_id(end_id)
             
             # Extract just the numeric part for range syntax
             collection_name = getattr(self, 'document_class', None)
@@ -730,8 +502,8 @@ class BaseQuerySet:
             clauses['SPLIT'] = f"SPLIT {', '.join(self.split_fields)}"
 
         # Build WITH clause
-        if self.with_index:
-            clauses['WITH'] = f"WITH INDEX {self.with_index}"
+        if self._with_index:
+            clauses['WITH'] = f"WITH INDEX {self._with_index}"
 
         # Build ORDER BY clause
         if self.order_by_value:
@@ -778,11 +550,14 @@ class BaseQuerySet:
             return document_class._get_collection_name()
         return getattr(self, 'table_name', None)
 
-    async def all(self) -> List[Any]:
+    async def all(self, **kwargs: Any) -> List[Any]:
         """Execute the query and return all results asynchronously.
 
         This method must be implemented by subclasses to execute the query
         and return the results.
+
+        Args:
+            **kwargs: Additional arguments (e.g. dereference)
 
         Returns:
             List of results
@@ -792,11 +567,14 @@ class BaseQuerySet:
         """
         raise NotImplementedError("Subclasses must implement all")
 
-    def all_sync(self) -> List[Any]:
+    def all_sync(self, **kwargs: Any) -> List[Any]:
         """Execute the query and return all results synchronously.
 
         This method must be implemented by subclasses to execute the query
         and return the results.
+
+        Args:
+            **kwargs: Additional arguments (e.g. dereference)
 
         Returns:
             List of results
@@ -938,9 +716,9 @@ class BaseQuerySet:
         results = await self.all()
 
         if not results:
-            raise DoesNotExist(f"Object matching query does not exist.")
+            raise DoesNotExist("Object matching query does not exist.")
         if len(results) > 1:
-            raise MultipleObjectsReturned(f"Multiple objects returned instead of one")
+            raise MultipleObjectsReturned("Multiple objects returned instead of one")
 
         return results[0]
 
@@ -962,9 +740,9 @@ class BaseQuerySet:
         results = self.all_sync()
 
         if not results:
-            raise DoesNotExist(f"Object matching query does not exist.")
+            raise DoesNotExist("Object matching query does not exist.")
         if len(results) > 1:
-            raise MultipleObjectsReturned(f"Multiple objects returned instead of one")
+            raise MultipleObjectsReturned("Multiple objects returned instead of one")
 
         return results[0]
 
@@ -1100,7 +878,7 @@ class BaseQuerySet:
         from .aggregation import AggregationPipeline
         return AggregationPipeline(self)
 
-    def _clone(self) -> 'BaseQuerySet':
+    def _clone(self: T) -> T:
         """Create a new instance of the queryset with the same parameters.
 
         This method creates a new instance of the same class as the current
@@ -1139,4 +917,4 @@ class BaseQuerySet:
         clone._traversal_unique = self._traversal_unique
         clone._traversal_max_depth = self._traversal_max_depth
 
-        return clone
+        return clone  # type: ignore

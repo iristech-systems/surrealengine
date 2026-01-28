@@ -1,22 +1,19 @@
-FROM python:3.13-slim-bullseye
+FROM python:3.12-slim-bookworm
 
-WORKDIR /surrealengine
+WORKDIR /workspace
 
-# Install uv
-RUN apt-get update && apt-get install -y curl && \
-    curl -LsSf https://astral.sh/uv/install.sh | sh && \
-    ln -s /root/.cargo/bin/uv /usr/local/bin/uv
+# Install from pre-built wheel to get dependencies and accelerator
+COPY dist/ /tmp/dist/
+RUN pip install --no-cache-dir /tmp/dist/*.whl && \
+    pip uninstall -y surrealengine && \
+    rm -rf /tmp/dist
 
-RUN mkdir -p notebooks
+# Install JupyterLab explicitly since it's a dev dependency not in the wheel
+RUN pip install --no-cache-dir jupyterlab notebook
 
-# Copy project files
-COPY notebooks/ ./notebooks/
-COPY src/ ./notebooks/src/
-COPY example_scripts/ ./notebooks/examples/
-
-# Set up virtual environment and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Set PYTHONPATH to use the mounted source code (edits reflect immediately)
+# The source directory MUST contain the compiled .so extension for this to work
+ENV PYTHONPATH="/workspace/src"
 
 # Configure JupyterLab
 COPY jupyter_lab_config.py /root/.jupyter/jupyter_lab_config.py
