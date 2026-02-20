@@ -193,8 +193,17 @@ def _generate_field_statements(table: str, current_path: str, field: Any, docume
     if exprs:
         field_stmt += " ASSERT " + " AND ".join(exprs)
 
+    # Computed / Incoming Reference
+    if getattr(field, 'computation_expression', None):
+        field_stmt += f" COMPUTED {field.computation_expression}"
+    # Sets Deduplication
+    elif getattr(field, '_is_set', False):
+        field_stmt += " VALUE $value.distinct()"
+    # Reference
+    elif getattr(field, 'reference', False):
+        field_stmt += " REFERENCE"
     # Default
-    if field.default is not None and not callable(field.default):
+    elif field.default is not None and not callable(field.default):
         def _literal(val):
             if isinstance(val, str):
                 s = val.replace('\\', r'\\').replace('"', r'\"')

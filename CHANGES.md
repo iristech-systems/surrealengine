@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-02-20
 
+### Added
+- **SurrealDB 3.0.0 Compatibility**: Upgraded schema generation, query functionality, and FTS syntax to seamlessly support SurrealDB 3.0.0.
+- **Reference Fields**: Added `reference=True` support to `ReferenceField`.
+- **Bidirectional Graph Relations**: Implemented `IncomingReferenceField` (translates to `COMPUTED <~model`) for powerful 3.0.0 graph relationships.
+- **Computed Fields**: Implemented `ComputedField` (translates to `COMPUTED { expr }`) mapping.
+- **Asynchronous Events**: Added `async_run=True` to `Event` class for asynchronous hooks.
+- **Advanced Set Handling**: Updated `SetField` schema generation to use `VALUE $value.distinct()`.
+- **New Transaction API**: Implemented a query-buffering Write-Behind Proxy for transactions via context managers (`async with transaction()`) and decorators (`@transactional`). Fully bypasses the state limitations in the python SDK.
+
+### Fixed
+- **Query Bug Fix**: Fixed RecordID serialization on graph node edges and relations.
+- **Index Syntax**: Updated FTS index natively to `FULLTEXT ANALYZER`.
+- **Function Syntax**: Updated function call syntax to match 3.0.0 requirements (e.g., `type::is_record()`).
 
 ## [0.7.0] - 2026-01-22
 

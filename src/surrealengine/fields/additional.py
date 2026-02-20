@@ -123,6 +123,50 @@ class FutureField(Field):
         return f"<future> {{ {self.computation_expression} }}"
 
 
+class ComputedField(Field):
+    """Field for computed values in SurrealDB 3.0.0+.
+
+    This field type represents a value that is computed by the database
+    on read or write. It uses the `COMPUTED` clause in schema definitions.
+
+    Attributes:
+        computation_expression: The SurrealQL expression to compute the value
+        field_type: The underlying field type (optional)
+    """
+
+    def __init__(self, computation_expression: str, field_type: Optional[Field] = None, **kwargs: Any) -> None:
+        """Initialize a new ComputedField.
+
+        Args:
+            computation_expression: The SurrealQL expression (e.g. '{ $value * 2 }')
+            field_type: The expected type of the computed value
+            **kwargs: Additional arguments to pass to the parent class
+        """
+        self.computation_expression = computation_expression
+        self.field_type = field_type
+        super().__init__(**kwargs)
+        self.py_type = field_type.py_type if field_type else Any
+
+    def validate(self, value: Any) -> Any:
+        # Computed fields are generally read-only or computed, so validation might be relaxed
+        # unless we are validating a fetched value.
+        if value is not None and self.field_type:
+            return self.field_type.validate(value)
+        return super().validate(value)
+        
+    def to_db(self, value: Any) -> Any:
+        # Computed fields are usually not sent to the DB explicitly, 
+        # but if they are, they pass through.
+        if value is not None and self.field_type:
+            return self.field_type.to_db(value)
+        return value
+
+    def from_db(self, value: Any) -> Any:
+        if value is not None and self.field_type:
+            return self.field_type.from_db(value)
+        return value
+
+
 class TableField(Field):
     """Table field type.
 

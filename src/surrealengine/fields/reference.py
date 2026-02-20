@@ -42,6 +42,7 @@ class ReferenceField(Field):
 
         Args:
             document_type: The type of document being referenced
+            reference: Whether to enforce bidirectional record link natively natively in the database via the REFERENCE keyword (SurrealDB 3.0.0+)
             required: Whether the field is required (default: False)
             default: Default value for the field
             db_field: Name of the field in the database (defaults to the field name)
@@ -53,6 +54,7 @@ class ReferenceField(Field):
             index_with: List of other field names to include in the index
         """
         self.document_type = document_type
+        self.reference = kwargs.pop('reference', False)
         super().__init__(**kwargs)
         self.py_type = Union[Type, str, dict]
 
@@ -401,3 +403,61 @@ class RelationField(Field):
         return relation_queryset.get_related_sync(
             instance, target_document=self.to_document
         )
+
+
+class IncomingReferenceField(Field):
+    """Field for incoming references (bidirectional links).
+
+    In SurrealDB 3.0.0+, bidirectional record links can be natively 
+    tracked using `COMPUTED <~model` without needing to execute a `RELATE` statement.
+
+    Attributes:
+        document_type: The type of document that references this document
+    """
+
+    def __init__(self, document_type: Type, **kwargs: Any) -> None:
+        """Initialize a new IncomingReferenceField.
+
+        Args:
+            document_type: The target document class that contains the incoming reference.
+            **kwargs: Additional arguments
+        """
+        self.document_type = document_type
+        super().__init__(**kwargs)
+        self.py_type = Any
+
+    @property
+    def computation_expression(self) -> str:
+        # Translates to: COMPUTED <~model
+        if isinstance(self.document_type, str):
+            import re
+            name = self.document_type
+            s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+            collection = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+        else:
+            collection = self.document_type._get_collection_name()
+        return f"<~{collection}"
+
+    def to_db(self, value: Any) -> Any:
+        # Incoming references are computed natively by the db, 
+        # so they shouldn't need to be sent manually on create/update.
+        return None
+
+    def from_db(self, value: Any) -> Any:
+        # The database will return an array of record IDs or objects
+        if not value:
+            return value
+        
+        if isinstance(value, list):
+            res = []
+            for item in value:
+                if isinstance(item, dict) and 'id' in item:
+                    try:
+                        res.append(self.document_type.from_db(item))
+                    except Exception:
+                        res.append(item)
+                else:
+                    res.append(item)
+            return res
+            
+        return value

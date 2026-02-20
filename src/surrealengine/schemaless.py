@@ -897,7 +897,7 @@ class SchemalessTable:
         if unique:
             query += " UNIQUE"
         elif search and analyzer:
-            query += f" SEARCH ANALYZER {analyzer}"
+            query += f" FULLTEXT ANALYZER {analyzer}"
 
         # Add comment if provided
         if comment:
@@ -930,7 +930,7 @@ class SchemalessTable:
         if unique:
             query += " UNIQUE"
         elif search and analyzer:
-            query += f" SEARCH ANALYZER {analyzer}"
+            query += f" FULLTEXT ANALYZER {analyzer}"
 
         # Add comment if provided
         if comment:

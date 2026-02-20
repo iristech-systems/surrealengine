@@ -208,6 +208,15 @@ class SetField(ListField):
             tags = SetField(StringField())
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # SurrealDB 3.0.0 removed implicit deduplication for arrays.
+        # We enforce it at the database level by setting the implicit VALUE clause logic if not provided.
+        # This will be handled in schema.py or via field definition, but we can store it here.
+        # Usually, this is handled in schema.py during DEFINE FIELD generation, but we'll mark a flag
+        self._is_set = True
+
+
     def validate(self, value: Any) -> Optional[List[Any]]:
         """Validate the list value and ensure uniqueness.
 

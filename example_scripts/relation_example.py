@@ -2,7 +2,7 @@ import asyncio
 import datetime
 from surrealengine import (
     Document, RelationDocument, StringField, IntField, FloatField,
-    BooleanField, DateTimeField, create_connection
+    BooleanField, DateTimeField, ReferenceField, create_connection
 )
 
 
@@ -15,6 +15,15 @@ class Person(Document):
 
     class Meta:
         collection = "people"
+
+
+# Define a Document class for Publisher
+class Publisher(Document):
+    """A document representing a publisher."""
+    name = StringField(required=True)
+
+    class Meta:
+        collection = "publishers"
 
 
 # Define a Document class for Book
@@ -34,6 +43,7 @@ class AuthorRelation(RelationDocument):
     """A relation document representing an author relationship."""
     date_written = DateTimeField()
     is_primary_author = BooleanField(default=True)
+    publisher = ReferenceField(Publisher, required=False)
 
     class Meta:
         collection = "authored"
@@ -50,21 +60,10 @@ RETRY_BACKOFF = 2.0
 async def main():
     # Connect to the database
     connection = create_connection(
-        url="ws://db:8000/rpc",
+        url="memory://",
         namespace="test_ns",
         database="test_db",
-        username="root",
-        password="root",
         make_default=True,  # This automatically sets it as the default
-        use_pool=True,  # Enable connection pooling
-        pool_size=POOL_SIZE,
-        max_idle_time=MAX_IDLE_TIME,
-        connect_timeout=CONNECT_TIMEOUT,
-        operation_timeout=OPERATION_TIMEOUT,
-        retry_limit=RETRY_LIMIT,
-        retry_delay=RETRY_DELAY,
-        retry_backoff=RETRY_BACKOFF,
-        validate_on_borrow=True
     )
 
 
@@ -99,11 +98,17 @@ async def main():
         await book.save()
         print(f"Created book: {book.to_dict()}")
 
+        # Create a publisher
+        publisher = Publisher(name="Penguin Books")
+        await publisher.save()
+        print(f"Created publisher: {publisher.to_dict()}")
+
         # Create a relation between the person and the book
         relation = await AuthorRelation.create_relation(
             person, book,
             date_written=datetime.datetime.now(datetime.UTC),
-            is_primary_author=True
+            is_primary_author=True,
+            publisher=publisher
         )
         print(f"Created relation: {relation.to_dict()}")
 
@@ -121,7 +126,7 @@ async def main():
 
         # Clean up
 
-        print("Deleted person and book")
+        print("Finished example cleanup")
 
     except Exception as e:
         print(f"Error: {e}")

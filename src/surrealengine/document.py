@@ -138,6 +138,17 @@ def _serialize_for_surreal(value: Any) -> str:
         iso = dt.isoformat().replace("+00:00", "Z")
         return f"d'{iso}'"
 
+    if isinstance(value, RecordID):
+        return str(value)
+
+    if hasattr(value, 'id') and hasattr(value, '_get_collection_name'):
+        if isinstance(value.id, RecordID):
+            return str(value.id)
+        doc_id = str(value.id)
+        if ':' in doc_id:
+            return doc_id
+        return f"{value._get_collection_name()}:{doc_id}"
+
     # Already a Surreal datetime literal
     if isinstance(value, str):
         if value.startswith("d'") and value.endswith("'"):
@@ -3024,8 +3035,17 @@ class Document(metaclass=DocumentMetaclass):
                 if exprs:
                     field_query += " ASSERT " + " AND ".join(exprs)
 
+                # Computed / Incoming Reference
+                if getattr(field, 'computation_expression', None):
+                    field_query += f" COMPUTED {field.computation_expression}"
+                # Sets Deduplication
+                elif getattr(field, '_is_set', False):
+                    field_query += " VALUE $value.distinct()"
+                # Reference
+                elif getattr(field, 'reference', False):
+                    field_query += " REFERENCE"
                 # Default value
-                if field.default is not None and not callable(field.default):
+                elif field.default is not None and not callable(field.default):
                     def _literal(val):
                         if isinstance(val, str):
                             s = val.replace('\\', r'\\').replace('"', r'\"')
@@ -3222,8 +3242,17 @@ class Document(metaclass=DocumentMetaclass):
                 if exprs:
                     field_query += " ASSERT " + " AND ".join(exprs)
 
+                # Computed / Incoming Reference
+                if getattr(field, 'computation_expression', None):
+                    field_query += f" COMPUTED {field.computation_expression}"
+                # Sets Deduplication
+                elif getattr(field, '_is_set', False):
+                    field_query += " VALUE $value.distinct()"
+                # Reference
+                elif getattr(field, 'reference', False):
+                    field_query += " REFERENCE"
                 # Default value
-                if field.default is not None and not callable(field.default):
+                elif field.default is not None and not callable(field.default):
                     def _literal(val):
                         if isinstance(val, str):
                             s = val.replace('\\', r'\\').replace('"', r'\"')
@@ -3625,7 +3654,11 @@ class RelationDocument(Document):
 
         # Set the ID from the relation
         if relation and 'id' in relation:
-            relation_doc.id = relation['id']
+            from surrealdb import RecordID
+            if isinstance(relation['id'], RecordID):
+                relation_doc.id = f"{relation['id'].table_name}:{relation['id'].id}"
+            else:
+                relation_doc.id = relation['id']
 
         return relation_doc
 
@@ -3666,7 +3699,11 @@ class RelationDocument(Document):
 
         # Set the ID from the relation
         if relation and 'id' in relation:
-            relation_doc.id = relation['id']
+            from surrealdb import RecordID
+            if isinstance(relation['id'], RecordID):
+                relation_doc.id = f"{relation['id'].table_name}:{relation['id'].id}"
+            else:
+                relation_doc.id = relation['id']
 
         return relation_doc
 

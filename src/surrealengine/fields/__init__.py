@@ -10,7 +10,7 @@ from .collection import (
     ListField, DictField, SetField
 )
 from .reference import (
-    ReferenceField, RelationField
+    ReferenceField, RelationField, IncomingReferenceField
 )
 from .geometry import GeometryField
 from .id import RecordIDField
@@ -19,7 +19,7 @@ from .specialized import (
     EmailField, URLField, IPAddressField, SlugField, ChoiceField, VectorField
 )
 from .additional import (
-    OptionField, FutureField, TableField, RangeField
+    OptionField, FutureField, TableField, RangeField, ComputedField
 )
 from .embedded import EmbeddedField
 
@@ -29,10 +29,10 @@ __all__ = [
     'StringField', 'NumberField', 'IntField', 'FloatField', 'BooleanField',
     'DateTimeField', 'TimeSeriesField', 'DurationField',
     'ListField', 'DictField', 'SetField',
-    'ReferenceField', 'RelationField',
+    'ReferenceField', 'RelationField', 'IncomingReferenceField',
     'GeometryField',
     'RecordIDField',
     'BytesField', 'RegexField', 'DecimalField', 'UUIDField', 'LiteralField',
     'EmailField', 'URLField', 'IPAddressField', 'SlugField', 'ChoiceField', 'VectorField',
-    'OptionField', 'FutureField', 'TableField', 'RangeField', 'EmbeddedField',
+    'OptionField', 'FutureField', 'TableField', 'RangeField', 'ComputedField', 'EmbeddedField',
 ]

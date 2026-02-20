@@ -1,6 +1,9 @@
 import datetime
 from typing import Any, List, Optional, Type
-from surrealdb import RecordID
+try:
+    from surrealdb import RecordID
+except ImportError:
+    RecordID = Any
 
 
 class RelationQuerySet:
@@ -94,13 +97,23 @@ class RelationQuerySet:
             attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in processed_attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
+        print(f"Executing: {query}")
         result = await self.connection.client.query(query)
+        print(f"DB Result payload: {result}")
 
         # Return the relation record
-        # Return the relation record
-        if result and result[0]:
-            return result[0][0] if isinstance(result[0], list) and result[0] else result[0]
-
+        if result and isinstance(result, list) and len(result) > 0:
+            # The SDK might return a list of dicts directly
+            first_item = result[0]
+            if isinstance(first_item, dict):
+                if 'result' in first_item and isinstance(first_item['result'], list):
+                    # Wrapped JSON-RPC response format
+                    res_list = first_item['result']
+                    if res_list:
+                        return res_list[0] if isinstance(res_list, list) and res_list else res_list
+                else:
+                    # Direct dictionary record format
+                    return first_item
         return None
 
     def relate_sync(self, from_instance: Any, to_instance: Any, **attrs: Any) -> Optional[Any]:
@@ -170,10 +183,18 @@ class RelationQuerySet:
         result = self.connection.client.query(query)
 
         # Return the relation record
-        # Return the relation record
-        if result and result[0]:
-            return result[0][0] if isinstance(result[0], list) and result[0] else result[0]
-
+        if result and isinstance(result, list) and len(result) > 0:
+            # The SDK might return a list of dicts directly
+            first_item = result[0]
+            if isinstance(first_item, dict):
+                if 'result' in first_item and isinstance(first_item['result'], list):
+                    # Wrapped JSON-RPC response format
+                    res_list = first_item['result']
+                    if res_list:
+                        return res_list[0] if isinstance(res_list, list) and res_list else res_list
+                else:
+                    # Direct dictionary record format
+                    return first_item
         return None
 
     async def get_related(self, instance: Any, target_document: Optional[Type] = None, **filters: Any) -> List[Any]:

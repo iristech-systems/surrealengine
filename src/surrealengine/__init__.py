@@ -146,11 +146,12 @@ from .reactive import ReactiveQuerySet
 from .events import LiveEvent, Event
 from .functions import surreal_func, SurrealFunction
 from .relation_update import patch_relation_document
+from .transaction import transaction, transaction_sync, transactional, transactional_sync
 
 # For backward compatibility
 SurrealEngineConnection = SurrealEngineAsyncConnection
 
-__version__ = "0.7.0"
+__version__ = "0.9.5"
 __all__ = [
     "SurrealEngine",
     "SurrealEngineAsyncConnection",

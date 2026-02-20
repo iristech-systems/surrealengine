@@ -62,6 +62,7 @@ class Event:
     name: str
     when: str
     then: Union[str, List[str]]
+    async_run: bool = False
 
     def to_sql(self, table_name: str) -> str:
         """
@@ -76,5 +77,8 @@ class Event:
         else:
             # Single statement or block provided as string
             query += self.then
+            
+        if self.async_run:
+            query += " ASYNC"
             
         return query
