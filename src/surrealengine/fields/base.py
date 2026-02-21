@@ -44,6 +44,7 @@ class Field:
     def __init__(self, required: bool = False, default: Any = None, db_field: Optional[str] = None,
                  define_schema: bool = False, indexed: bool = False, unique: bool = False, 
                  search: bool = False, analyzer: Optional[str] = None, index_with: Optional[List[str]] = None,
+                 bm25: bool = False, highlights: bool = False,
                  comment: Optional[str] = None) -> None:
         """Initialize a new Field.
 
@@ -69,6 +70,8 @@ class Field:
         self.search = search
         self.analyzer = analyzer
         self.index_with = index_with
+        self.bm25 = bm25
+        self.highlights = highlights
         self.py_type = Any
         self.comment = comment
 

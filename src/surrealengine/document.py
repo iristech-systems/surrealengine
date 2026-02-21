@@ -1408,6 +1408,10 @@ class Document(metaclass=DocumentMetaclass):
         if connection is None:
             connection = get_active_connection(async_mode=True)
 
+        # Execute pre-save model validation
+        if hasattr(self, 'clean') and callable(self.clean):
+            self.clean()
+
         self.validate()
 
         # Update existing document if possible
@@ -1483,6 +1487,10 @@ class Document(metaclass=DocumentMetaclass):
 
         if connection is None:
             connection = get_active_connection(async_mode=False)
+
+        # Execute pre-save model validation
+        if hasattr(self, 'clean') and callable(self.clean):
+            self.clean()
 
         self.validate()
         
@@ -2547,6 +2555,8 @@ class Document(metaclass=DocumentMetaclass):
                     unique = index_def.get('unique', False)
                     search = index_def.get('search', False)
                     analyzer = index_def.get('analyzer')
+                    bm25 = index_def.get('bm25', False)
+                    highlights = index_def.get('highlights', False)
                     comment = index_def.get('comment')
                 elif isinstance(index_def, tuple) and len(index_def) >= 2:
                     # Tuple format (name, fields, [unique])
@@ -2555,6 +2565,8 @@ class Document(metaclass=DocumentMetaclass):
                     unique = index_def[2] if len(index_def) > 2 else False
                     search = False
                     analyzer = None
+                    bm25 = False
+                    highlights = False
                     comment = None
                 else:
                     # Skip invalid index definitions
@@ -2566,9 +2578,11 @@ class Document(metaclass=DocumentMetaclass):
                     unique=unique,
                     search=search,
                     analyzer=analyzer,
+                    bm25=bm25,
+                    highlights=highlights,
                     comment=comment,
                     connection=connection,
-                    **{k: v for k, v in index_def.items() if k not in ['name', 'fields', 'unique', 'search', 'analyzer', 'comment']}
+                    **{k: v for k, v in index_def.items() if k not in ['name', 'fields', 'unique', 'search', 'analyzer', 'bm25', 'highlights', 'comment']} if isinstance(index_def, dict) else {}
                 )
 
                 # Mark this index as processed to avoid duplicates
@@ -2613,6 +2627,8 @@ class Document(metaclass=DocumentMetaclass):
                     unique = getattr(field_obj, 'unique', False)
                     search = getattr(field_obj, 'search', False)
                     analyzer = getattr(field_obj, 'analyzer', None)
+                    bm25 = getattr(field_obj, 'bm25', False)
+                    highlights = getattr(field_obj, 'highlights', False)
 
                     # Create the multi-field index
                     await cls.create_index(
@@ -2621,6 +2637,8 @@ class Document(metaclass=DocumentMetaclass):
                         unique=unique,
                         search=search,
                         analyzer=analyzer,
+                        bm25=bm25,
+                        highlights=highlights,
                         connection=connection
                     )
                 else:
@@ -2639,6 +2657,8 @@ class Document(metaclass=DocumentMetaclass):
                     unique = getattr(field_obj, 'unique', False)
                     search = getattr(field_obj, 'search', False)
                     analyzer = getattr(field_obj, 'analyzer', None)
+                    bm25 = getattr(field_obj, 'bm25', False)
+                    highlights = getattr(field_obj, 'highlights', False)
 
                     # Create the single-field index
                     await cls.create_index(
@@ -2647,6 +2667,8 @@ class Document(metaclass=DocumentMetaclass):
                         unique=unique,
                         search=search,
                         analyzer=analyzer,
+                        bm25=bm25,
+                        highlights=highlights,
                         connection=connection
                     )
 
@@ -2678,6 +2700,8 @@ class Document(metaclass=DocumentMetaclass):
                     unique = index_def.get('unique', False)
                     search = index_def.get('search', False)
                     analyzer = index_def.get('analyzer')
+                    bm25 = index_def.get('bm25', False)
+                    highlights = index_def.get('highlights', False)
                     comment = index_def.get('comment')
                 elif isinstance(index_def, tuple) and len(index_def) >= 2:
                     # Tuple format (name, fields, [unique])
@@ -2686,6 +2710,8 @@ class Document(metaclass=DocumentMetaclass):
                     unique = index_def[2] if len(index_def) > 2 else False
                     search = False
                     analyzer = None
+                    bm25 = False
+                    highlights = False
                     comment = None
                 else:
                     # Skip invalid index definitions
@@ -2697,9 +2723,11 @@ class Document(metaclass=DocumentMetaclass):
                     unique=unique,
                     search=search,
                     analyzer=analyzer,
+                    bm25=bm25,
+                    highlights=highlights,
                     comment=comment,
                     connection=connection,
-                    **{k: v for k, v in index_def.items() if k not in ['name', 'fields', 'unique', 'search', 'analyzer', 'comment']}
+                    **{k: v for k, v in index_def.items() if k not in ['name', 'fields', 'unique', 'search', 'analyzer', 'bm25', 'highlights', 'comment']} if isinstance(index_def, dict) else {}
                 )
 
                 # Mark this index as processed to avoid duplicates
@@ -2744,6 +2772,8 @@ class Document(metaclass=DocumentMetaclass):
                     unique = getattr(field_obj, 'unique', False)
                     search = getattr(field_obj, 'search', False)
                     analyzer = getattr(field_obj, 'analyzer', None)
+                    bm25 = getattr(field_obj, 'bm25', False)
+                    highlights = getattr(field_obj, 'highlights', False)
 
                     # Create the multi-field index
                     cls.create_index_sync(
@@ -2752,6 +2782,8 @@ class Document(metaclass=DocumentMetaclass):
                         unique=unique,
                         search=search,
                         analyzer=analyzer,
+                        bm25=bm25,
+                        highlights=highlights,
                         connection=connection
                     )
                 else:
@@ -2770,6 +2802,8 @@ class Document(metaclass=DocumentMetaclass):
                     unique = getattr(field_obj, 'unique', False)
                     search = getattr(field_obj, 'search', False)
                     analyzer = getattr(field_obj, 'analyzer', None)
+                    bm25 = getattr(field_obj, 'bm25', False)
+                    highlights = getattr(field_obj, 'highlights', False)
 
                     # Create the single-field index
                     cls.create_index_sync(
@@ -2778,6 +2812,8 @@ class Document(metaclass=DocumentMetaclass):
                         unique=unique,
                         search=search,
                         analyzer=analyzer,
+                        bm25=bm25,
+                        highlights=highlights,
                         connection=connection
                     )
 

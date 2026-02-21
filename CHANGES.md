@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-02-21
+
+### Added
+- **Auto-Cloning Connection Pool**: `QuerySet.live()` and `ReactiveQuerySet.sync()` now automatically spawn a dedicated cloned WebSocket connection, preventing streaming data from blocking the primary connection pool multiplexer.
+- **Query Ergonomics**:
+  - **Upsert**: Added `.upsert()` method to `QuerySet` mapping directly to `UPSERT` statements for atomic updates.
+  - **Search**: Added `.search()` method generating valid `@@` syntax for `FULLTEXT` indexes.
+  - **Get Fallback**: Enhanced `.get()` with `allow_none=True` parameter to optionally return `None` instead of raising a `DoesNotExist` exception.
+  - **Subqueries**: Supported parsing nested `QuerySet` filter objects into `<table_name>(SELECT id FROM ...)` syntax for complex joins.
+- **Built-In Mixins**: Introduced `TimestampMixin` (`created_at`/`updated_at`) and `SoftDeleteMixin` (`deleted_at` markers replacing real deletes) in `surrealengine/mixins.py`.
+- **Document Level Hooks**: Added a `.clean()` hook to `Document` executed prior to `.save()` and `.save_sync()` to power explicit custom validation.
+
+
 ## [0.9.5] - 2026-02-20
 
 ### Added

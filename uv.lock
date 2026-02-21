@@ -2380,7 +2380,7 @@ wheels = [
 
 [[package]]
 name = "surrealengine"
-version = "0.7.0"
+version = "0.9.5"
 source = { editable = "." }
 dependencies = [
     { name = "cbor2" },

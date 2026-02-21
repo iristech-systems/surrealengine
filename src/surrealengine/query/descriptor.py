@@ -511,6 +511,57 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.shortest_path(src, dst, edge)
 
+    def search(self, text: str, *fields: Union[str, Any]) -> QuerySet:
+        """Perform a full-text search using the @@ operator.
+
+        Args:
+            text: The text to search for
+            *fields: Optional. Specific fields to search in. Can be field names or Field instances.
+        Returns:
+            A QuerySet with the search condition
+        """
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.search(text, *fields)
+
+    def upsert(self, **kwargs) -> Any:
+        """Upsert a document: update if exists, otherwise create.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
+
+        Args:
+            **kwargs: The data to upsert
+
+        Returns:
+            The upserted document (or awaitable resolving to it)
+        """
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.upsert(**kwargs)
+
+    def upsert_sync(self, **kwargs) -> Any:
+        """Upsert a document synchronously.
+
+        Args:
+            **kwargs: The data to upsert
+
+        Returns:
+            The upserted document
+        """
+        # Get the connection (implicit context or default sync)
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.upsert_sync(**kwargs)
+
     def with_index(self, index: str) -> QuerySet:
         """Use the specified index for the query using the default async connection.
 

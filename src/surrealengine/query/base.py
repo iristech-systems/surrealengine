@@ -285,6 +285,13 @@ class QuerySet(BaseQuerySet):
         if client is None or not hasattr(client, 'live') or not hasattr(client, 'subscribe_live') or not hasattr(client, 'kill') or not hasattr(client, 'live_queues'):
             raise NotImplementedError("LIVE queries require a WebSocket connection; embedded connections (mem://, file://) are not currently supported by the SurrealDB Python SDK.")
 
+        # Create a dedicated connection clone for this LIVE subscription
+        dedicated_connection = None
+        if hasattr(self.connection, 'clone'):
+            dedicated_connection = await self.connection.clone()
+            await dedicated_connection.connect()
+            client = dedicated_connection.client
+
         table = self.document_class._get_collection_name()
 
         # Prepare optional predicate for client-side filtering
@@ -488,8 +495,6 @@ class QuerySet(BaseQuerySet):
                                     ts=None,
                                     id=id_val
                                 )
-                    # If loop exits, restart
-                    # If loop exits, restart
                     agen = None
                 except asyncio.CancelledError:
                     # Graceful cancellation; cleanup below
@@ -498,31 +503,20 @@ class QuerySet(BaseQuerySet):
                     attempt += 1
                     if attempt > retry_limit:
                         raise
+                    # Exponential backoff
                     await asyncio.sleep(delay)
-                    delay = min(delay * backoff, 30.0)
-                    # cleanup old subscription
-                    if qid is not None:
-                        try:
-                            await client.kill(qid)
-                        except Exception:
-                            pass
-                    # If we registered our own queue, try to remove it
-                    if extra is not None and hasattr(extra, 'live_queues'):
-                        try:
-                            lst = extra.live_queues.get(str(qid)) or []
-                            # remove any queue instances we might have appended
-                            for i, q in enumerate(list(lst)):
-                                # best-effort removal; identity check is fine
-                                pass
-                        except Exception:
-                            pass
-                    agen = None
-                    qid = None
+                    delay *= backoff
         finally:
-            # Ensure live query is killed and detach queue if used
-            if qid is not None:
+            if agen:
                 try:
+                    # Try to gracefully unsubscribe if the generator exits
                     await client.kill(qid)
+                except Exception:
+                    pass
+            # Cleanup the dedicated cloned connection
+            if dedicated_connection:
+                try:
+                    await dedicated_connection.disconnect()
                 except Exception:
                     pass
 
@@ -974,7 +968,7 @@ class QuerySet(BaseQuerySet):
 
         return len(result)
 
-    def get(self, dereference: bool = False, **kwargs: Any) -> Union[Any, Any]:
+    def get(self, dereference: bool = False, allow_none: bool = False, **kwargs: Any) -> Union[Any, Any]:
         """Get a single document matching the query.
         
         Polyglot method: executes synchronously if the connection is synchronous,
@@ -982,44 +976,48 @@ class QuerySet(BaseQuerySet):
 
         Args:
             dereference: Whether to dereference references (default: False)
+            allow_none: If True, return None instead of raising DoesNotExist (default: False)
             **kwargs: Field names and values to filter by
 
         Returns:
-            The matching document (or awaitable resolving to it)
+            The matching document, or None if allow_none is True (or awaitable resolving to it)
         """
         # If connection is sync, execute sync logic immediately
         if not self.connection.is_async():
-            return self.get_sync(dereference=dereference, **kwargs)
+            return self.get_sync(dereference=dereference, allow_none=allow_none, **kwargs)
 
-        return self._get_async(dereference=dereference, **kwargs)
+        return self._get_async(dereference=dereference, allow_none=allow_none, **kwargs)
 
-    async def _get_async(self, dereference: bool = False, **kwargs: Any) -> Any:
+    async def _get_async(self, dereference: bool = False, allow_none: bool = False, **kwargs: Any) -> Any:
         """Internal async implementation of get()."""
         queryset = self.filter(**kwargs)
         queryset.limit_value = 2  # Get 2 to check for multiple
         results = await queryset.all(dereference=dereference)
 
         if not results:
+            if allow_none:
+                return None
             raise DoesNotExist(f"{self.document_class.__name__} matching query does not exist.")
         if len(results) > 1:
             raise MultipleObjectsReturned(f"Multiple {self.document_class.__name__} objects returned instead of one")
 
         return results[0]
 
-    def get_sync(self, dereference: bool = False, **kwargs: Any) -> Any:
+    def get_sync(self, dereference: bool = False, allow_none: bool = False, **kwargs: Any) -> Any:
         """Get a single document matching the query synchronously.
 
         This method applies filters and ensures that exactly one document is returned.
 
         Args:
             dereference: Whether to dereference references (default: False)
+            allow_none: If True, return None instead of raising DoesNotExist (default: False)
             **kwargs: Field names and values to filter by
 
         Returns:
-            The matching document
+            The matching document, or None if allow_none is True and it doesn't exist.
 
         Raises:
-            DoesNotExist: If no matching document is found
+            DoesNotExist: If no matching document is found and allow_none is False
             MultipleObjectsReturned: If multiple matching documents are found
         """
         queryset = self.filter(**kwargs)
@@ -1027,6 +1025,8 @@ class QuerySet(BaseQuerySet):
         results = queryset.all_sync(dereference=dereference)
 
         if not results:
+            if allow_none:
+                return None
             raise DoesNotExist(f"{self.document_class.__name__} matching query does not exist.")
         if len(results) > 1:
             raise MultipleObjectsReturned(f"Multiple {self.document_class.__name__} objects returned instead of one")
@@ -1422,6 +1422,121 @@ class QuerySet(BaseQuerySet):
                     continue
 
         return created_docs if return_documents else total_created
+
+    def upsert(self, **kwargs) -> Union['Document', Any]:
+        """Upsert a document: update if exists, otherwise create.
+        
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
+
+        Args:
+            **kwargs: The data to upsert
+
+        Returns:
+            The upserted document (or awaitable resolving to it)
+        """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.upsert_sync(**kwargs)
+
+        return self._upsert_async(**kwargs)
+
+    async def _upsert_async(self, **kwargs) -> 'Document':
+        """Internal async implementation of upsert()."""
+        collection = self.document_class._get_collection_name()
+        
+        # We need an ID to perform upsert, either from kwargs or a direct ID filter
+        doc_id = kwargs.get('id')
+        if not doc_id:
+            # Check if an ID filter exists
+            for field, op, value in self.query_parts:
+                if field == 'id' and op == '=':
+                    doc_id = value
+                    break
+                    
+        if not doc_id:
+            from .exceptions import ValueError
+            raise ValueError("upsert() requires an 'id' either in kwargs or as an exact filter")
+
+        # Ensure ID format is <collection>:<id>
+        if isinstance(doc_id, str) and ':' not in doc_id:
+            record_id_str = f"{collection}:{doc_id}"
+        else:
+            record_id_str = str(doc_id)
+
+        # Remove ID from kwargs since it goes in the URL path for SurrealDB
+        data = {k: v for k, v in kwargs.items() if k != 'id'}
+        
+        # Serialize data
+        from ..document import serialize_http_safe
+        data = serialize_http_safe(data)
+
+        # Upsert in SurrealDB merges if exists, creates if not
+        # Since client.upsert uses RecordID object, we convert
+        from surrealdb import RecordID
+        id_part = record_id_str.split(':')[1]
+        id_val = int(id_part) if id_part.isdigit() else id_part
+        record = RecordID(collection, id_val)
+
+        result = await self.connection.client.upsert(record, data)
+
+        if not result:
+            from .exceptions import DoesNotExist
+            raise DoesNotExist(f"Failed to upsert document {record_id_str}")
+
+        # Result might be a list
+        doc_data = result[0] if isinstance(result, list) else result
+        return self.document_class.from_db(doc_data)
+
+    def upsert_sync(self, **kwargs) -> 'Document':
+        """Upsert a document synchronously: update if exists, otherwise create.
+
+        Args:
+            **kwargs: The data to upsert
+
+        Returns:
+            The upserted document
+        """
+        collection = self.document_class._get_collection_name()
+        
+        # We need an ID to perform upsert, either from kwargs or a direct ID filter
+        doc_id = kwargs.get('id')
+        if not doc_id:
+            # Check if an ID filter exists
+            for field, op, value in self.query_parts:
+                if field == 'id' and op == '=':
+                    doc_id = value
+                    break
+                    
+        if not doc_id:
+            from .exceptions import ValueError
+            raise ValueError("upsert() requires an 'id' either in kwargs or as an exact filter")
+
+        # Ensure ID format is <collection>:<id>
+        if isinstance(doc_id, str) and ':' not in doc_id:
+            record_id_str = f"{collection}:{doc_id}"
+        else:
+            record_id_str = str(doc_id)
+
+        # Remove ID from kwargs
+        data = {k: v for k, v in kwargs.items() if k != 'id'}
+        
+        from ..document import serialize_http_safe
+        data = serialize_http_safe(data)
+
+        # Use UPSERT syntax in a query directly since sync SDK doesn't expose upsert reliably
+        import json
+        query = f"UPSERT {record_id_str} CONTENT {json.dumps(data)}"
+        
+        result = self.connection.client.query(query)
+
+        if not result or not result[0]:
+            from .exceptions import DoesNotExist
+            raise DoesNotExist(f"Failed to upsert document {record_id_str}")
+
+        # Returns list of lists
+        doc_data = result[0][0]
+        return self.document_class.from_db(doc_data)
 
     def bulk_create_sync(self, documents: List[Any], batch_size: int = 1000,
                       validate: bool = True, return_documents: bool = True) -> Union[List[Any], int]:

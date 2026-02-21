@@ -2125,6 +2125,37 @@ class SurrealEngineAsyncConnection:
             if pinned_connection:
                 await self.pool.return_connection(pinned_connection)
 
+    async def clone(self, use_pool: bool = False, **kwargs) -> 'SurrealEngineAsyncConnection':
+        """Create a new unmanaged clone of this connection.
+        
+        This spawns a fresh `SurrealEngineAsyncConnection` instance with identical
+        server URL, credentials, namespace, and database settings. It bypasses
+        the global registry (i.e., not named) so that the connection is entirely
+        isolated. Useful for cases that require dedicated WebSockets like LIVE queries.
+        
+        Args:
+            use_pool: Whether the new cloned connection should use its own pool
+            **kwargs: Any overriding initialization parameters
+            
+        Returns:
+            A new disconnected `SurrealEngineAsyncConnection` instance.
+            You must await `.connect()` on the result before using it.
+        """
+        params = {
+            "url": self.url,
+            "namespace": self.namespace,
+            "database": self.database,
+            "username": self.username,
+            "password": self.password,
+            "async_mode": True,
+            "use_pool": use_pool,
+            "name": None,  # Explicitly unregistered
+            "make_default": False
+        }
+        params.update(kwargs)
+        # Using factory function logic directly to avoid circular import if needed
+        return create_connection(**params)  # type: ignore
+
 
 def create_connection(url: Optional[str] = None, namespace: Optional[str] = None, 
                   database: Optional[str] = None, username: Optional[str] = None, 
@@ -2415,3 +2446,26 @@ class SurrealEngineSyncConnection:
         except Exception as e:
             self.client.query("CANCEL TRANSACTION;")
             raise e
+
+    def clone(self, **kwargs) -> 'SurrealEngineSyncConnection':
+        """Create a new unmanaged clone of this synchronous connection.
+        
+        Args:
+            **kwargs: Any overriding initialization parameters
+            
+        Returns:
+            A new disconnected `SurrealEngineSyncConnection` instance.
+            You must call `.connect()` on the result before using it.
+        """
+        params = {
+            "url": self.url,
+            "namespace": self.namespace,
+            "database": self.database,
+            "username": self.username,
+            "password": self.password,
+            "async_mode": False,
+            "name": None,  # Explicitly unregistered
+            "make_default": False
+        }
+        params.update(kwargs)
+        return create_connection(**params)  # type: ignore

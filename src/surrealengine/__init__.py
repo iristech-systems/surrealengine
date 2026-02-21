@@ -147,6 +147,7 @@ from .events import LiveEvent, Event
 from .functions import surreal_func, SurrealFunction
 from .relation_update import patch_relation_document
 from .transaction import transaction, transaction_sync, transactional, transactional_sync
+from .mixins import TimestampMixin, SoftDeleteMixin
 
 # For backward compatibility
 SurrealEngineConnection = SurrealEngineAsyncConnection
@@ -250,6 +251,8 @@ __all__ = [
     "RecordIDField",
     "RecordID",
     "VectorField",
+    "TimestampMixin",
+    "SoftDeleteMixin",
 ]
 
 # Apply the patch to add update methods to RelationDocument

@@ -94,32 +94,86 @@ class BaseQuerySet:
                         result.query_parts.append(('__raw__', '=', where_clause))
         
         # Handle kwargs
-        for key, value in kwargs.items():
-            if '__' in key:
-                parts = key.split('__')
-                field_name = parts[0]
-                operator = parts[1]
+            # Check for subqueries (if value is a QuerySet)
+            if hasattr(value, '_build_query'):
+                # Compile the QuerySet into a subquery string
+                compiled_subquery = value._build_query()
+                # Wrap the subquery in parentheses for SurrealQL
+                subquery_str = f"({compiled_subquery})"
                 
-                # Map operators
-                op_map = {
-                    'gt': '>',
-                    'lt': '<', 
-                    'gte': '>=',
-                    'lte': '<=',
-                    'ne': '!=',
-                    'in': 'INSIDE',
-                    'nin': 'NOT INSIDE',
-                    'contains': 'CONTAINS',
-                    'startswith': 'STARTSWITH',
-                    'endswith': 'ENDSWITH',
-                    'regex': 'REGEX'
-                }
-                op = op_map.get(operator, '=')
-                result.query_parts.append((field_name, op, value))
+                if '__' in key:
+                    parts = key.split('__')
+                    field_name = parts[0]
+                    operator = parts[1]
+                    
+                    op_map = {
+                        'in': 'INSIDE',
+                        'nin': 'NOT INSIDE',
+                        'eq': '=',
+                        'ne': '!=',
+                    }
+                    op = op_map.get(operator, '=')
+                    
+                    # Store as a raw condition to avoid parameterization on the subquery itself
+                    result.query_parts.append(('__raw__', '=', f"{field_name} {op} {subquery_str}"))
+                else:
+                    # Default to exactly equal to the subquery result
+                    result.query_parts.append(('__raw__', '=', f"{key} = {subquery_str}"))
             else:
-                result.query_parts.append((key, '=', value))
+                if '__' in key:
+                    parts = key.split('__')
+                    field_name = parts[0]
+                    operator = parts[1]
+                    
+                    # Map operators
+                    op_map = {
+                        'gt': '>',
+                        'lt': '<', 
+                        'gte': '>=',
+                        'lte': '<=',
+                        'ne': '!=',
+                        'in': 'INSIDE',
+                        'nin': 'NOT INSIDE',
+                        'contains': 'CONTAINS',
+                        'startswith': 'STARTSWITH',
+                        'endswith': 'ENDSWITH',
+                        'regex': 'REGEX'
+                    }
+                    op = op_map.get(operator, '=')
+                    result.query_parts.append((field_name, op, value))
+                else:
+                    result.query_parts.append((key, '=', value))
         
         return result
+
+    def search(self: T, text: str, *fields: Union[str, Any]) -> T:
+        """Perform a full-text search using the @@ operator.
+        
+        Args:
+            text: The text to search for
+            *fields: Optional. Specific fields to search in. Can be field names or Field instances.
+        Returns:
+            A cloned QuerySet with the search condition
+        """
+        clone = self._clone()
+        
+        if fields:
+            # Extract names if they are Field instances
+            field_names = [f.name if hasattr(f, 'name') else str(f) for f in fields]
+            
+            # If multiple fields, we use an OR group, typically mapping to index fields
+            if len(field_names) == 1:
+                clone.query_parts.append(('__raw__', '=', f"{field_names[0]} @@ {escape_literal(text)}"))
+            else:
+                parts = [f"{f} @@ {escape_literal(text)}" for f in field_names]
+                group = " OR ".join(parts)
+                clone.query_parts.append(('__raw__', '=', f"({group})"))
+        else:
+             # Basic fallback to search against a generic text field or similar
+             # Often useful when `with_index` is used
+            clone.query_parts.append(('__raw__', '=', f"text @@ {escape_literal(text)}"))
+            
+        return clone
 
     def only(self: T, *fields: str) -> T:
         """Select only the specified fields.
