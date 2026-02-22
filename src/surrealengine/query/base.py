@@ -872,7 +872,6 @@ class QuerySet(BaseQuerySet):
             List of document instances
         """
         query = self._build_query()
-        print(f"DEBUG QUERY: {query}")
         results = self.connection.client.query(query)
 
         if not results:

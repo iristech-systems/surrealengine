@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-02-22
+
+### Added
+- **Top-Level Exports**: Exported `IncomingReferenceField` and `ComputedField` from the `surrealengine` root namespace.
+
+### Fixed
+- **Logging Cleanup**: Removed stray console print statements left in query compilation routines.
+
 ## [0.9.6] - 2026-02-21
 
 ### Added

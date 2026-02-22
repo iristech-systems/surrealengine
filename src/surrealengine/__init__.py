@@ -94,7 +94,9 @@ from .fields import (
     ChoiceField,
     EmbeddedField,
     RecordIDField,
-    VectorField
+    VectorField,
+    IncomingReferenceField,
+    ComputedField
 )
 from .embedded import EmbeddedDocument
 from .materialized_view import (
@@ -251,6 +253,8 @@ __all__ = [
     "RecordIDField",
     "RecordID",
     "VectorField",
+    "IncomingReferenceField",
+    "ComputedField",
     "TimestampMixin",
     "SoftDeleteMixin",
 ]
