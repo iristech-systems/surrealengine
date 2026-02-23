@@ -94,6 +94,7 @@ class BaseQuerySet:
                         result.query_parts.append(('__raw__', '=', where_clause))
         
         # Handle kwargs
+        for key, value in kwargs.items():
             # Check for subqueries (if value is a QuerySet)
             if hasattr(value, '_build_query'):
                 # Compile the QuerySet into a subquery string

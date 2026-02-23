@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-02-22
+
+### Added
+- **`RelationDocument.bulk_relate(edges)` / `bulk_relate_sync(edges)` Rewrite**: Completely rewrote the connection handling to bypass the SurrealDB SDK and construct raw `INSERT RELATION INTO` statements. This fixes a silent failure issue where thousands of edges were dropped when parsing `_data` payload dictionaries, and edges are now created exactly as requested.
+- **Live Queries (`live()`, `start_live()`, `subscribe_to_live()`)**: Added full live query support to `Document.objects` via the `surrealdb` WebSocket client.
+  - `Document.objects.live(where=..., action=...)` returns a continuous async stream of `LiveEvent` objects, supporting easy client-side masking.
+  - `Document.objects.start_live()` returns a UUID for a broadcast, and `Document.objects.subscribe_to_live(uuid)` allows unlimited async fan-out consumers on the same WebSocket without spawning additional database subscriptions.
+- **`DEFINE SEQUENCE` support via `Meta`**: Any `Document` model can now declare `Meta.sequence = "seq_name"` (along with optional `Meta.sequence_start` and `Meta.sequence_batch`) to automatically emit `DEFINE SEQUENCE IF NOT EXISTS …` when `create_table()` is called. The sequence is then available for use in `save()` via `sequence::nextval("seq_name")`.
+- **`IncomingReferenceField` Auto-Hydration**: `refresh()` (async and sync) now automatically detects `IncomingReferenceField` fields on a model and issues a `SELECT * FROM <id> FETCH <fields>` query instead of a plain `client.select()`. This hydrates computed `<~table` reference arrays into fully-typed ORM objects rather than raw `RecordID` values.
+- **`RelationDocument` Correct Table Type**: `create_table()` / `create_table_sync()` now emits `DEFINE TABLE <name> TYPE RELATION` for `RelationDocument` subclasses, matching SurrealDB 3.x requirements. Previously it emitted `TYPE NORMAL`, which caused RELATE operations to fail.
+
+### Fixed
+- **`ReferenceField` Forward Reference Resolution**: Added `_resolve_document_type()` helper to `ReferenceField` that performs a **live recursive scan** of `Document.__subclasses__()` at call time (instead of a stale cached registry). This means string forward references like `ReferenceField('User')` now resolve correctly even when the target class is defined later in the same session (e.g. in notebooks). Fixes `TypeError` in `validate()`, `to_db()`, and `from_db()`.
+- **`IncomingReferenceField.from_db()` ORM Deserialization**: When `FETCH` returns full record dicts, items are now deserialized into proper ORM instances using the live subclass scan. Previously they were silently returned as raw dicts due to a registry-key mismatch (`"Tag"` vs `"tag"`) and stale cache timing.
+- **`RELATE` ID Parsing**: `relate()` and `relate_sync()` now correctly extract and return the relation `RecordID` from the raw SDK response, including error handling for SDK-level exceptions.
+
 ## [0.9.7] - 2026-02-22
 
 ### Added
@@ -14,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Logging Cleanup**: Removed stray console print statements left in query compilation routines.
+- **Search Index Parse Error**: `Document.create_indexes()` now properly defaults to `ANALYZER ascii` when declaring a `SEARCH` index without an explicit analyzer, fixing a SurrealQL `Parse error`.
 
 ## [0.9.6] - 2026-02-21
 

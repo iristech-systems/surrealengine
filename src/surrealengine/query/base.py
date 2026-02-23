@@ -216,6 +216,136 @@ class QuerySet(BaseQuerySet):
         return qs.traverse(path)
 
 
+    async def start_live(self, connection=None) -> str:
+        """Start a LIVE SELECT subscription and return the query UUID.
+
+        Use this together with :meth:`subscribe_to_live` to share one live
+        query across multiple consumers (fan-out), so only a single
+        ``LIVE SELECT`` is created on the SurrealDB side regardless of how
+        many subscribers attach to it.
+
+        Example::
+
+            uuid = await User.objects.start_live()
+
+            # Pass the uuid to multiple consumers:
+            async for evt in User.objects.subscribe_to_live(uuid):
+                ...  # consumer A
+
+        Args:
+            connection: Optional explicit async connection.  Uses the default
+                        async connection when omitted.
+
+        Returns:
+            The live query UUID as a string.
+
+        Raises:
+            NotImplementedError: If the connection doesn't support LIVE queries
+                                 (e.g., embedded/mem:// connections).
+        """
+        if connection is None:
+            connection = self.connection
+        client = getattr(connection, 'client', None)
+        if client is None or not hasattr(client, 'live') or not hasattr(client, 'subscribe_live'):
+            raise NotImplementedError(
+                "start_live() requires a WebSocket connection; "
+                "embedded connections (mem://, file://) are not supported."
+            )
+        table = self.document_class._get_collection_name()
+        qid = await client.live(table)
+        return str(qid)
+
+    async def subscribe_to_live(self, uuid: str, connection=None):
+        """Attach to an already-running LIVE query by UUID as an async generator.
+
+        This is the subscriber side of the fan-out pattern.  The live query
+        must have been started previously via :meth:`start_live`.  Multiple
+        callers may call ``subscribe_to_live(same_uuid)`` and each will
+        independently receive every incoming event **without** creating
+        additional ``LIVE SELECT`` subscriptions on SurrealDB.
+
+        Example::
+
+            uuid = await User.objects.start_live()
+
+            async def consumer_a():
+                async for evt in User.objects.subscribe_to_live(uuid):
+                    print("A:", evt)
+
+            async def consumer_b():
+                async for evt in User.objects.subscribe_to_live(uuid):
+                    print("B:", evt)
+
+            import asyncio
+            await asyncio.gather(consumer_a(), consumer_b())
+
+        Args:
+            uuid: The live query UUID returned by :meth:`start_live`.
+            connection: Optional explicit async connection.
+
+        Yields:
+            :class:`~surrealengine.events.LiveEvent` objects (same as
+            :meth:`live`).
+
+        Raises:
+            NotImplementedError: If the connection doesn't support LIVE queries.
+        """
+        from ..events import LiveEvent
+
+        if connection is None:
+            connection = self.connection
+        client = getattr(connection, 'client', None)
+        if client is None or not hasattr(client, 'subscribe_live'):
+            raise NotImplementedError(
+                "subscribe_to_live() requires a WebSocket connection."
+            )
+
+        # Try to hook directly into the SDK's internal live_queues dict to get
+        # full payloads (action + result + time).  Same approach as live().
+        import asyncio as _asyncio
+
+        under = None
+        for attr in ('connection', '_connection', 'conn', '_conn', 'ws'):
+            obj = getattr(client, attr, None)
+            if obj is not None and hasattr(obj, 'live_queues'):
+                under = obj
+                break
+        if under is None and hasattr(client, 'live_queues'):
+            under = client
+
+        if under is not None and hasattr(under, 'live_queues') and str(uuid) in under.live_queues:
+            full_queue: _asyncio.Queue = _asyncio.Queue()
+            under.live_queues[str(uuid)].append(full_queue)
+            while True:
+                msg = await full_queue.get()
+                action_str = msg.get('action') or msg.get('event') or 'UNKNOWN'
+                data = msg.get('result') or msg.get('record') or msg.get('data') or msg
+                ts = msg.get('time') or msg.get('ts')
+                if isinstance(data, dict):
+                    record = self.document_class.from_db(data)
+                else:
+                    record = data
+                yield LiveEvent(
+                    action=str(action_str).upper(),
+                    data=data,
+                    ts=ts,
+                    id=getattr(record, '_data', {}).get('id') if hasattr(record, '_data') else None,
+                )
+
+        else:
+            # Fallback: use SDK generator (inner result only, no action metadata)
+            agen = await client.subscribe_live(uuid)
+            async for msg in agen:
+                if isinstance(msg, dict):
+                    record = self.document_class.from_db(msg)
+                    yield LiveEvent(
+                        action='UNKNOWN',
+                        data=msg,
+                        ts=None,
+                        id=getattr(record, 'id', None),
+                        document=record,
+                    )
+
     async def live(self,
                   where: Optional[Union["Q", dict]] = None,
                   action: Optional[Union[str, List[str]]] = None,

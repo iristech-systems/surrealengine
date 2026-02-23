@@ -97,9 +97,27 @@ class RelationQuerySet:
             attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in processed_attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
-        print(f"Executing: {query}")
-        result = await self.connection.client.query(query)
-        print(f"DB Result payload: {result}")
+        try:
+            result = await self.connection.client.query(query)
+        except Exception as exc:
+            exc_msg = str(exc)
+            # SurrealDB 3 raises this error when a RELATE result is returned as a
+            # relation record type rather than a normal record.  The RELATE itself
+            # succeeded — the record ID is embedded in the message, e.g.
+            # "Found record: `follows:xyz` which is a relation, but expected a NORMAL"
+            # Parse the ID out and return it so callers can still use the result.
+            if "which is a relation" in exc_msg:
+                import re
+                m = re.search(r'`([^`]+:[^`]+)`', exc_msg)
+                if m:
+                    record_id_str = m.group(1)
+                    table, rid = record_id_str.split(':', 1)
+                    try:
+                        return {'id': RecordID(table, rid)}
+                    except Exception:
+                        return {'id': record_id_str}
+            raise
+
 
         # Return the relation record
         if result and isinstance(result, list) and len(result) > 0:
@@ -114,6 +132,8 @@ class RelationQuerySet:
                 else:
                     # Direct dictionary record format
                     return first_item
+        elif result and isinstance(result, dict):
+            return result
         return None
 
     def relate_sync(self, from_instance: Any, to_instance: Any, **attrs: Any) -> Optional[Any]:
@@ -180,7 +200,24 @@ class RelationQuerySet:
             attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in processed_attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
-        result = self.connection.client.query(query)
+        try:
+            result = self.connection.client.query(query)
+        except Exception as exc:
+            exc_msg = str(exc)
+            # SurrealDB 3 raises this error when a RELATE result is returned as a
+            # relation record type rather than a normal record.  The RELATE itself
+            # succeeded — the record ID is embedded in the message.
+            if "which is a relation" in exc_msg:
+                import re
+                m = re.search(r'`([^`]+:[^`]+)`', exc_msg)
+                if m:
+                    record_id_str = m.group(1)
+                    table, rid = record_id_str.split(':', 1)
+                    try:
+                        return {'id': RecordID(table, rid)}
+                    except Exception:
+                        return {'id': record_id_str}
+            raise
 
         # Return the relation record
         if result and isinstance(result, list) and len(result) > 0:
@@ -195,6 +232,8 @@ class RelationQuerySet:
                 else:
                     # Direct dictionary record format
                     return first_item
+        elif result and isinstance(result, dict):
+            return result
         return None
 
     async def get_related(self, instance: Any, target_document: Optional[Type] = None, **filters: Any) -> List[Any]:

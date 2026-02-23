@@ -221,6 +221,10 @@ class DocumentMetaclass(type):
             'time_field': getattr(meta, 'time_field', None),
             'abstract': getattr(meta, 'abstract', False),
             'events': getattr(meta, 'events', []),
+            # DEFINE SEQUENCE support
+            'sequence': getattr(meta, 'sequence', None),
+            'sequence_start': getattr(meta, 'sequence_start', 1),
+            'sequence_batch': getattr(meta, 'sequence_batch', 1),
         }
 
         # Process fields
@@ -504,9 +508,22 @@ class Document(metaclass=DocumentMetaclass):
             AttributeError: If the attribute is not a field
 
         """
+        # Guard against recursion during deepcopy / pickling when _data or _fields
+        # haven't been set yet. __getattr__ is only called when normal attribute
+        # lookup fails, so if _data itself is missing we must not access self._data.
+        if '_data' not in self.__dict__ or '_fields' not in self.__class__.__dict__ and '_fields' not in self.__dict__:
+            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+
         if name in self._fields:
             # Return the value directly from _data instead of the field instance
-            return self._data.get(name)
+            _val = self._data.get(name)
+            if name == 'id' and _val is None:
+                from .exceptions import DocumentNotSavedError
+                raise DocumentNotSavedError(
+                    f"{self.__class__.__name__} has no ID yet — call save() first."
+                )
+            return _val
+
         
         # Also check _data for dynamic fields (e.g. from aggregations)
         if name in self._data:
@@ -1433,13 +1450,46 @@ class Document(metaclass=DocumentMetaclass):
         if SIGNAL_SUPPORT:
             pre_save_post_validation.send(self.__class__, document=self)
 
+        # Auto-assign ID from sequence when Meta.sequence is configured and no id set yet
+        seq_name = self._meta.get('sequence') if hasattr(self, '_meta') else None
+        if seq_name and not self.id:
+            try:
+                from surrealdb import RecordID as _RecordID
+                _seq_result = await connection.client.query(
+                    f"RETURN sequence::nextval('{seq_name}')"
+                )
+                _seq_val = _seq_result[0] if isinstance(_seq_result, list) else _seq_result
+                self._data['id'] = _RecordID(self._get_collection_name(), int(_seq_val))
+            except Exception as _seq_err:
+                pass  # Fall through to let SurrealDB assign a random id
+
+        # Auto-fill any SequenceField values that haven't been set yet
+        from .fields.additional import SequenceField as _SequenceField
+        for _fname, _field in self._fields.items():
+            if isinstance(_field, _SequenceField) and self._data.get(_fname) is None:
+                try:
+                    _sf_result = await connection.client.query(
+                        f"RETURN sequence::nextval('{_field.sequence}')"
+                    )
+                    _sf_val = _sf_result[0] if isinstance(_sf_result, list) else _sf_result
+                    self._data[_fname] = int(_sf_val)
+                except Exception:
+                    pass
+
         data = self.to_db()
         safe_data = serialize_http_safe(data)
-        
-        result = await connection.client.create(
-            self._get_collection_name(),
-            safe_data
-        )
+
+        # If id was pre-assigned (e.g. from sequence), create at that specific record
+        if self.id:
+            result = await connection.client.upsert(
+                self._data['id'],
+                safe_data
+            )
+        else:
+            result = await connection.client.create(
+                self._get_collection_name(),
+                safe_data
+            )
         
         # Update the current instance with the returned data
         if result:
@@ -1513,13 +1563,46 @@ class Document(metaclass=DocumentMetaclass):
         if SIGNAL_SUPPORT:
             pre_save_post_validation.send(self.__class__, document=self)
 
+        # Auto-assign ID from sequence when Meta.sequence is configured and no id set yet
+        seq_name = self._meta.get('sequence') if hasattr(self, '_meta') else None
+        if seq_name and not self.id:
+            try:
+                from surrealdb import RecordID as _RecordID
+                _seq_result = connection.client.query(
+                    f"RETURN sequence::nextval('{seq_name}')"
+                )
+                _seq_val = _seq_result[0] if isinstance(_seq_result, list) else _seq_result
+                self._data['id'] = _RecordID(self._get_collection_name(), int(_seq_val))
+            except Exception as _seq_err:
+                pass  # Fall through to let SurrealDB assign a random id
+
+        # Auto-fill any SequenceField values that haven't been set yet
+        from .fields.additional import SequenceField as _SequenceField
+        for _fname, _field in self._fields.items():
+            if isinstance(_field, _SequenceField) and self._data.get(_fname) is None:
+                try:
+                    _sf_result = connection.client.query(
+                        f"RETURN sequence::nextval('{_field.sequence}')"
+                    )
+                    _sf_val = _sf_result[0] if isinstance(_sf_result, list) else _sf_result
+                    self._data[_fname] = int(_sf_val)
+                except Exception:
+                    pass
+
         data = self.to_db()
         data = serialize_http_safe(data)
-        
-        result = connection.client.create(
-            self._get_collection_name(),
-            data
-        )
+
+        # If id was pre-assigned (e.g. from sequence), create at that specific record
+        if self.id:
+            result = connection.client.upsert(
+                self._data['id'],
+                data
+            )
+        else:
+            result = connection.client.create(
+                self._get_collection_name(),
+                data
+            )
 
         # Update the current instance with the returned data
         if result:
@@ -1656,19 +1739,41 @@ class Document(metaclass=DocumentMetaclass):
         if not self.id:
             raise ValueError("Cannot refresh a document without an ID")
 
-        result = await connection.client.select(f"{self.id}")
-        if result:
-            if isinstance(result, list) and result:
-                doc = result[0]
-            else:
-                doc = result
+        # Detect IncomingReferenceField fields so we can add FETCH clauses
+        try:
+            from .fields.reference import IncomingReferenceField as _IRF
+            fetch_fields = [
+                field.db_field or fname
+                for fname, field in self._fields.items()
+                if isinstance(field, _IRF)
+            ]
+        except ImportError:
+            fetch_fields = []
 
+        if fetch_fields:
+            fetch_clause = ", ".join(fetch_fields)
+            raw = await connection.client.query(
+                f"SELECT * FROM {self.id} FETCH {fetch_clause}"
+            )
+            # query() returns a list of result rows
+            if raw and isinstance(raw, list):
+                doc = raw[0] if isinstance(raw[0], dict) else (raw[0].get('result', [{}])[0] if hasattr(raw[0], 'get') else {})
+            else:
+                doc = {}
+        else:
+            result = await connection.client.select(f"{self.id}")
+            if result:
+                doc = result[0] if isinstance(result, list) and result else result
+            else:
+                doc = {}
+
+        if doc:
             for field_name, field in self._fields.items():
                 db_field = field.db_field or field_name
                 if db_field in doc:
                     val = field.from_db(doc[db_field])
                     self._data[field_name] = val
-                    
+
                     # Register parent for tracked objects
                     if hasattr(val, '_set_parent') and callable(val._set_parent):
                         val._set_parent(self, field_name)
@@ -1680,38 +1785,46 @@ class Document(metaclass=DocumentMetaclass):
         return self
 
     def refresh_sync(self, connection: Optional[Any] = None) -> 'Document':
-        """Refresh the document from the database synchronously.
-
-        This method refreshes the document's data from the database.
-
-        Args:
-            connection: The database connection to use (optional)
-
-        Returns:
-            The refreshed document instance
-
-        Raises:
-            ValueError: If the document doesn't have an ID
-
-        """
+        """Refresh the document from the database synchronously."""
         if connection is None:
             connection = get_active_connection(async_mode=False)
         if not self.id:
             raise ValueError("Cannot refresh a document without an ID")
 
-        result = connection.client.select(f"{self.id}")
-        if result:
-            if isinstance(result, list) and result:
-                doc = result[0]
-            else:
-                doc = result
+        # Detect IncomingReferenceField fields so we can add FETCH clauses
+        try:
+            from .fields.reference import IncomingReferenceField as _IRF
+            fetch_fields = [
+                field.db_field or fname
+                for fname, field in self._fields.items()
+                if isinstance(field, _IRF)
+            ]
+        except ImportError:
+            fetch_fields = []
 
+        if fetch_fields:
+            fetch_clause = ", ".join(fetch_fields)
+            raw = connection.client.query(
+                f"SELECT * FROM {self.id} FETCH {fetch_clause}"
+            )
+            if raw and isinstance(raw, list):
+                doc = raw[0] if isinstance(raw[0], dict) else (raw[0].get('result', [{}])[0] if hasattr(raw[0], 'get') else {})
+            else:
+                doc = {}
+        else:
+            result = connection.client.select(f"{self.id}")
+            if result:
+                doc = result[0] if isinstance(result, list) and result else result
+            else:
+                doc = {}
+
+        if doc:
             for field_name, field in self._fields.items():
                 db_field = field.db_field or field_name
                 if db_field in doc:
                     val = field.from_db(doc[db_field])
                     self._data[field_name] = val
-                    
+
                     # Register parent for tracked objects
                     if hasattr(val, '_set_parent') and callable(val._set_parent):
                         val._set_parent(self, field_name)
@@ -2424,9 +2537,18 @@ class Document(metaclass=DocumentMetaclass):
             query += " UNIQUE"
         elif search:
             if analyzer:
-                query += f" SEARCH ANALYZER {analyzer}"
+                if hasattr(analyzer, 'to_sql'):
+                    try:
+                        await connection.client.query(analyzer.to_sql())
+                    except Exception as e:
+                        if "already exists" not in str(e).lower() and "parse error" not in str(e).lower():
+                            raise e
+                    analyzer_str = getattr(analyzer, 'name', str(analyzer))
+                else:
+                    analyzer_str = str(analyzer)
+                query += f" FULLTEXT ANALYZER {analyzer_str}"
             else:
-                query += " SEARCH"
+                query += " FULLTEXT ANALYZER ascii"
             if kwargs.get('bm25'):
                 query += " BM25"
             if kwargs.get('highlights'):
@@ -2449,10 +2571,27 @@ class Document(metaclass=DocumentMetaclass):
 
         # Add comment if provided
         if comment:
-            query += f" COMMENT '{comment}'"
+            safe_comment = str(comment).replace('\\', '\\\\').replace('"', '\\"')
+            query += f' COMMENT "{safe_comment}"'
 
         # Execute the query
-        await connection.client.query(query)
+        try:
+            await connection.client.query(query)
+        except Exception as e:
+            if search and "Parse error" in str(e):
+                # Fallback to SurrealDB 2.x syntax for memory and older servers
+                fallback_query = query.replace("FULLTEXT ANALYZER", "SEARCH ANALYZER")
+                
+                # SurrealDB 2.x needs HIGHLIGHTS before BM25
+                if "BM25 HIGHLIGHTS" in fallback_query:
+                    fallback_query = fallback_query.replace("BM25 HIGHLIGHTS", "HIGHLIGHTS BM25")
+                elif "BM25" in fallback_query and "HIGHLIGHTS" in fallback_query:
+                    fallback_query = fallback_query.replace(" BM25", "").replace(" HIGHLIGHTS", "")
+                    fallback_query += " HIGHLIGHTS BM25"
+                    
+                await connection.client.query(fallback_query)
+            else:
+                raise e
 
     @classmethod
     def create_index_sync(cls, index_name: str, fields: List[str], unique: bool = False,
@@ -2486,9 +2625,18 @@ class Document(metaclass=DocumentMetaclass):
             query += " UNIQUE"
         elif search:
             if analyzer:
-                query += f" SEARCH ANALYZER {analyzer}"
+                if hasattr(analyzer, 'to_sql'):
+                    try:
+                        connection.client.query(analyzer.to_sql())
+                    except Exception as e:
+                        if "already exists" not in str(e).lower() and "parse error" not in str(e).lower():
+                            raise e
+                    analyzer_str = getattr(analyzer, 'name', str(analyzer))
+                else:
+                    analyzer_str = str(analyzer)
+                query += f" FULLTEXT ANALYZER {analyzer_str}"
             else:
-                query += " SEARCH"
+                query += " FULLTEXT ANALYZER ascii"
             if kwargs.get('bm25'):
                 query += " BM25"
             if kwargs.get('highlights'):
@@ -2511,10 +2659,27 @@ class Document(metaclass=DocumentMetaclass):
 
         # Add comment if provided
         if comment:
-            query += f" COMMENT '{comment}'"
+            safe_comment = str(comment).replace('\\', '\\\\').replace('"', '\\"')
+            query += f' COMMENT "{safe_comment}"'
 
         # Execute the query
-        connection.client.query(query)
+        try:
+            connection.client.query(query)
+        except Exception as e:
+            if search and "Parse error" in str(e):
+                # Fallback to SurrealDB 2.x syntax for memory and older servers
+                fallback_query = query.replace("FULLTEXT ANALYZER", "SEARCH ANALYZER")
+                
+                # SurrealDB 2.x needs HIGHLIGHTS before BM25
+                if "BM25 HIGHLIGHTS" in fallback_query:
+                    fallback_query = fallback_query.replace("BM25 HIGHLIGHTS", "HIGHLIGHTS BM25")
+                elif "BM25" in fallback_query and "HIGHLIGHTS" in fallback_query:
+                    fallback_query = fallback_query.replace(" BM25", "").replace(" HIGHLIGHTS", "")
+                    fallback_query += " HIGHLIGHTS BM25"
+                    
+                connection.client.query(fallback_query)
+            else:
+                raise e
 
     @classmethod
     def create_indexes(cls, connection: Optional[Any] = None) -> Union[None, Any]:
@@ -2877,8 +3042,11 @@ class Document(metaclass=DocumentMetaclass):
             BytesField, RegexField, OptionField, FutureField,
             UUIDField, TableField, RecordIDField, EmbeddedField
         )
+        from .fields.additional import SequenceField as _SequenceField
 
-        if isinstance(field, StringField):
+        if isinstance(field, _SequenceField):
+            return "int"
+        elif isinstance(field, StringField):
             return "string"
         elif isinstance(field, IntField):
             return "int"
@@ -2896,19 +3064,34 @@ class Document(metaclass=DocumentMetaclass):
                 return f"array<{inner_type}>"
             return "array"
         elif isinstance(field, DictField):
-            return "object"
+            # Use FLEXIBLE OBJECT to allow arbitrary keys without requiring
+            # every sub-key to be explicitly DEFINE FIELD'd. This is required
+            # for dynamic attribute maps (e.g. OpenTelemetry, JSON blobs, etc.)
+            return "flexible object"
         elif isinstance(field, EmbeddedField):
             return "object"
         elif isinstance(field, ReferenceField):
-            # Get the target collection name
+            # Get the target collection name — guard against base Document class
+            # (e.g. RelationDocument.in_document uses ReferenceField(Document))
+            # which has no _meta set, so fall back to untyped 'record'.
             target_cls = field.document_type
-            target_collection = target_cls._get_collection_name()
-            return f"record<{target_collection}>"
+            if hasattr(target_cls, '_meta') and target_cls._meta:
+                try:
+                    target_collection = target_cls._get_collection_name()
+                    return f"record<{target_collection}>"
+                except Exception:
+                    pass
+            return "record"
         elif isinstance(field, RelationField):
             # Get the target collection name
             target_cls = field.to_document
-            target_collection = target_cls._get_collection_name()
-            return f"record<{target_collection}>"
+            if hasattr(target_cls, '_meta') and target_cls._meta:
+                try:
+                    target_collection = target_cls._get_collection_name()
+                    return f"record<{target_collection}>"
+                except Exception:
+                    pass
+            return "record"
         elif isinstance(field, GeometryField):
             return "geometry"
         elif isinstance(field, BytesField):
@@ -2972,9 +3155,17 @@ class Document(metaclass=DocumentMetaclass):
 
         collection_name = cls._get_collection_name()
 
-        # Create the table
+        # Create the table — RelationDocument subclasses need TYPE RELATION
         schema_type = "SCHEMAFULL" if schemafull else "SCHEMALESS"
-        query = f"DEFINE TABLE {collection_name} {schema_type}"
+        # Import here to avoid circular import; RelationDocument is defined later in this module
+        try:
+            is_relation = issubclass(cls, RelationDocument) and cls is not RelationDocument
+        except NameError:
+            is_relation = cls.__name__ != 'RelationDocument' and any(
+                b.__name__ == 'RelationDocument' for b in cls.__mro__
+            )
+        table_type = "TYPE RELATION " if is_relation else ""
+        query = f"DEFINE TABLE {collection_name} {table_type}{schema_type}"
 
         # Check if this is a time series table
         is_time_series = False
@@ -2998,14 +3189,35 @@ class Document(metaclass=DocumentMetaclass):
 
         # Add comment if available
         if hasattr(cls, '__doc__') and cls.__doc__:
-            # Clean up docstring and escape single quotes
-            doc = cls.__doc__.strip().replace("'", "''")
+            # Collapse newlines/extra spaces, escape backslash and double-quote for SurrealDB
+            doc = ' '.join(cls.__doc__.strip().split())
+            doc = doc.replace('\\', '\\\\').replace('"', '\\"')
             if doc:
-                query += f" COMMENT '{doc}'"
+                query += f' COMMENT "{doc}"'
 
         await connection.client.query(query)
 
-        # Create fields if schemafull or if field is marked with define_schema=True
+        # Emit DEFINE SEQUENCE if configured in Meta
+        seq_name = cls._meta.get('sequence') if hasattr(cls, '_meta') else None
+        if seq_name:
+            seq_start = cls._meta.get('sequence_start', 1)
+            seq_batch = cls._meta.get('sequence_batch', 1)
+            seq_query = (
+                f"DEFINE SEQUENCE IF NOT EXISTS {seq_name} "
+                f"BATCH {seq_batch} START {seq_start}"
+            )
+            await connection.client.query(seq_query)
+
+        # Emit DEFINE SEQUENCE for any SequenceField on this model
+        from .fields.additional import SequenceField as _SequenceField
+        for _fname, _field in cls._fields.items():
+            if isinstance(_field, _SequenceField):
+                _sq = (
+                    f"DEFINE SEQUENCE IF NOT EXISTS {_field.sequence} "
+                    f"BATCH {_field.batch} START {_field.start}"
+                )
+                await connection.client.query(_sq)
+
         for field_name, field in cls._fields.items():
             # Skip id field as it's handled by SurrealDB
             if field_name == cls._meta.get('id_field', 'id'):
@@ -3013,69 +3225,21 @@ class Document(metaclass=DocumentMetaclass):
 
             # Only define fields if schemafull or if field is explicitly marked for schema definition
             if schemafull or field.define_schema:
+
+                # Computed fields (e.g. IncomingReferenceField) must NOT have a TYPE clause.
+                # SurrealDB syntax: DEFINE FIELD name ON table COMPUTED <expr>
+                if getattr(field, 'computation_expression', None):
+                    field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} COMPUTED {field.computation_expression}"
+                    await connection.client.query(field_query)
+                    continue
+
                 field_type = cls._get_field_type_for_surreal(field)
                 # Wrap in option<> if field is not required (allows NULL/NONE values)
                 if not field.required:
                     field_type = f"option<{field_type}>"
                 field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} TYPE {field_type}"
-
-                # Build constraints
-                exprs = []
-                if field.required:
-                    exprs.append("$value != NONE")
-                try:
-                    from .fields.scalar import StringField, NumberField
-                    from .fields.specialized import ChoiceField
-                except Exception:
-                    StringField = NumberField = ChoiceField = None  # type: ignore
-
-                # StringField constraints
-                if StringField and isinstance(field, StringField):
-                    if getattr(field, 'min_length', None) is not None:
-                        exprs.append(f"string::len($value) >= {int(field.min_length)}")
-                    if getattr(field, 'max_length', None) is not None:
-                        exprs.append(f"string::len($value) <= {int(field.max_length)}")
-                    if getattr(field, 'regex_pattern', None):
-                        # Use string::matches for regex in v2; pattern as string literal
-                        from .surrealql import escape_literal
-                        pattern = field.regex_pattern
-                        exprs.append(f"string::matches($value, {escape_literal(pattern)})")
-                    if getattr(field, 'choices', None):
-                        vals = []
-                        for v in field.choices:
-                            if isinstance(v, str):
-                                s = v.replace('\\', r'\\').replace('"', r'\"')
-                                vals.append(f'"{s}"')
-                            else:
-                                vals.append(str(v).lower() if isinstance(v, bool) else str(v))
-                        exprs.append(f"$value INSIDE [{', '.join(vals)}]")
-
-                # Number constraints (NumberField and subclasses)
-                if NumberField and isinstance(field, NumberField):
-                    if getattr(field, 'min_value', None) is not None:
-                        exprs.append(f"$value >= {field.min_value}")
-                    if getattr(field, 'max_value', None) is not None:
-                        exprs.append(f"$value <= {field.max_value}")
-
-                # ChoiceField constraints
-                if ChoiceField and isinstance(field, ChoiceField):
-                    vals = []
-                    for v in field.values:
-                        if isinstance(v, str):
-                            s = v.replace('\\', r'\\').replace('"', r'\"')
-                            vals.append(f'"{s}"')
-                        else:
-                            vals.append(str(v).lower() if isinstance(v, bool) else str(v))
-                    exprs.append(f"$value INSIDE [{', '.join(vals)}]")
-
-                if exprs:
-                    field_query += " ASSERT " + " AND ".join(exprs)
-
-                # Computed / Incoming Reference
-                if getattr(field, 'computation_expression', None):
-                    field_query += f" COMPUTED {field.computation_expression}"
                 # Sets Deduplication
-                elif getattr(field, '_is_set', False):
+                if getattr(field, '_is_set', False):
                     field_query += " VALUE $value.distinct()"
                 # Reference
                 elif getattr(field, 'reference', False):
@@ -3180,9 +3344,16 @@ class Document(metaclass=DocumentMetaclass):
 
         collection_name = cls._get_collection_name()
 
-        # Create the table
+        # Create the table — RelationDocument subclasses need TYPE RELATION
         schema_type = "SCHEMAFULL" if schemafull else "SCHEMALESS"
-        query = f"DEFINE TABLE {collection_name} {schema_type}"
+        try:
+            is_relation = issubclass(cls, RelationDocument) and cls is not RelationDocument
+        except NameError:
+            is_relation = cls.__name__ != 'RelationDocument' and any(
+                b.__name__ == 'RelationDocument' for b in cls.__mro__
+            )
+        table_type = "TYPE RELATION " if is_relation else ""
+        query = f"DEFINE TABLE {collection_name} {table_type}{schema_type}"
 
         # Check if this is a time series table
         is_time_series = False
@@ -3206,12 +3377,33 @@ class Document(metaclass=DocumentMetaclass):
 
         # Add comment if available
         if hasattr(cls, '__doc__') and cls.__doc__:
-            # Clean up docstring: remove newlines, extra spaces, and escape quotes
+            # Collapse newlines/extra spaces, escape backslash and double-quote for SurrealDB
             doc = ' '.join(cls.__doc__.strip().split())
-            doc = doc.replace("'", "''")
+            doc = doc.replace('\\', '\\\\').replace('"', '\\"')
             if doc:
-                query += f" COMMENT '{doc}'"
+                query += f' COMMENT "{doc}"'
         connection.client.query(query)
+
+        # Emit DEFINE SEQUENCE if configured in Meta
+        seq_name = cls._meta.get('sequence') if hasattr(cls, '_meta') else None
+        if seq_name:
+            seq_start = cls._meta.get('sequence_start', 1)
+            seq_batch = cls._meta.get('sequence_batch', 1)
+            seq_query = (
+                f"DEFINE SEQUENCE IF NOT EXISTS {seq_name} "
+                f"BATCH {seq_batch} START {seq_start}"
+            )
+            connection.client.query(seq_query)
+
+        # Emit DEFINE SEQUENCE for any SequenceField on this model
+        from .fields.additional import SequenceField as _SequenceField
+        for _fname, _field in cls._fields.items():
+            if isinstance(_field, _SequenceField):
+                _sq = (
+                    f"DEFINE SEQUENCE IF NOT EXISTS {_field.sequence} "
+                    f"BATCH {_field.batch} START {_field.start}"
+                )
+                connection.client.query(_sq)
 
         # Create fields if schemafull or if field is marked with define_schema=True
         for field_name, field in cls._fields.items():
@@ -3221,6 +3413,13 @@ class Document(metaclass=DocumentMetaclass):
 
             # Only define fields if schemafull or if field is explicitly marked for schema definition
             if schemafull or field.define_schema:
+                # Computed fields (e.g. IncomingReferenceField) must NOT have a TYPE clause.
+                # SurrealDB syntax: DEFINE FIELD name ON table COMPUTED <expr>
+                if getattr(field, 'computation_expression', None):
+                    field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} COMPUTED {field.computation_expression}"
+                    connection.client.query(field_query)
+                    continue
+
                 field_type = cls._get_field_type_for_surreal(field)
                 # Wrap in option<> if field is not required (allows NULL/NONE values)
                 if not field.required:
@@ -3282,7 +3481,7 @@ class Document(metaclass=DocumentMetaclass):
                 if getattr(field, 'computation_expression', None):
                     field_query += f" COMPUTED {field.computation_expression}"
                 # Sets Deduplication
-                elif getattr(field, '_is_set', False):
+                if getattr(field, '_is_set', False):
                     field_query += " VALUE $value.distinct()"
                 # Reference
                 elif getattr(field, 'reference', False):
@@ -3305,10 +3504,11 @@ class Document(metaclass=DocumentMetaclass):
 
                 connection.client.query(field_query)
 
-                # Handle nested fields for DictField
-                if isinstance(field, DictField) and schemafull:
-                    if field.db_field == 'settings':
-                        nested_field_query = f"DEFINE FIELD {field.db_field}.theme ON {collection_name} TYPE string"
+                # Handle nested fields for DictField with explicit schema
+                if isinstance(field, DictField) and schemafull and field.schema:
+                    for sub_key, sub_field in field.schema.items():
+                        sub_field_type = cls._get_field_type_for_surreal(sub_field)
+                        nested_field_query = f"DEFINE FIELD {field.db_field}.{sub_key} ON {collection_name} TYPE {sub_field_type}"
                         connection.client.query(nested_field_query)
 
         # Create indexes
@@ -3744,24 +3944,215 @@ class RelationDocument(Document):
         return relation_doc
 
     @classmethod
-    def find_by_in_document(cls, in_doc, **additional_filters):
-        """Query RelationDocument by in_document field.
+    async def bulk_relate(
+        cls,
+        edges: list,
+        connection: Optional[Any] = None,
+    ) -> list:
+        """Create multiple relation edges in a single DB round-trip.
+
+        Uses ``INSERT RELATION INTO`` which is significantly faster than calling
+        ``create_relation()`` N times when creating many edges at once.
 
         Args:
-            in_doc: The document instance or ID to filter by
-            **additional_filters: Additional filters to apply
+            edges: A list of dicts, each with at least ``"in"`` and ``"out"`` keys.
+                   Values may be document instances (must be saved) or RecordID / id-string.
+                   Additional keys become edge attributes.
+
+                   Example::
+
+                       await Follows.bulk_relate([
+                           {"in": alice, "out": bob,  "since_year": 2020},
+                           {"in": bob,   "out": dave, "since_year": 2021},
+                       ])
+
+            connection: Optional explicit connection. Uses the default async connection
+                        when omitted.
 
         Returns:
-            QuerySet filtered by in_document
+            List of ``RelationDocument`` instances with ``.id`` populated.
 
+        Raises:
+            ValueError: If an edge is missing ``"in"`` or ``"out"``, or references an
+                        unsaved document instance.
         """
-        # Get the default connection
-        connection = ConnectionRegistry.get_default_connection(async_mode=True)
-        queryset = QuerySet(cls, connection)
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=True)
 
-        # Apply the in_document filter and any additional filters
-        filters = {'in': in_doc, **additional_filters}
-        return queryset.filter(**filters)
+        table = cls.get_relation_name()
+        from surrealdb import RecordID as _RID
+
+        def _to_id(val: Any) -> str:
+            """Resolve a document, RecordID, or id-string to a SurrealQL RecordID token."""
+            if hasattr(val, '_data') and not isinstance(val, _RID):
+                _id = val._data.get('id')
+                if not _id:
+                    raise ValueError(
+                        f"Cannot bulk_relate: {val.__class__.__name__} instance is not saved (id is None)"
+                    )
+                return str(_id)
+            if isinstance(val, _RID):
+                return f"{val.table_name}:{val.id}"
+            return str(val)
+
+        def _val_to_sql(v: Any) -> str:
+            """Serialise a scalar value to an inline SurrealQL literal."""
+            if isinstance(v, bool):
+                return "true" if v else "false"
+            if isinstance(v, (int, float)):
+                return str(v)
+            if v is None:
+                return "NONE"
+            # Strings and anything else: quote and escape
+            escaped = str(v).replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped}"'
+
+        if not edges:
+            return []
+
+        rows_sql = []
+        for i, edge in enumerate(edges):
+            if not isinstance(edge, dict):
+                raise ValueError(f"Edge at index {i} must be a dict, got {type(edge)}")
+            if 'in' not in edge or 'out' not in edge:
+                raise ValueError(f"Edge at index {i} must have 'in' and 'out' keys")
+
+            in_id  = _to_id(edge['in'])
+            out_id = _to_id(edge['out'])
+
+            # Build the extra fields portion
+            extras = {}
+            for k, v in edge.items():
+                if k in ('in', 'out'):
+                    continue
+                # Serialise through model descriptor if available
+                field = cls._fields.get(k)
+                if field is not None:
+                    try:
+                        v = field.to_db(v)
+                    except Exception:
+                        pass
+                extras[k] = v
+
+            extra_pairs = ", ".join(
+                f"{k}: {_val_to_sql(v)}" for k, v in extras.items()
+            )
+            if extra_pairs:
+                rows_sql.append(f"{{in: {in_id}, out: {out_id}, {extra_pairs}}}")
+            else:
+                rows_sql.append(f"{{in: {in_id}, out: {out_id}}}")
+
+        sql = f"INSERT RELATION INTO {table} [{', '.join(rows_sql)}]"
+        raw = await connection.client.query(sql)
+
+        results = []
+        if raw and isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict) and 'id' in item:
+                    doc = cls.from_db(item)
+                else:
+                    doc = cls()
+                    doc._data['id'] = str(item) if item else None
+                results.append(doc)
+        elif isinstance(raw, dict) and 'id' in raw:
+            # Single-record result (one edge)
+            results.append(cls.from_db(raw))
+        return results
+
+    @classmethod
+    def bulk_relate_sync(
+        cls,
+        edges: list,
+        connection: Optional[Any] = None,
+    ) -> list:
+        """Synchronous version of :meth:`bulk_relate`.
+
+        Create multiple relation edges in a single ``INSERT RELATION INTO`` round-trip.
+
+        Args:
+            edges: See :meth:`bulk_relate` for edge format.
+            connection: Optional explicit sync connection.
+
+        Returns:
+            List of ``RelationDocument`` instances with ``.id`` populated.
+        """
+        if connection is None:
+            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+
+        table = cls.get_relation_name()
+        from surrealdb import RecordID as _RID
+
+        def _to_id(val: Any) -> str:
+            if hasattr(val, '_data') and not isinstance(val, _RID):
+                _id = val._data.get('id')
+                if not _id:
+                    raise ValueError(
+                        f"Cannot bulk_relate_sync: {val.__class__.__name__} instance is not saved"
+                    )
+                return str(_id)
+            if isinstance(val, _RID):
+                return f"{val.table_name}:{val.id}"
+            return str(val)
+
+        def _val_to_sql(v: Any) -> str:
+            if isinstance(v, bool):
+                return "true" if v else "false"
+            if isinstance(v, (int, float)):
+                return str(v)
+            if v is None:
+                return "NONE"
+            escaped = str(v).replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped}"'
+
+        if not edges:
+            return []
+
+        rows_sql = []
+        for i, edge in enumerate(edges):
+            if not isinstance(edge, dict):
+                raise ValueError(f"Edge at index {i} must be a dict, got {type(edge)}")
+            if 'in' not in edge or 'out' not in edge:
+                raise ValueError(f"Edge at index {i} must have 'in' and 'out' keys")
+
+            in_id  = _to_id(edge['in'])
+            out_id = _to_id(edge['out'])
+
+            extras = {}
+            for k, v in edge.items():
+                if k in ('in', 'out'):
+                    continue
+                field = cls._fields.get(k)
+                if field is not None:
+                    try:
+                        v = field.to_db(v)
+                    except Exception:
+                        pass
+                extras[k] = v
+
+            extra_pairs = ", ".join(
+                f"{k}: {_val_to_sql(v)}" for k, v in extras.items()
+            )
+            if extra_pairs:
+                rows_sql.append(f"{{in: {in_id}, out: {out_id}, {extra_pairs}}}")
+            else:
+                rows_sql.append(f"{{in: {in_id}, out: {out_id}}}")
+
+        sql = f"INSERT RELATION INTO {table} [{', '.join(rows_sql)}]"
+        raw = connection.client.query(sql)
+
+        results = []
+        if raw and isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict) and 'id' in item:
+                    doc = cls.from_db(item)
+                else:
+                    doc = cls()
+                    doc._data['id'] = str(item) if item else None
+                results.append(doc)
+        elif isinstance(raw, dict) and 'id' in raw:
+            results.append(cls.from_db(raw))
+        return results
+
 
     @classmethod
     def find_by_in_document_sync(cls, in_doc, **additional_filters):

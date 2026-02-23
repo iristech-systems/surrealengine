@@ -407,3 +407,61 @@ class RangeField(Field):
             result['max'] = self.max_type.from_db(value['max'])
 
         return result
+
+
+class SequenceField(Field):
+    """Field backed by a SurrealDB DEFINE SEQUENCE.
+
+    When used on a model field (not the record ID), ``create_table()`` emits
+    the required ``DEFINE SEQUENCE`` statement and ``save()`` automatically
+    fetches the next value from the sequence before inserting a new record.
+
+    For sequence-backed **record IDs** use ``Meta.sequence`` instead.
+
+    Example::
+
+        class Order(Document):
+            order_number = SequenceField(sequence="order_seq", start=1000, batch=10)
+            customer     = StringField()
+
+    Attributes:
+        sequence: Name of the SurrealDB sequence (required).
+        start:    First value the sequence emits (default 1).
+        batch:    Pre-allocation batch size (default 1).
+    """
+
+    def __init__(
+        self,
+        sequence: str,
+        start: int = 1,
+        batch: int = 1,
+        **kwargs: Any,
+    ) -> None:
+        self.sequence = sequence
+        self.start = start
+        self.batch = batch
+        # Sequence fields are integers; never required because save() fills them.
+        kwargs.setdefault('required', False)
+        super().__init__(**kwargs)
+        self.py_type = int
+
+    # ------------------------------------------------------------------
+    # Validation / serialisation
+    # ------------------------------------------------------------------
+
+    def validate(self, value: Any) -> Any:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            from ..exceptions import ValidationError
+            raise ValidationError(
+                f"SequenceField '{self.name}' expects an integer, got {type(value)}"
+            )
+
+    def to_db(self, value: Any) -> Any:
+        return int(value) if value is not None else None
+
+    def from_db(self, value: Any) -> Any:
+        return int(value) if value is not None else None

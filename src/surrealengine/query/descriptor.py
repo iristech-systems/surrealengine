@@ -634,9 +634,31 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.live(*args, **kwargs)
 
-    async def reactive(self) -> "ReactiveQuerySet":
+    def start_live(self, *args, **kwargs):
+        """Start a LIVE SELECT and return the UUID string.
+
+        Delegates to :meth:`QuerySet.start_live`.  The returned UUID can be
+        shared across multiple consumers via :meth:`subscribe_to_live`.
         """
-        Return a ReactiveQuerySet that stays in sync with the database.
+        connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.start_live(*args, **kwargs)
+
+    def subscribe_to_live(self, uuid: str, *args, **kwargs):
+        """Attach to a running LIVE query by UUID as an async generator.
+
+        Delegates to :meth:`QuerySet.subscribe_to_live`.
+        """
+        connection = self.connection or get_active_connection(async_mode=True)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.subscribe_to_live(uuid, *args, **kwargs)
+
+    async def reactive(self) -> "ReactiveQuerySet":
+        """Return a ReactiveQuerySet that stays in sync with the database.
 
         This method initializes a ReactiveQuerySet, which performs an initial fetch
         and then subscribes to live updates to keep the local list current.

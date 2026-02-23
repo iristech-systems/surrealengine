@@ -65,6 +65,7 @@ from .exceptions import (
     DoesNotExist,
     MultipleObjectsReturned,
     ValidationError,
+    DocumentNotSavedError,
 )
 from .fields import (
     BooleanField,
@@ -96,7 +97,8 @@ from .fields import (
     RecordIDField,
     VectorField,
     IncomingReferenceField,
-    ComputedField
+    ComputedField,
+    SequenceField
 )
 from .embedded import EmbeddedDocument
 from .materialized_view import (
@@ -255,6 +257,7 @@ __all__ = [
     "VectorField",
     "IncomingReferenceField",
     "ComputedField",
+    "SequenceField",
     "TimestampMixin",
     "SoftDeleteMixin",
 ]

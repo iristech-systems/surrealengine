@@ -19,7 +19,7 @@ from .specialized import (
     EmailField, URLField, IPAddressField, SlugField, ChoiceField, VectorField
 )
 from .additional import (
-    OptionField, FutureField, TableField, RangeField, ComputedField
+    OptionField, FutureField, TableField, RangeField, ComputedField, SequenceField
 )
 from .embedded import EmbeddedField
 
@@ -35,4 +35,5 @@ __all__ = [
     'BytesField', 'RegexField', 'DecimalField', 'UUIDField', 'LiteralField',
     'EmailField', 'URLField', 'IPAddressField', 'SlugField', 'ChoiceField', 'VectorField',
     'OptionField', 'FutureField', 'TableField', 'RangeField', 'ComputedField', 'EmbeddedField',
+    'SequenceField',
 ]

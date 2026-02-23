@@ -2071,6 +2071,9 @@ class SurrealEngineAsyncConnection:
                 await self.client.close()
             self.client = None
 
+    # Alias for convenience
+    close = disconnect
+
     async def transaction(self, coroutines: list) -> list:
         """Execute multiple operations in a transaction.
 
@@ -2417,6 +2420,9 @@ class SurrealEngineSyncConnection:
         if self.client:
             self.client.close()
             self.client = None
+
+    # Alias for convenience
+    close = disconnect
 
     def transaction(self, callables: list) -> list:
         """Execute multiple operations in a transaction.

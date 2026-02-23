@@ -58,6 +58,32 @@ class ReferenceField(Field):
         super().__init__(**kwargs)
         self.py_type = Union[Type, str, dict]
 
+    def _resolve_document_type(self) -> Any:
+        """Resolve the document_type to an actual class.
+
+        When document_type is a string (forward reference) we look it up via
+        Document.get_document_class() which keys on collection names, or by
+        falling back to a class-name scan.
+        Returns the resolved class, or None if it cannot be resolved yet.
+        """
+        if isinstance(self.document_type, str):
+            try:
+                from surrealengine.document import Document
+                # get_document_class() keys on collection name (snake_case).
+                # Try the raw string first (works if it's already a collection name),
+                # then try converting CamelCase class name to snake_case.
+                resolved = Document.get_document_class(self.document_type)
+                if resolved is None:
+                    import re
+                    snake = re.sub(r'(?<!^)(?=[A-Z])', '_', self.document_type).lower()
+                    resolved = Document.get_document_class(snake)
+                if resolved is not None:
+                    return resolved
+            except Exception:
+                pass
+            return None  # not yet resolvable — skip strict type checks
+        return self.document_type
+
     def validate(self, value: Any) -> Any:
         """Validate the reference value.
 
@@ -76,12 +102,24 @@ class ReferenceField(Field):
         """
         value = super().validate(value)
         if value is not None:
-            if not isinstance(value, (self.document_type, str, dict, RecordID)):
-                raise TypeError(
-                    f"Expected {self.document_type.__name__}, id string, record dict, or RecordID for field '{self.name}', got {type(value)}")
-
-            if isinstance(value, self.document_type) and value.id is None:
-                raise ValueError(f"Cannot reference an unsaved {self.document_type.__name__} document")
+            resolved = self._resolve_document_type()
+            # When document_type is a string we may not have the class yet;
+            # fall back to accepting str/dict/RecordID (all safe values).
+            if resolved is not None:
+                if not isinstance(value, (resolved, str, dict, RecordID)):
+                    raise TypeError(
+                        f"Expected {resolved.__name__}, id string, record dict, or RecordID "
+                        f"for field '{self.name}', got {type(value)}")
+                if isinstance(value, resolved) and value.id is None:
+                    raise ValueError(
+                        f"Cannot reference an unsaved {resolved.__name__} document")
+            else:
+                # Forward ref not yet resolvable — only reject obviously wrong types
+                if not isinstance(value, (str, dict, RecordID)):
+                    # Could still be a Document instance — check by duck-typing
+                    if not hasattr(value, 'id'):
+                        raise TypeError(
+                            f"Invalid reference value for field '{self.name}': {type(value)}")
 
         return value
 
@@ -113,10 +151,18 @@ class ReferenceField(Field):
         if isinstance(value, RecordID):
             return value
 
-        # If it's a document instance
-        if isinstance(value, self.document_type):
+        # If it's a document instance (handle string forward refs via duck-typing)
+        resolved = self._resolve_document_type()
+        if resolved is not None:
+            if isinstance(value, resolved):
+                if value.id is None:
+                    raise ValueError(
+                        f"Cannot reference an unsaved {resolved.__name__} document")
+                return value.id
+        elif hasattr(value, 'id') and not isinstance(value, (str, dict, RecordID)):
+            # Unresolved forward ref — treat any object with .id as a document instance
             if value.id is None:
-                raise ValueError(f"Cannot reference an unsaved {self.document_type.__name__} document")
+                raise ValueError(f"Cannot reference an unsaved document")
             return value.id
 
         # If it's a dict (partial reference)
@@ -140,39 +186,32 @@ class ReferenceField(Field):
         Returns:
             The Python representation of the reference
         """
+        resolved = self._resolve_document_type()
         # If value is already a dict (fetched document), convert it to document instance
         if isinstance(value, dict) and 'id' in value:
-            try:
-                return self.document_type.from_db(value)
-            except Exception:
-                # If conversion fails, return the dict as is
-                return value
-        
+            if resolved is not None:
+                try:
+                    return resolved.from_db(value)
+                except Exception:
+                    pass
+            return value
+
         if isinstance(value, str) and ':' in value:
             # This is a record ID reference
-            if dereference:
-                # If dereference is True, fetch the referenced document
-                # We need to use get_sync here because from_db is not async
+            if dereference and resolved is not None:
                 try:
-                    return self.document_type.objects.get_sync(id=value)
+                    return resolved.objects.get_sync(id=value)
                 except Exception:
-                    # If fetching fails, return the ID as is
-                    return value
-            else:
-                # If dereference is False, return the ID as is
-                return value
+                    pass
+            return value
         elif isinstance(value, RecordID):
             # This is a RecordID object
-            if dereference:
-                # If dereference is True, fetch the referenced document
+            if dereference and resolved is not None:
                 try:
-                    return self.document_type.objects.get_sync(id=str(value))
+                    return resolved.objects.get_sync(id=str(value))
                 except Exception:
-                    # If fetching fails, return the RecordID as is
-                    return value
-            else:
-                # If dereference is False, return the RecordID as is
-                return value
+                    pass
+            return value
         return value
 
 
@@ -444,20 +483,64 @@ class IncomingReferenceField(Field):
         return None
 
     def from_db(self, value: Any) -> Any:
-        # The database will return an array of record IDs or objects
+        # The database will return an array of record IDs or full objects (when FETCHed).
         if not value:
             return value
-        
+
+        def _live_scan(table_name: str) -> Any:
+            """Recursively scan Document.__subclasses__() to find the class
+            for *table_name*. Unlike the cached _document_registry, this always
+            finds classes defined after the registry was populated (e.g. in notebooks)."""
+            try:
+                from surrealengine.document import Document
+            except Exception:
+                return None
+
+            def _scan(cls):
+                for sub in cls.__subclasses__():
+                    meta = getattr(sub, '_meta', {})
+                    if meta.get('collection') == table_name:
+                        return sub
+                    found = _scan(sub)
+                    if found:
+                        return found
+                return None
+
+            return _scan(Document)
+
+        # Resolve our declared document_type (may be a string forward-ref).
+        resolved = None
+        if isinstance(self.document_type, str):
+            import re
+            snake = re.sub(r'(?<!^)(?=[A-Z])', '_', self.document_type).lower()
+            resolved = _live_scan(self.document_type) or _live_scan(snake)
+        else:
+            resolved = self.document_type
+
         if isinstance(value, list):
             res = []
             for item in value:
                 if isinstance(item, dict) and 'id' in item:
-                    try:
-                        res.append(self.document_type.from_db(item))
-                    except Exception:
-                        res.append(item)
+                    cls_to_use = resolved
+                    # Last-resort: derive class from the item's own RecordID table name.
+                    if cls_to_use is None:
+                        try:
+                            from surrealdb import RecordID as _RID
+                            item_id = item['id']
+                            if isinstance(item_id, _RID):
+                                cls_to_use = _live_scan(item_id.table_name)
+                        except Exception:
+                            pass
+                    if cls_to_use is not None:
+                        try:
+                            res.append(cls_to_use.from_db(item))
+                            continue
+                        except Exception:
+                            pass
+                    res.append(item)
                 else:
                     res.append(item)
             return res
-            
+
+
         return value

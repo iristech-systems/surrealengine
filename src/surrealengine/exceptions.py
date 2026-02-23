@@ -85,3 +85,21 @@ class InvalidQueryError(SurrealEngineError):
     an unsupported operator or when a query is malformed.
     """
     pass
+
+
+class DocumentNotSavedError(SurrealEngineError):
+    """Raised when accessing the ID of a document that has not been saved.
+
+    Documents only receive a database ID after ``save()`` has been called.
+    Accessing ``.id`` before that point raises this exception so the error
+    is immediately obvious rather than silently returning ``None``.
+
+    Example::
+
+        inv = Invoice(customer="Acme")
+        inv.id   # → DocumentNotSavedError
+        await inv.save()
+        inv.id   # → invoice:1  ✓
+    """
+    pass
+
