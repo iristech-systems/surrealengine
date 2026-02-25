@@ -68,11 +68,29 @@ async def test_queryset_raw_conn():
     mock_raw_conn.query_arrow.assert_called_once()
     print("Raw Connection Passed!")
 
+async def test_queryset_to_polars_raw_conn():
+    print("Testing accelerated to_polars()...")
+    mock_raw_conn = MagicMock()
+    mock_raw_conn.query_arrow = AsyncMock()
+    
+    mock_table = pa.Table.from_pylist([{"name": "FastAlice", "age": 99}])
+    mock_raw_conn.query_arrow.return_value = mock_table
+    
+    qs = QuerySet(Person, mock_raw_conn)
+    df = await qs.to_polars()
+    
+    assert isinstance(df, pl.DataFrame)
+    assert len(df) == 1
+    assert df["name"][0] == "FastAlice"
+    mock_raw_conn.query_arrow.assert_called_once()
+    print("Accelerated Polars Passed!")
+
 async def main():
     try:
         await test_queryset_to_arrow_fallback()
         await test_queryset_to_polars()
         await test_queryset_raw_conn()
+        await test_queryset_to_polars_raw_conn()
         print("\nALL INTEGRATION TESTS PASSED")
     except Exception as e:
         print(f"\nTEST FAILED: {e}")

@@ -98,7 +98,12 @@ from .fields import (
     VectorField,
     IncomingReferenceField,
     ComputedField,
-    SequenceField
+    SequenceField,
+    PointField,
+    BytesField,
+    RegexField,
+    UUIDField,
+    TableField
 )
 from .embedded import EmbeddedDocument
 from .materialized_view import (
@@ -258,6 +263,11 @@ __all__ = [
     "IncomingReferenceField",
     "ComputedField",
     "SequenceField",
+    "PointField",
+    "BytesField",
+    "RegexField",
+    "UUIDField",
+    "TableField",
     "TimestampMixin",
     "SoftDeleteMixin",
 ]

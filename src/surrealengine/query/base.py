@@ -856,23 +856,31 @@ class QuerySet(BaseQuerySet):
 
         return select_query
 
-    async def to_arrow(self) -> Any:
+    def to_arrow(self) -> Any:
         """
         Execute the query and return the results as a PyArrow Table.
-        
-        This method uses the Zero-Copy Accelerator if available on a RawSurrealConnection,
-        otherwise falls back to converting the standard dictionary response to Arrow.
-        
+
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
+
         Returns:
-            pyarrow.Table: The query results as an Arrow Table.
+            pyarrow.Table: The query results (or awaitable resolving to it).
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.to_arrow_sync()
+
+        return self._to_arrow_async()
+
+    async def _to_arrow_async(self) -> Any:
+        """Internal async implementation of to_arrow()."""
         try:
             import pyarrow as pa
         except ImportError:
             raise ImportError("pyarrow is required for to_arrow()")
-        
+
         query = self._build_query()
-        
+
         # Check for optimized Raw Connection (Level 3 Zero-Copy)
         if hasattr(self.connection, "query_arrow"):
              result = await self.connection.query_arrow(query)
@@ -882,7 +890,7 @@ class QuerySet(BaseQuerySet):
 
         # Fallback to standard SDK (Level 1 Zero-Copy / ODM Bypass)
         results = await self.connection.client.query(query)
-        
+
         if not results:
             return pa.Table.from_pylist([])
 
@@ -898,28 +906,114 @@ class QuerySet(BaseQuerySet):
                         break
         else:
             rows = results
-        
+
         if not rows:
             return pa.Table.from_pylist([])
-            
+
         if isinstance(rows, dict):
             rows = [rows]
 
-        return pa.Table.from_pylist(rows)
+        # Normalize RecordID objects for Arrow conversion
+        normalized_rows = []
+        for row in rows:
+            if isinstance(row, dict):
+                normalized_row = {}
+                for k, v in row.items():
+                    if isinstance(v, RecordID):
+                        normalized_row[k] = str(v)
+                    else:
+                        normalized_row[k] = v
+                normalized_rows.append(normalized_row)
+            else:
+                normalized_rows.append(row)
 
-    async def to_polars(self) -> Any:
+        return pa.Table.from_pylist(normalized_rows)
+
+    def to_arrow_sync(self) -> Any:
+        """Execute the query and return the results as a PyArrow Table synchronously."""
+        try:
+            import pyarrow as pa
+        except ImportError:
+            raise ImportError("pyarrow is required for to_arrow()")
+
+        query = self._build_query()
+
+        # Sync connection doesn't support optimized query_arrow (which is async WebSockets)
+        # So we always fall back to standard SDK
+        results = self.connection.client.query(query)
+
+        if not results:
+            return pa.Table.from_pylist([])
+
+        # Normalize rows
+        rows = None
+        if isinstance(results, list):
+            if results and isinstance(results[0], dict):
+                rows = results
+            else:
+                for part in reversed(results):
+                    if isinstance(part, list):
+                        rows = part
+                        break
+        else:
+            rows = results
+
+        if not rows:
+            return pa.Table.from_pylist([])
+
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        # Normalize RecordID objects for Arrow conversion
+        normalized_rows = []
+        for row in rows:
+            if isinstance(row, dict):
+                normalized_row = {}
+                for k, v in row.items():
+                    if isinstance(v, RecordID):
+                        normalized_row[k] = str(v)
+                    else:
+                        normalized_row[k] = v
+                normalized_rows.append(normalized_row)
+            else:
+                normalized_rows.append(row)
+
+        return pa.Table.from_pylist(normalized_rows)
+
+    def to_polars(self) -> Any:
         """
         Execute the query and return the results as a Polars DataFrame.
-        
+
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
+
         Returns:
-            polars.DataFrame: The query results as a Polars DataFrame.
+            polars.DataFrame: The query results (or awaitable resolving to it).
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.to_polars_sync()
+
+        return self._to_polars_async()
+
+    async def _to_polars_async(self) -> Any:
+        """Internal async implementation of to_polars()."""
         try:
             import polars as pl
         except ImportError:
             raise ImportError("polars is required for to_polars()")
-            
+
         arrow_table = await self.to_arrow()
+        return pl.from_arrow(arrow_table)
+
+    def to_polars_sync(self) -> Any:
+        """Execute the query and return the results as a Polars DataFrame synchronously."""
+        try:
+            import polars as pl
+        except ImportError:
+            raise ImportError("polars is required for to_polars()")
+
+        arrow_table = self.to_arrow_sync()
         return pl.from_arrow(arrow_table)
 
 
@@ -942,7 +1036,7 @@ class QuerySet(BaseQuerySet):
 
         return self._all_async(dereference=dereference)
 
-    async def _all_async(self, dereference: bool = False) -> List[Any]:
+    async def _all_async(self, dereference: bool = False, **kwargs: Any) -> List[Any]:
         """Internal async implementation of all()."""
         query = self._build_query()
         results = await self.connection.client.query(query)
@@ -1199,18 +1293,27 @@ class QuerySet(BaseQuerySet):
         document = self.document_class(**kwargs)
         return document.save_sync(self.connection)
 
-    async def update(self, returning: Optional[str] = None, **kwargs: Any) -> List[Any]:
-        """Update documents matching the query asynchronously with performance optimizations.
+    def update(self, returning: Optional[str] = None, **kwargs: Any) -> Union[List[Any], Any]:
+        """Update documents matching the query.
 
-        This method updates documents matching the query with the given field values.
-        Uses direct record access for bulk ID operations for better performance.
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
+            returning: Return policy ('before', 'after', 'diff', or None)
             **kwargs: Field names and values to update
 
         Returns:
-            List of updated documents
+            List of updated documents (or awaitable resolving to it)
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.update_sync(returning=returning, **kwargs)
+
+        return self._update_async(returning=returning, **kwargs)
+
+    async def _update_async(self, returning: Optional[str] = None, **kwargs: Any) -> List[Any]:
+        """Internal async implementation of update()."""
         # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
         if self._bulk_id_selection or self._id_range_selection:
             # For bulk operations, use subquery with direct record access for better performance
@@ -1317,11 +1420,11 @@ class QuerySet(BaseQuerySet):
         # Fall back to regular update query
         update_query = f"UPDATE {self.document_class._get_collection_name()}"
 
+        update_query += f" SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
+
         if self.query_parts:
             conditions = self._build_conditions()
             update_query += f" WHERE {' AND '.join(conditions)}"
-
-        update_query += f" SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
 
         result = self.connection.client.query(update_query)
 

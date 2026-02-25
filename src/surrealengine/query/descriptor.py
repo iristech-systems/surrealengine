@@ -848,27 +848,45 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.fetch(*fields)
 
-    async def to_arrow(self) -> Any:
+    def to_arrow(self) -> Any:
         """
         Execute the query and return the results as a PyArrow Table.
-        """
-        # Use existing connection if set (e.g. via qs.connection = conn hack)
-        connection = self.connection or self.connection or get_active_connection(async_mode=None)
-        if self.owner is None:
-            raise RuntimeError("QuerySetDescriptor owner not set")
-        queryset = QuerySet(self.owner, connection)
-        return await queryset.to_arrow()
 
-    async def to_polars(self) -> Any:
-        """
-        Execute the query and return the results as a Polars DataFrame.
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
+
+        Returns:
+            pyarrow.Table: The query results (or awaitable resolving to it).
         """
         # Get the connection (implicit context or default async)
         connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        return await queryset.to_polars()
+
+        if not connection.is_async():
+            return queryset.to_arrow_sync()
+        return queryset.to_arrow()
+
+    def to_polars(self) -> Any:
+        """
+        Execute the query and return the results as a Polars DataFrame.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
+
+        Returns:
+            polars.DataFrame: The query results (or awaitable resolving to it).
+        """
+        # Get the connection (implicit context or default async)
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+
+        if not connection.is_async():
+            return queryset.to_polars_sync()
+        return queryset.to_polars()
 
 
     def first(self) -> Any:
@@ -943,12 +961,11 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.page(number, size)
 
-    async def paginate(self, page: int, per_page: int) -> 'PaginationResult':
-        """Get a page of results with pagination metadata asynchronously.
+    def paginate(self, page: int, per_page: int) -> Union['PaginationResult', Any]:
+        """Get a page of results with pagination metadata.
 
-        This method gets a page of results along with metadata about the
-        pagination, such as the total number of items, the number of pages,
-        and whether there are next or previous pages.
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             page: The page number (1-based)
@@ -956,14 +973,17 @@ class QuerySetDescriptor:
 
         Returns:
             A PaginationResult containing the items and pagination metadata
+            (or awaitable resolving to it)
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        # Return the paginated results
-        return await queryset.paginate(page, per_page)
+
+        if not connection.is_async():
+            return queryset.paginate_sync(page, per_page)
+        return queryset.paginate(page, per_page)
 
     def paginate_sync(self, page: int, per_page: int) -> 'PaginationResult':
         """Get a page of results with pagination metadata synchronously.
@@ -1021,12 +1041,11 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.aggregate()
 
-    async def join(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
+    def join(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> Union[List[Any], Any]:
         """Perform a JOIN-like operation on a reference field.
 
-        This method performs a JOIN-like operation on a reference field by using
-        SurrealDB's graph traversal capabilities. It retrieves the referenced documents
-        and replaces the reference IDs with the actual documents.
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             field_name: The name of the reference field to join on
@@ -1035,17 +1054,20 @@ class QuerySetDescriptor:
             dereference_depth: Maximum depth of reference resolution (default: 1)
 
         Returns:
-            List of documents with joined data
+            List of documents with joined data (or awaitable resolving to it)
 
         Raises:
             ValueError: If the field is not a ReferenceField
         """
         # Get the connection (implicit context or default async)
-        connection = self.connection or get_active_connection(async_mode=True)
+        connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        return await queryset.join(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
+
+        if not connection.is_async():
+            return queryset.join_sync(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
+        return queryset.join(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
 
     def join_sync(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
         """Perform a JOIN-like operation on a reference field synchronously.

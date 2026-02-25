@@ -9,7 +9,7 @@ python-source = "src"
 
 [project]
 name = "surrealengine"
-version = "0.9.8"
+version = "0.9.85"
 description = "An async Object-Document Mapper (ODM) for SurrealDB"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.85] - 2026-02-25
+
+### Added
+- **Polyglot API Refactoring**: Refactored core query methods (`paginate`, `update`, `join`, `to_arrow`, `to_polars`, `first`, `get`, `count`) and `QuerySetDescriptor` to automatically adapt to the connection context (Sync vs Async).
+- **Field Exports**: Exposed `PointField`, `BytesField`, `RegexField`, `UUIDField`, and `TableField` at the top-level `surrealengine` package.
+
+### Fixed
+- **SurrealDB 3.0 Schema Generation**: 
+  - Corrected `COMPUTED` field syntax order (`TYPE` clause now correctly precedes `COMPUTED`).
+  - Fixed double `option<>` wrapping (e.g., `option<option<string>>`) by centralizing nullability logic in `_get_field_type_for_surreal`.
+  - Enforced `TYPE object FLEXIBLE` syntax for `DictField` compatibility with SurrealDB 3.0.
+  - Switched `DecimalField` to use the native `decimal` type.
+  - Switched `SetField` to use the native `set` type, removing redundant `VALUE $value.distinct()` clauses.
+- **Connection Resolution**: Improved `get_active_connection` to prefer synchronous connections in synchronous environments, preventing accidental coroutine returns when both connection types are registered.
+- **Arrow/Polars Serialization**: Normalise `RecordID` objects to strings in `to_arrow` to prevent serialization errors in PyArrow and Polars.
+
 ## [0.9.8] - 2026-02-22
 
 ### Added

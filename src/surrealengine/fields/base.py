@@ -45,7 +45,7 @@ class Field:
                  define_schema: bool = False, indexed: bool = False, unique: bool = False, 
                  search: bool = False, analyzer: Optional[str] = None, index_with: Optional[List[str]] = None,
                  bm25: bool = False, highlights: bool = False,
-                 comment: Optional[str] = None) -> None:
+                 comment: Optional[str] = None, assertion: Optional[str] = None) -> None:
         """Initialize a new Field.
 
         Args:
@@ -72,8 +72,9 @@ class Field:
         self.index_with = index_with
         self.bm25 = bm25
         self.highlights = highlights
-        self.py_type = Any
+        self.py_type: type = Any
         self.comment = comment
+        self.assertion = assertion
 
     def validate(self, value: Any) -> Any:
         """Validate the field value.
@@ -209,8 +210,6 @@ class Field:
             'any'
         """
         return 'any'
-
-        return f"<{self.get_surreal_type()}>"
 
     def __get__(self, instance: Any, owner: Type) -> Any:
         """Descriptor method to access field value or field definition.

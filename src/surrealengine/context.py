@@ -50,14 +50,15 @@ def get_active_connection(async_mode: Optional[bool] = True) -> Any:
             try:
                 return ConnectionRegistry.get_default_connection(async_mode=True)
             except RuntimeError:
-                # Fallback to sync if no async default (might warn later)
+                # Fallback to sync if no async default
                 pass
 
-        # Try async, then sync (original behavior, but now second priority if loop active)
+        # Try sync first if not in async loop, or as fallback from async
         try:
-            return ConnectionRegistry.get_default_connection(async_mode=True)
-        except RuntimeError:
             return ConnectionRegistry.get_default_connection(async_mode=False)
+        except RuntimeError:
+            # Last resort: try async if sync not available
+            return ConnectionRegistry.get_default_connection(async_mode=True)
             
     return ConnectionRegistry.get_default_connection(async_mode=async_mode)
 

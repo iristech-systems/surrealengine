@@ -605,22 +605,27 @@ class BaseQuerySet:
             return document_class._get_collection_name()
         return getattr(self, 'table_name', None)
 
-    async def all(self, **kwargs: Any) -> List[Any]:
-        """Execute the query and return all results asynchronously.
+    def all(self, **kwargs: Any) -> Union[List[Any], Any]:
+        """Execute the query and return all results.
 
-        This method must be implemented by subclasses to execute the query
-        and return the results.
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             **kwargs: Additional arguments (e.g. dereference)
 
         Returns:
-            List of results
-
-        Raises:
-            NotImplementedError: If not implemented by a subclass
+            List of results (or an awaitable resolving to it)
         """
-        raise NotImplementedError("Subclasses must implement all")
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.all_sync(**kwargs)
+
+        return self._all_async(**kwargs)
+
+    async def _all_async(self, **kwargs: Any) -> List[Any]:
+        """Internal method to execute the query and return all results asynchronously."""
+        raise NotImplementedError("Subclasses must implement _all_async or all")
 
     def all_sync(self, **kwargs: Any) -> List[Any]:
         """Execute the query and return all results synchronously.
@@ -639,15 +644,23 @@ class BaseQuerySet:
         """
         raise NotImplementedError("Subclasses must implement all_sync")
 
-    async def first(self) -> Optional[Any]:
-        """Execute the query and return the first result asynchronously.
+    def first(self) -> Union[Optional[Any], Any]:
+        """Execute the query and return the first result.
 
-        This method limits the query to one result and returns the first item
-        or None if no results are found.
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Returns:
-            The first result or None if no results
+            The first result or None (or an awaitable resolving to it)
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.first_sync()
+
+        return self._first_async()
+
+    async def _first_async(self) -> Optional[Any]:
+        """Internal method to execute the query and return the first result asynchronously."""
         self.limit_value = 1
         results = await self.all()
         return results[0] if results else None
@@ -665,17 +678,17 @@ class BaseQuerySet:
         results = self.all_sync()
         return results[0] if results else None
 
-    async def get(self, **kwargs) -> Any:
-        """Get a single document matching the query asynchronously.
+    def get(self, **kwargs) -> Union[Any, Any]:
+        """Get a single document matching the query.
 
-        This method applies filters and ensures that exactly one document is returned.
-        For ID-based lookups, it uses direct record syntax instead of WHERE clause.
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             **kwargs: Field names and values to filter by
 
         Returns:
-            The matching document
+            The matching document (or an awaitable resolving to it)
 
         Raises:
             DoesNotExist: If no matching document is found
@@ -699,15 +712,30 @@ class BaseQuerySet:
                     query = f"SELECT * FROM {table_name}:{id_value}"
                 else:
                     # Fall back to regular filtering if we can't determine the table
-                    return await self._get_with_filters(**kwargs)
+                    if not self.connection.is_async():
+                        return self._get_with_filters_sync(**kwargs)
+                    return self._get_with_filters(**kwargs)
 
-            result = await self.connection.client.query(query)
-            if not result or not result[0]:
-                raise DoesNotExist(f"Object with ID '{id_value}' does not exist.")
-            return result[0][0]
+            # Execution based on connection type
+            if not self.connection.is_async():
+                result = self.connection.client.query(query)
+                if not result or not result[0]:
+                    raise DoesNotExist(f"Object with ID '{id_value}' does not exist.")
+                return result[0][0]
+            else:
+                return self._get_id_async(query, id_value)
 
         # For non-ID lookups, use regular filtering
-        return await self._get_with_filters(**kwargs)
+        if not self.connection.is_async():
+            return self._get_with_filters_sync(**kwargs)
+        return self._get_with_filters(**kwargs)
+
+    async def _get_id_async(self, query: str, id_value: Any) -> Any:
+        """Internal async implementation of ID-based get()."""
+        result = await self.connection.client.query(query)
+        if not result or not result[0]:
+            raise DoesNotExist(f"Object with ID '{id_value}' does not exist.")
+        return result[0][0]
 
     def get_sync(self, **kwargs) -> Any:
         """Get a single document matching the query synchronously.
@@ -801,19 +829,24 @@ class BaseQuerySet:
 
         return results[0]
 
-    async def count(self) -> int:
-        """Count documents matching the query asynchronously.
+    def count(self) -> Union[int, Any]:
+        """Count documents matching the query.
 
-        This method must be implemented by subclasses to count the number
-        of documents matching the query.
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Returns:
-            Number of matching documents
-
-        Raises:
-            NotImplementedError: If not implemented by a subclass
+            Number of matching documents (or an awaitable resolving to it)
         """
-        raise NotImplementedError("Subclasses must implement count")
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.count_sync()
+
+        return self._count_async()
+
+    async def _count_async(self) -> int:
+        """Internal method to count documents matching the query asynchronously."""
+        raise NotImplementedError("Subclasses must implement _count_async or count")
 
     def count_sync(self) -> int:
         """Count documents matching the query synchronously.
@@ -863,12 +896,11 @@ class BaseQuerySet:
         self.start_value = (number - 1) * size
         return self
 
-    async def paginate(self, page: int, per_page: int) -> PaginationResult:
-        """Get a page of results with pagination metadata asynchronously.
+    def paginate(self, page: int, per_page: int) -> Union[PaginationResult, Any]:
+        """Get a page of results with pagination metadata.
 
-        This method gets a page of results along with metadata about the
-        pagination, such as the total number of items, the number of pages,
-        and whether there are next or previous pages.
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
 
         Args:
             page: The page number (1-based)
@@ -876,7 +908,16 @@ class BaseQuerySet:
 
         Returns:
             A PaginationResult containing the items and pagination metadata
+            (or awaitable resolving to it)
         """
+        # If connection is sync, execute sync logic immediately
+        if not self.connection.is_async():
+            return self.paginate_sync(page, per_page)
+
+        return self._paginate_async(page, per_page)
+
+    async def _paginate_async(self, page: int, per_page: int) -> PaginationResult:
+        """Internal async implementation of paginate()."""
         # Get the total count
         total = await self.count()
 

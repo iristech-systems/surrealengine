@@ -132,13 +132,15 @@ def _generate_field_statements(table: str, current_path: str, field: Any, docume
     
     # Cast document_class to Any to access _get_field_type_for_surreal
     doc_cls_any: Any = document_class
-    # 1. Define the field itself
+    # 1. Base Statement
     field_type = doc_cls_any._get_field_type_for_surreal(field)
     
-    # Handle optional fields (if they wrap another type, the base logic usually handles the type name)
-    # Checks for specific complex types to ensure proper SurrealQL syntax
-    
+    # SurrealDB 3.0 syntax for Fields:
+    # DEFINE FIELD name ON table TYPE type [COMPUTED expr] ...
     field_stmt = f"DEFINE FIELD {current_path} ON {table} TYPE {field_type}"
+
+    if getattr(field, 'computation_expression', None):
+        field_stmt += f" COMPUTED {field.computation_expression}"
 
     # Build constraints
     exprs: List[str] = []
@@ -190,28 +192,22 @@ def _generate_field_statements(table: str, current_path: str, field: Any, docume
                 vals.append(str(v).lower() if isinstance(v, bool) else str(v))
         exprs.append(f"$value INSIDE [{', '.join(vals)}]")
 
+    if getattr(field, 'assertion', None):
+        exprs.append(field.assertion)
+
     if exprs:
         field_stmt += " ASSERT " + " AND ".join(exprs)
 
-    # Computed / Incoming Reference
-    if getattr(field, 'computation_expression', None):
-        field_stmt += f" COMPUTED {field.computation_expression}"
-    # Sets Deduplication
-    elif getattr(field, '_is_set', False):
+    # Sets Deduplication (redundant if using native set type in v3.0)
+    if getattr(field, '_is_set', False) and not field_type.startswith("set"):
         field_stmt += " VALUE $value.distinct()"
     # Reference
     elif getattr(field, 'reference', False):
         field_stmt += " REFERENCE"
     # Default
     elif field.default is not None and not callable(field.default):
-        def _literal(val):
-            if isinstance(val, str):
-                s = val.replace('\\', r'\\').replace('"', r'\"')
-                return f'"{s}"'
-            if isinstance(val, bool):
-                return 'true' if val else 'false'
-            return str(val)
-        field_stmt += f" VALUE {_literal(field.default)}"
+        from .surrealql import escape_literal
+        field_stmt += f" VALUE {escape_literal(field.default)}"
 
     # Field comment
     if getattr(field, 'comment', None):

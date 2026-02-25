@@ -23,7 +23,7 @@ try:
 except ImportError:
     Datetime = None
 
-_record_id_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*:(?!/)[^\s]+$")
+_record_id_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*:(?:[a-zA-Z0-9_.\-]+|⟨[a-zA-Z0-9_.\-]+⟩)$")
 
 
 def is_record_id(value: Any) -> bool:
@@ -112,7 +112,10 @@ def escape_literal(value: Any) -> str:
     if isinstance(value, str):
         s = value.strip()
         if s.startswith("d'") and s.endswith("'"):
-            return s
+            inner = s[2:-1]
+            # Ensure no unescaped quotes inside the literal to prevent SQL injection
+            if "'" not in inner:
+                return s
         return json.dumps(value)
 
     # dict with 'id' that is a record id

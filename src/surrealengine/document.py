@@ -3037,88 +3037,101 @@ class Document(metaclass=DocumentMetaclass):
         """
         from .fields import (
             StringField, IntField, FloatField, BooleanField,
-            DateTimeField, ListField, DictField, ReferenceField,
+            DateTimeField, ListField, DictField, SetField, ReferenceField,
             GeometryField, RelationField, DecimalField, DurationField,
             BytesField, RegexField, OptionField, FutureField,
             UUIDField, TableField, RecordIDField, EmbeddedField
         )
         from .fields.additional import SequenceField as _SequenceField
 
+        # 1. Resolve Base Type
         if isinstance(field, _SequenceField):
-            return "int"
+            field_type = "int"
         elif isinstance(field, StringField):
-            return "string"
+            field_type = "string"
         elif isinstance(field, IntField):
-            return "int"
-        elif isinstance(field, FloatField) or isinstance(field, DecimalField):
-            return "float"
+            field_type = "int"
+        elif isinstance(field, FloatField):
+            field_type = "float"
+        elif isinstance(field, DecimalField):
+            field_type = "decimal"
         elif isinstance(field, BooleanField):
-            return "bool"
+            field_type = "bool"
         elif isinstance(field, DateTimeField):
-            return "datetime"
+            field_type = "datetime"
         elif isinstance(field, DurationField):
-            return "duration"
+            field_type = "duration"
+        elif isinstance(field, SetField):
+            if field.field_type:
+                inner_type = cls._get_field_type_for_surreal(field.field_type)
+                field_type = f"set<{inner_type}>"
+            else:
+                field_type = "set"
         elif isinstance(field, ListField):
             if field.field_type:
                 inner_type = cls._get_field_type_for_surreal(field.field_type)
-                return f"array<{inner_type}>"
-            return "array"
+                field_type = f"array<{inner_type}>"
+            else:
+                field_type = "array"
         elif isinstance(field, DictField):
-            # Use FLEXIBLE OBJECT to allow arbitrary keys without requiring
-            # every sub-key to be explicitly DEFINE FIELD'd. This is required
-            # for dynamic attribute maps (e.g. OpenTelemetry, JSON blobs, etc.)
-            return "flexible object"
+            # Use object FLEXIBLE for DictField in SurrealDB 3.0
+            field_type = "object FLEXIBLE"
         elif isinstance(field, EmbeddedField):
-            return "object"
+            field_type = "object"
         elif isinstance(field, ReferenceField):
-            # Get the target collection name — guard against base Document class
-            # (e.g. RelationDocument.in_document uses ReferenceField(Document))
-            # which has no _meta set, so fall back to untyped 'record'.
             target_cls = field.document_type
             if hasattr(target_cls, '_meta') and target_cls._meta:
                 try:
                     target_collection = target_cls._get_collection_name()
-                    return f"record<{target_collection}>"
+                    field_type = f"record<{target_collection}>"
                 except Exception:
-                    pass
-            return "record"
+                    field_type = "record"
+            else:
+                field_type = "record"
         elif isinstance(field, RelationField):
-            # Get the target collection name
             target_cls = field.to_document
             if hasattr(target_cls, '_meta') and target_cls._meta:
                 try:
                     target_collection = target_cls._get_collection_name()
-                    return f"record<{target_collection}>"
+                    field_type = f"record<{target_collection}>"
                 except Exception:
-                    pass
-            return "record"
+                    field_type = "record"
+            else:
+                field_type = "record"
         elif isinstance(field, GeometryField):
-            return "geometry"
+            field_type = "geometry"
         elif isinstance(field, BytesField):
-            return "bytes"
+            field_type = "bytes"
         elif isinstance(field, RegexField):
-            return "regex"
+            field_type = "regex"
         elif isinstance(field, OptionField):
             if field.field_type:
-                inner_type = cls._get_field_type_for_surreal(field.field_type)
-                return f"option<{inner_type}>"
-            return "option"
+                # Recursively get inner type but DON'T wrap here, we handle it below
+                field_type = cls._get_field_type_for_surreal(field.field_type)
+            else:
+                field_type = "any"
         elif isinstance(field, UUIDField):
-            return "uuid"
+            field_type = "uuid"
         elif isinstance(field, TableField):
-            return "table"
+            field_type = "table"
         elif isinstance(field, RecordIDField):
-            return "record"
+            target = getattr(field, 'table_name', None)
+            field_type = f"record<{target}>" if target else "record"
         elif isinstance(field, FutureField):
-            return "any"  # Future fields are computed at query time
+            field_type = "any"
+        elif hasattr(field, 'get_surreal_type'):
+            field_type = field.get_surreal_type()
+        else:
+            field_type = "any"
 
-        if hasattr(field, 'get_surreal_type'):
-            custom_type = field.get_surreal_type()
-            if custom_type != "any":
-                return custom_type
+        # 2. Apply Option Wrapping
+        # Non-required fields should be wrapped in option<> unless already optional or complex/flexible objects
+        if not field.required and field_type != "any":
+            # Don't double wrap or wrap flexible objects (which are inherently optional)
+            if not field_type.startswith("option<") and not field_type.startswith("object"):
+                return f"option<{field_type}>"
 
-        # Default to any type if we can't determine a specific type
-        return "any"
+        return field_type
 
     @classmethod
     def create_table(cls, connection: Optional[Any] = None, schemafull: bool = True) -> Union[None, Any]:
@@ -3226,18 +3239,19 @@ class Document(metaclass=DocumentMetaclass):
             # Only define fields if schemafull or if field is explicitly marked for schema definition
             if schemafull or field.define_schema:
 
-                # Computed fields (e.g. IncomingReferenceField) must NOT have a TYPE clause.
-                # SurrealDB syntax: DEFINE FIELD name ON table COMPUTED <expr>
-                if getattr(field, 'computation_expression', None):
-                    field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} COMPUTED {field.computation_expression}"
-                    await connection.client.query(field_query)
-                    continue
-
+                # 1. Base Statement
                 field_type = cls._get_field_type_for_surreal(field)
-                # Wrap in option<> if field is not required (allows NULL/NONE values)
-                if not field.required:
-                    field_type = f"option<{field_type}>"
+                
+                # SurrealDB 3.0 syntax for Fields:
+                # DEFINE FIELD name ON table [TYPE type] [COMPUTED expr] ...
+                # Note: TYPE keyword is usually required even for specialized object types.
+                # If it's a computed field, TYPE clause is optional but allowed.
                 field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} TYPE {field_type}"
+
+                if getattr(field, 'computation_expression', None):
+                    # For computed fields, the pattern is usually TYPE any COMPUTED ... OR just omit TYPE if any.
+                    # Based on user feedback, TYPE [any] COMPUTED ... is the safest order.
+                    field_query += f" COMPUTED {field.computation_expression}"
                 # Sets Deduplication
                 if getattr(field, '_is_set', False):
                     field_query += " VALUE $value.distinct()"
@@ -3413,18 +3427,13 @@ class Document(metaclass=DocumentMetaclass):
 
             # Only define fields if schemafull or if field is explicitly marked for schema definition
             if schemafull or field.define_schema:
-                # Computed fields (e.g. IncomingReferenceField) must NOT have a TYPE clause.
-                # SurrealDB syntax: DEFINE FIELD name ON table COMPUTED <expr>
-                if getattr(field, 'computation_expression', None):
-                    field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} COMPUTED {field.computation_expression}"
-                    connection.client.query(field_query)
-                    continue
-
+                # 1. Base Statement
                 field_type = cls._get_field_type_for_surreal(field)
-                # Wrap in option<> if field is not required (allows NULL/NONE values)
-                if not field.required:
-                    field_type = f"option<{field_type}>"
+
                 field_query = f"DEFINE FIELD {field.db_field} ON {collection_name} TYPE {field_type}"
+
+                if getattr(field, 'computation_expression', None):
+                    field_query += f" COMPUTED {field.computation_expression}"
 
                 # Build constraints
                 exprs = []

@@ -954,17 +954,6 @@ class VectorField(Field):
         """Return the SurrealQL type name for this field."""
         # Vectors are stored as arrays of numbers/floats
         return f"array<float>"
-        if value is None:
-            return None
-            
-        # Ensure it's a list of floats (validation already handled most, but let's be safe)
-        if hasattr(value, "tolist"):
-            value = value.tolist()
-            
-        if isinstance(value, (list, tuple)):
-            return [float(x) for x in value]
-            
-        return value
 
 
 class LiteralField(Field):
@@ -990,7 +979,7 @@ class LiteralField(Field):
         self.allowed_fields = [v for v in allowed_values if isinstance(v, Field)]
         self.allowed_literals = [v for v in allowed_values if not isinstance(v, Field)]
         super().__init__(**kwargs)
-        self.py_type = Union[tuple(f.py_type for f in self.allowed_fields)] if self.allowed_fields else Any
+        self.py_type = Any
 
     def validate(self, value: Any) -> Any:
         """Validate that the value is one of the allowed values or types.
@@ -1597,3 +1586,44 @@ class ChoiceField(Field):
             choices_str = ", ".join(repr(v) for v in self.values)
             raise ValueError(f"Value for field '{self.name}' must be one of: {choices_str}")
         return value
+
+
+class PointField(Field):
+    """Geospatial Point field type.
+
+    Stores a point as (longitude, latitude) coordinates.
+    In SurrealDB, this is represented as (long, lat) or { type: "Point", coordinates: [long, lat] }.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.py_type = tuple
+
+    def validate(self, value: Any) -> Optional[tuple]:
+        value = super().validate(value)
+        if value is not None:
+            if isinstance(value, (list, tuple)) and len(value) == 2:
+                return tuple(float(x) for x in value)
+            if isinstance(value, dict) and value.get('type') == 'Point' and 'coordinates' in value:
+                coords = value['coordinates']
+                if isinstance(coords, (list, tuple)) and len(coords) == 2:
+                    return tuple(float(x) for x in coords)
+            raise ValueError(f"Invalid Point format for field '{self.name}'. Expected (lon, lat) or GeoJSON Point.")
+        return value
+
+    def to_db(self, value: Any) -> Optional[str]:
+        if value is not None:
+            lon, lat = value
+            return f"({lon}, {lat})"
+        return value
+
+    def from_db(self, value: Any) -> Optional[tuple]:
+        if value is not None:
+            if isinstance(value, (list, tuple)) and len(value) == 2:
+                return tuple(value)
+            if isinstance(value, dict) and value.get('type') == 'Point':
+                return tuple(value['coordinates'])
+        return value
+
+    def get_surreal_type(self) -> str:
+        return "point"

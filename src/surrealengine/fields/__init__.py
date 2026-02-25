@@ -16,7 +16,8 @@ from .geometry import GeometryField
 from .id import RecordIDField
 from .specialized import (
     BytesField, RegexField, DecimalField, UUIDField, LiteralField,
-    EmailField, URLField, IPAddressField, SlugField, ChoiceField, VectorField
+    EmailField, URLField, IPAddressField, SlugField, ChoiceField, VectorField,
+    PointField
 )
 from .additional import (
     OptionField, FutureField, TableField, RangeField, ComputedField, SequenceField
@@ -34,6 +35,7 @@ __all__ = [
     'RecordIDField',
     'BytesField', 'RegexField', 'DecimalField', 'UUIDField', 'LiteralField',
     'EmailField', 'URLField', 'IPAddressField', 'SlugField', 'ChoiceField', 'VectorField',
+    'PointField',
     'OptionField', 'FutureField', 'TableField', 'RangeField', 'ComputedField', 'EmbeddedField',
     'SequenceField',
 ]
