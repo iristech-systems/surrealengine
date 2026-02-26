@@ -966,10 +966,18 @@ class Document(metaclass=DocumentMetaclass):
         if depth <= 0 or not self.id:
             return self
 
+        # Detect IncomingReferenceField fields
+        try:
+            from .fields.reference import IncomingReferenceField as _IRF
+        except ImportError:
+            _IRF = None
+
         # Build FETCH clause for all reference fields
         fetch_fields = []
         for field_name, field in self._fields.items():
             if isinstance(field, ReferenceField) and getattr(self, field_name):
+                fetch_fields.append(field_name)
+            elif _IRF and isinstance(field, _IRF):
                 fetch_fields.append(field_name)
         
         if not fetch_fields:
@@ -977,7 +985,6 @@ class Document(metaclass=DocumentMetaclass):
 
         # Use FETCH to resolve references in a single query
         connection = get_active_connection(async_mode=True)
-        # ... rest of implementation ...
         
         try:
             # Use FETCH with a WHERE clause instead of selecting from specific record
@@ -997,8 +1004,13 @@ class Document(metaclass=DocumentMetaclass):
                 if depth > 1:
                     for field_name in fetch_fields:
                         referenced_doc = getattr(self, field_name, None)
-                        if referenced_doc and hasattr(referenced_doc, 'resolve_references'):
-                            await referenced_doc.resolve_references(depth=depth-1)
+                        if referenced_doc:
+                            if isinstance(referenced_doc, list):
+                                for item in referenced_doc:
+                                    if hasattr(item, 'resolve_references'):
+                                        await item.resolve_references(depth=depth-1)
+                            elif hasattr(referenced_doc, 'resolve_references'):
+                                await referenced_doc.resolve_references(depth=depth-1)
         except Exception:
             # Fall back to manual resolution if FETCH fails
             for field_name, field in self._fields.items():
@@ -1015,6 +1027,10 @@ class Document(metaclass=DocumentMetaclass):
                         if referenced_doc and depth > 1:
                             await referenced_doc.resolve_references(depth=depth-1)
                         setattr(self, field_name, referenced_doc)
+                elif _IRF and isinstance(field, _IRF):
+                    # Manual resolution for incoming references if FETCH fails
+                    # This is handled naturally by the field's __get__ if we didn't FETCH
+                    pass
 
         return self
 
@@ -1034,10 +1050,18 @@ class Document(metaclass=DocumentMetaclass):
         if depth <= 0 or not self.id:
             return self
 
+        # Detect IncomingReferenceField fields
+        try:
+            from .fields.reference import IncomingReferenceField as _IRF
+        except ImportError:
+            _IRF = None
+
         # Build FETCH clause for all reference fields
         fetch_fields = []
         for field_name, field in self._fields.items():
             if isinstance(field, ReferenceField) and getattr(self, field_name):
+                fetch_fields.append(field_name)
+            elif _IRF and isinstance(field, _IRF):
                 fetch_fields.append(field_name)
         
         if not fetch_fields:
@@ -1064,8 +1088,13 @@ class Document(metaclass=DocumentMetaclass):
                 if depth > 1:
                     for field_name in fetch_fields:
                         referenced_doc = getattr(self, field_name, None)
-                        if referenced_doc and hasattr(referenced_doc, 'resolve_references_sync'):
-                            referenced_doc.resolve_references_sync(depth=depth-1)
+                        if referenced_doc:
+                            if isinstance(referenced_doc, list):
+                                for item in referenced_doc:
+                                    if hasattr(item, 'resolve_references_sync'):
+                                        item.resolve_references_sync(depth=depth-1)
+                            elif hasattr(referenced_doc, 'resolve_references_sync'):
+                                referenced_doc.resolve_references_sync(depth=depth-1)
         except Exception:
             # Fall back to manual resolution if FETCH fails
             for field_name, field in self._fields.items():
@@ -1082,6 +1111,9 @@ class Document(metaclass=DocumentMetaclass):
                         if referenced_doc and depth > 1:
                             referenced_doc.resolve_references_sync(depth=depth-1)
                         setattr(self, field_name, referenced_doc)
+                elif _IRF and isinstance(field, _IRF):
+                    # Manual resolution for incoming references if FETCH fails
+                    pass
 
         return self
 
@@ -1118,10 +1150,18 @@ class Document(metaclass=DocumentMetaclass):
             # No dereferencing needed, use regular get
             return await cls.objects.get(id=id, **kwargs)
         
+        # Detect IncomingReferenceField fields
+        try:
+            from .fields.reference import IncomingReferenceField as _IRF
+        except ImportError:
+            _IRF = None
+
         # Build FETCH clause for reference fields
         fetch_fields = []
         for field_name, field in cls._fields.items():
             if isinstance(field, ReferenceField):
+                fetch_fields.append(field_name)
+            elif _IRF and isinstance(field, _IRF):
                 fetch_fields.append(field_name)
         
         if fetch_fields:
@@ -1199,10 +1239,18 @@ class Document(metaclass=DocumentMetaclass):
             # No dereferencing needed, use regular get
             return cls.objects.get_sync(id=id, **kwargs)
         
+        # Detect IncomingReferenceField fields
+        try:
+            from .fields.reference import IncomingReferenceField as _IRF
+        except ImportError:
+            _IRF = None
+
         # Build FETCH clause for reference fields
         fetch_fields = []
         for field_name, field in cls._fields.items():
             if isinstance(field, ReferenceField):
+                fetch_fields.append(field_name)
+            elif _IRF and isinstance(field, _IRF):
                 fetch_fields.append(field_name)
         
         if fetch_fields:
@@ -1506,6 +1554,9 @@ class Document(metaclass=DocumentMetaclass):
                         # Register parent for tracked objects
                         if hasattr(val, '_set_parent') and callable(val._set_parent):
                             val._set_parent(self, field_name)
+        else:
+            from .exceptions import DocumentNotSavedError
+            raise DocumentNotSavedError(f"Failed to save {self.__class__.__name__} to database.")
         
         # Trigger post_save signal
         if SIGNAL_SUPPORT:
@@ -1629,6 +1680,9 @@ class Document(metaclass=DocumentMetaclass):
                         # Register parent for tracked objects
                         if hasattr(val, '_set_parent') and callable(val._set_parent):
                             val._set_parent(self, field_name)
+        else:
+            from .exceptions import DocumentNotSavedError
+            raise DocumentNotSavedError(f"Failed to save {self.__class__.__name__} to database.")
 
         # Trigger post_save signal
         if SIGNAL_SUPPORT:
@@ -3074,10 +3128,16 @@ class Document(metaclass=DocumentMetaclass):
             else:
                 field_type = "array"
         elif isinstance(field, DictField):
-            # Use object FLEXIBLE for DictField in SurrealDB 3.0
-            field_type = "object FLEXIBLE"
+            # Use object FLEXIBLE for DictField in SurrealDB 3.0 if flexible=True
+            if getattr(field, 'flexible', True):
+                field_type = "object FLEXIBLE"
+            else:
+                field_type = "object"
         elif isinstance(field, EmbeddedField):
-            field_type = "object"
+            if getattr(field, 'flexible', False):
+                field_type = "object FLEXIBLE"
+            else:
+                field_type = "object"
         elif isinstance(field, ReferenceField):
             target_cls = field.document_type
             if hasattr(target_cls, '_meta') and target_cls._meta:

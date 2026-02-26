@@ -1553,7 +1553,47 @@ class ConnectionPoolClient:
                 data = serialize_http_safe(data)
                 return await connection.client.create(collection, data)
             finally:
-                await self.pool.return_connection(connection)
+                await self._return_connection(connection, should_return)
+
+    async def upsert(self, collection: str, data: Dict[str, Any]) -> Any:
+        """Upsert a record in the database.
+
+        Args:
+            collection: The collection to upsert the record in
+            data: The data to upsert the record with
+
+        Returns:
+            The upserted record
+
+        """
+        with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.operation": "upsert", "db.collection": collection}):
+            connection, should_return = await self._get_connection()
+            try:
+                from .document import serialize_http_safe
+                data = serialize_http_safe(data)
+                return await connection.client.upsert(collection, data)
+            finally:
+                await self._return_connection(connection, should_return)
+
+    async def merge(self, id: str, data: Dict[str, Any]) -> Any:
+        """Merge data into an existing record in the database.
+
+        Args:
+            id: The ID of the record to merge data into
+            data: The data to merge into the record
+
+        Returns:
+            The updated record
+
+        """
+        with _maybe_span("surreal.query", {"db.system": "surrealdb", "db.name": self.pool.database, "db.operation": "merge", "db.record": id}):
+            connection, should_return = await self._get_connection()
+            try:
+                from .document import serialize_http_safe
+                data = serialize_http_safe(data)
+                return await connection.client.merge(id, data)
+            finally:
+                await self._return_connection(connection, should_return)
 
     async def update(self, id: str, data: Dict[str, Any]) -> Any:
         """Update an existing record in the database.

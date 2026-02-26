@@ -34,7 +34,7 @@ Example:
     >>> 
     >>> user = User(name="Alice", age=30)
     >>> # await user.save()  # in async context
-    >>> # print(f"Created user: {user.id}")
+    >>> print(f"Created user: {user.id}")
 
 Modules:
     connection: Database connection management and pooling

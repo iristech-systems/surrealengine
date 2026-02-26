@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.89] - 2026-02-26
+
+### Added
+- **Enhanced Connection Pool**: Added `upsert` and `merge` methods to `ConnectionPoolClient` for parity with the SurrealDB SDK.
+- **Flexible Field Support**: Introduced a `flexible` parameter for `DictField` and `EmbeddedField`. `DictField` now defaults to `flexible=True` (generating `object FLEXIBLE`), while `EmbeddedField` defaults to `False`.
+
+### Fixed
+- **Consistent Bidirectional Hydration**: Updated `Document.get()` and `resolve_references()` (both sync and async variants) to include `IncomingReferenceField` in `FETCH` clauses. This ensures consistent hydration of bidirectional relations across all methods, matching `refresh()`.
+- **Robust Save Error Handling**: Enhanced `Document.save()` and `save_sync()` to verify database results. Operations now raise `DocumentNotSavedError` if they fail to produce a result (e.g., due to `RecordID` table name mismatch), preventing silent save failures.
+- **Debug Print Cleanup**: Removed internal debug `print()` statements from core logic while preserving demonstration prints within docstrings and examples.
+
 ## [0.9.85] - 2026-02-25
 
 ### Added

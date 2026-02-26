@@ -6,14 +6,17 @@ from ..embedded import EmbeddedDocument
 class EmbeddedField(Field):
     """Field for storing embedded documents."""
 
-    def __init__(self, document_type: Type[EmbeddedDocument], **kwargs: Any) -> None:
+    def __init__(self, document_type: Type[EmbeddedDocument], 
+                 flexible: bool = False, **kwargs: Any) -> None:
         """Initialize a new EmbeddedField.
 
         Args:
             document_type: The EmbeddedDocument class for this field
+            flexible: Whether to allow additional fields not defined in document_type (default: False)
             **kwargs: Additional arguments
         """
         self.document_type = document_type
+        self.flexible = flexible
         super().__init__(**kwargs)
         self.py_type = document_type
 

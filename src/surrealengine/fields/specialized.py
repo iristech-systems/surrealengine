@@ -1154,7 +1154,7 @@ class URLField(StringField):
 
         # Usage examples:
         site = Website()
-        site.url = "example.com"  # Auto-converts to "https://example.com"
+         site.url = "example.com"  # Auto-converts to "https://example.com"
         print(site.url.host)      # "example.com"
         print(site.url.scheme)    # "https"
         print(site.url.port)      # None

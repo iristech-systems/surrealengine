@@ -110,16 +110,19 @@ class DictField(Field):
     """
 
     def __init__(self, field_type: Optional[Field] = None, 
-                 schema: Optional[Dict[str, Field]] = None, **kwargs: Any) -> None:
+                 schema: Optional[Dict[str, Field]] = None, 
+                 flexible: bool = True, **kwargs: Any) -> None:
         """Initialize a new DictField.
 
         Args:
             field_type: The field type for values in the dictionary
             schema: Optional schema defining specific field types for dictionary keys
+            flexible: Whether to allow additional fields not defined in schema (default: True)
             **kwargs: Additional arguments to pass to the parent class
         """
         self.field_type = field_type
         self.schema = schema
+        self.flexible = flexible
         super().__init__(**kwargs)
         self.py_type = dict
 
