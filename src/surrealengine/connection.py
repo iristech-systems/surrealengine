@@ -1698,6 +1698,22 @@ class ConnectionPoolClient:
             return await connection.client.signin(credentials)
         finally:
             await self._return_connection(connection, should_return)
+            
+    async def authenticate(self, token: str) -> Any:
+        """Authenticate to the database with a token.
+
+        Args:
+            token: The token to authenticate with
+
+        Returns:
+            The result of the authenticate operation
+
+        """
+        connection, should_return = await self._get_connection()
+        try:
+            return await connection.client.authenticate(token)
+        finally:
+            await self._return_connection(connection, should_return)
 
     async def use(self, namespace: str, database: str) -> Any:
         """Use a specific namespace and database.
@@ -2097,6 +2113,22 @@ class SurrealEngineAsyncConnection:
 
         return self.client
 
+    async def authenticate(self, token: str) -> Any:
+        """Authenticate to the database with a token.
+
+        Args:
+            token: The token to authenticate with
+
+        Returns:
+            The result of the authenticate operation
+            
+        Raises:
+            RuntimeError: If the client is not connected
+        """
+        if not self.client:
+             raise RuntimeError("Connection is not established. Call connect() first.")
+        return await self.client.authenticate(token)
+
     async def disconnect(self) -> None:
         """Disconnect from the database.
 
@@ -2460,6 +2492,22 @@ class SurrealEngineSyncConnection:
         if self.client:
             self.client.close()
             self.client = None
+
+    def authenticate(self, token: str) -> Any:
+        """Authenticate to the database with a token.
+
+        Args:
+            token: The token to authenticate with
+
+        Returns:
+            The result of the authenticate operation
+            
+        Raises:
+            RuntimeError: If the client is not connected
+        """
+        if not self.client:
+            raise RuntimeError("Connection is not established. Call connect() first.")
+        return self.client.authenticate(token)
 
     # Alias for convenience
     close = disconnect

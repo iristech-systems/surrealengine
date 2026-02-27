@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.90] - 2026-02-27
+
+### Added
+- **WebSocket Re-Authentication**: Added `authenticate(token)` methods to `ConnectionPoolClient`, `SurrealEngineAsyncConnection`, and `SurrealEngineSyncConnection`. This resolves an issue where long-lived WebSocket connections would fail to re-authenticate when their initial session expired, aligning with SurrealDB 3.0's independent token and session duration lifecycles.
+
 ## [0.9.89] - 2026-02-26
 
 ### Added
