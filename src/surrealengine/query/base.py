@@ -329,7 +329,8 @@ class QuerySet(BaseQuerySet):
                     action=str(action_str).upper(),
                     data=data,
                     ts=ts,
-                    id=getattr(record, '_data', {}).get('id') if hasattr(record, '_data') else None,
+                    id=getattr(record, '_data', {}).get('id') if hasattr(record, '_data') else getattr(record, 'id', None),
+                    document=record,
                 )
 
         else:
@@ -568,11 +569,17 @@ class QuerySet(BaseQuerySet):
                                     except Exception:
                                         pass
                                 
+                                if isinstance(data, dict):
+                                    doc_inst = self.document_class.from_db(data)
+                                else:
+                                    doc_inst = data
+
                                 yield LiveEvent(
                                     action=action_upper,
                                     data=data,
                                     ts=ts_val,
-                                    id=id_val
+                                    id=id_val,
+                                    document=doc_inst
                                 )
                     else:
                         # agen path: yields only inner result; no metadata available
@@ -619,11 +626,17 @@ class QuerySet(BaseQuerySet):
                                     except Exception:
                                         pass
                                         
+                                if isinstance(data, dict):
+                                    doc_inst = self.document_class.from_db(data)
+                                else:
+                                    doc_inst = data
+
                                 yield LiveEvent(
                                     action=inferred_action,
                                     data=data,
                                     ts=None,
-                                    id=id_val
+                                    id=id_val,
+                                    document=doc_inst
                                 )
                     agen = None
                 except asyncio.CancelledError:

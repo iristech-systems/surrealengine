@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [Unreleased]
+
+## [0.9.91] - 2026-03-02
+
+### Added
+- **Polymorphic `LiveEvent` Access**: The `LiveEvent` dataclass yielded by `live()` and `subscribe_to_live()` now includes a `.document` attribute containing the instantiated model document. This allows consumers to seamlessly share the same event-handling loop for both `ReactiveChange` (from `reactive().watch()`) and `LiveEvent`.
+- **Automatic Re-Authentication & Reconnection**: Implemented intelligent wrappers (`AsyncSurrealClientWrapper` and `SyncSurrealClientWrapper`) that intercept and seamlessly handle connection drops (causing `NoneType` faults) and token timeouts. Disconnected or expired pooled and unpooled sessions will automatically reconnect and re-authenticate without surfacing errors to the user app, enabling robust long-running web sessions.
+
 ## [0.9.90] - 2026-02-27
 
 ### Added

@@ -28,6 +28,7 @@ class LiveEvent:
     data: Dict[str, Any]
     ts: Optional[datetime] = None
     id: Optional[RecordID] = None
+    document: Optional[Any] = None
 
     @property
     def is_create(self) -> bool:
