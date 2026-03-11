@@ -1601,8 +1601,20 @@ class ConnectionPoolClient:
         """Select a record from the database."""
         return await self._execute_with_reauth('select', id)
 
-    async def query(self, query: str) -> Any:
-        """Execute a query against the database."""
+    async def query(self, query: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        """Execute a query against the database.
+
+        Args:
+            query: The SurrealQL query string to execute
+            params: Optional parameter bindings (e.g. ``{"vec": [0.1, 0.2, ...]}``)
+                Values are sanitized through ``serialize_http_safe`` before being
+                forwarded to the SDK, ensuring ``TrackedList`` and other wrappers
+                are converted to plain Python types for reliable CBOR/JSON encoding.
+        """
+        if params is not None:
+            from .document import serialize_http_safe
+            params = serialize_http_safe(params)
+            return await self._execute_with_reauth('query', query, params)
         return await self._execute_with_reauth('query', query)
 
     async def insert(self, collection: str, data: List[Dict[str, Any]]) -> Any:

@@ -5,7 +5,18 @@ All notable changes to the SurrealEngine project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.95] - 2026-03-11
+
+### Fixed
+- **`ListField` serialization for numeric arrays**: `ListField.to_db()` now always returns a plain `list` instead of passing a `TrackedList` subclass to the SDK serializer. This prevents the SurrealDB SDK's CBOR/JSON encoder from silently discarding float (and other primitive) values when it performs a strict `type(x) is list` check, which caused `[0.1, -0.2, ...]` to be written as `[]`.
+- **`ListField` DDL type precision**: Added `item_type` kwarg to `ListField` (and the inherited `SetField`) that accepts Python primitive types (`float`, `int`, `str`, `bool`) and auto-creates the corresponding Field instance. This means `ListField(item_type=float)` now generates `DEFINE FIELD … TYPE option<array<float>>` instead of the lossy `option<array>`, which is required for HNSW vector indexes.
+- **`ConnectionPoolClient.query()` params support**: The pool-level `query()` method now accepts an optional `params` dict (e.g. `{"vec": [0.1, 0.2, ...]}`). Params are sanitized via `serialize_http_safe` before being forwarded to the SDK, ensuring `TrackedList` and datetime wrappers are converted to plain Python types before CBOR/JSON encoding.
+- **`create_events()` polyglot**: Was declared as a bare `async def`, breaking the polyglot contract. Renamed internal implementation to `_create_events_async()` and added a proper polyglot dispatcher that routes to `create_events_sync()` or `_create_events_async()` based on the active connection type.
+- **`create_relation()` polyglot** (`RelationDocument`): Same pattern — renamed async body to `_create_relation_async()` and added polyglot `create_relation()` wrapper. Sync users no longer need to call `create_relation_sync()` explicitly.
+- **`bulk_relate()` polyglot** (`RelationDocument`): Same fix — new `bulk_relate()` dispatcher routes to `bulk_relate_sync()` or `_bulk_relate_async()` automatically.
+- **`find_by_in_document()` polyglot** (`RelationDocument`): Added missing polyglot wrapper for the singular variant. Previously only `find_by_in_document_sync()` existed; the plural `find_by_in_documents()` worked correctly but the singular had no polyglot entry point.
+- **`resolve_out_sync()` dead code removed**: A duplicate registry-lookup block unreachable after a `return` statement has been removed.
+- **`find_by_in_document()` normalization**: Both the polyglot and sync variants now normalize `in_doc` to a plain ID value before building the filter, matching the behaviour of `find_by_in_documents()`. Passing a `Document` instance, a `RecordID`, or a `dict` with an `id` key all work correctly now instead of embedding the raw object in the query.
 
 ## [Unreleased]
 

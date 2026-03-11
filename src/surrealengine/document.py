@@ -3037,21 +3037,35 @@ class Document(metaclass=DocumentMetaclass):
                     )
 
     @classmethod
-    async def create_events(cls, connection: Optional[Any] = None) -> None:
-        """Create events defined in Meta.events asynchronously.
-        
+    def create_events(cls, connection: Optional[Any] = None) -> Union[None, Any]:
+        """Create events defined in Meta.events.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
+
         Args:
             connection: Optional connection to use
 
+        Returns:
+            None (or awaitable resolving to None)
+
         """
+        target_connection = connection or get_active_connection(async_mode=None)
+        if not target_connection.is_async():
+            return cls.create_events_sync(connection=target_connection)
+        return cls._create_events_async(connection=target_connection)
+
+    @classmethod
+    async def _create_events_async(cls, connection: Optional[Any] = None) -> None:
+        """Create events defined in Meta.events asynchronously (internal)."""
         if not hasattr(cls, '_meta') or not cls._meta.get('events'):
             return
 
         if connection is None:
             connection = get_active_connection(async_mode=True)
-            
+
         collection_name = cls._get_collection_name()
-        
+
         for event in cls._meta['events']:
             if hasattr(event, 'to_sql'):
                 query = event.to_sql(collection_name)
@@ -3923,11 +3937,32 @@ class RelationDocument(Document):
         return relation_query_builder
 
     @classmethod
-    async def create_relation(cls, from_instance: Any, to_instance: Any, **attrs: Any) -> 'RelationDocument':
-        """Create a relation between two instances asynchronously.
+    def create_relation(cls, from_instance: Any, to_instance: Any, **attrs: Any) -> Union['RelationDocument', Any]:
+        """Create a relation between two instances.
 
-        This method creates a relation between two document instances and
-        returns a RelationDocument instance representing the relationship.
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
+
+        Args:
+            from_instance: The instance to create the relation from
+            to_instance: The instance to create the relation to
+            **attrs: Attributes to set on the relation
+
+        Returns:
+            A RelationDocument instance representing the relationship (or awaitable resolving to it)
+
+        Raises:
+            ValueError: If either instance is not saved
+
+        """
+        connection = get_active_connection(async_mode=None)
+        if not connection.is_async():
+            return cls.create_relation_sync(from_instance, to_instance, **attrs)
+        return cls._create_relation_async(from_instance, to_instance, **attrs)
+
+    @classmethod
+    async def _create_relation_async(cls, from_instance: Any, to_instance: Any, **attrs: Any) -> 'RelationDocument':
+        """Create a relation between two instances asynchronously (internal).
 
         Args:
             from_instance: The instance to create the relation from
@@ -4013,12 +4048,15 @@ class RelationDocument(Document):
         return relation_doc
 
     @classmethod
-    async def bulk_relate(
+    def bulk_relate(
         cls,
         edges: list,
         connection: Optional[Any] = None,
-    ) -> list:
+    ) -> Union[list, Any]:
         """Create multiple relation edges in a single DB round-trip.
+
+        Polyglot method: executes synchronously if the active connection is synchronous,
+        otherwise returns an awaitable.
 
         Uses ``INSERT RELATION INTO`` which is significantly faster than calling
         ``create_relation()`` N times when creating many edges at once.
@@ -4030,20 +4068,43 @@ class RelationDocument(Document):
 
                    Example::
 
+                       # async context
                        await Follows.bulk_relate([
                            {"in": alice, "out": bob,  "since_year": 2020},
                            {"in": bob,   "out": dave, "since_year": 2021},
                        ])
 
-            connection: Optional explicit connection. Uses the default async connection
-                        when omitted.
+                       # sync context (same call)
+                       Follows.bulk_relate([...])
+
+            connection: Optional explicit connection.
 
         Returns:
-            List of ``RelationDocument`` instances with ``.id`` populated.
+            List of ``RelationDocument`` instances with ``.id`` populated (or awaitable).
 
         Raises:
             ValueError: If an edge is missing ``"in"`` or ``"out"``, or references an
                         unsaved document instance.
+        """
+        target_connection = connection or get_active_connection(async_mode=None)
+        if not target_connection.is_async():
+            return cls.bulk_relate_sync(edges, connection=target_connection)
+        return cls._bulk_relate_async(edges, connection=target_connection)
+
+    @classmethod
+    async def _bulk_relate_async(
+        cls,
+        edges: list,
+        connection: Optional[Any] = None,
+    ) -> list:
+        """Create multiple relation edges asynchronously (internal).
+
+        Args:
+            edges: A list of dicts, each with at least ``"in"`` and ``"out"`` keys.
+            connection: Optional explicit connection.
+
+        Returns:
+            List of ``RelationDocument`` instances with ``.id`` populated.
         """
         if connection is None:
             connection = ConnectionRegistry.get_default_connection(async_mode=True)
@@ -4224,6 +4285,36 @@ class RelationDocument(Document):
 
 
     @classmethod
+    def find_by_in_document(cls, in_doc, **additional_filters):
+        """Query RelationDocument by in_document field.
+
+        Polyglot method: returns a QuerySet backed by the active connection, whether
+        sync or async.  Chain ``.all()`` / ``.get()`` etc. on the returned QuerySet
+        to execute the query.
+
+        Args:
+            in_doc: The document instance or ID to filter by
+            **additional_filters: Additional filters to apply
+
+        Returns:
+            QuerySet filtered by in_document
+
+        """
+        connection = get_active_connection(async_mode=None)
+        if connection is None or not connection.is_async():
+            return cls.find_by_in_document_sync(in_doc, **additional_filters)
+        queryset = QuerySet(cls, connection)
+        # Normalize in_doc to a plain ID value
+        if isinstance(in_doc, Document):
+            in_doc = in_doc.id
+        elif isinstance(in_doc, RecordID):
+            in_doc = str(in_doc)
+        elif isinstance(in_doc, dict) and in_doc.get('id'):
+            in_doc = in_doc['id']
+        filters = {'in': in_doc, **additional_filters}
+        return queryset.filter(**filters)
+
+    @classmethod
     def find_by_in_document_sync(cls, in_doc, **additional_filters):
         """Query RelationDocument by in_document field synchronously.
 
@@ -4235,11 +4326,15 @@ class RelationDocument(Document):
             QuerySet filtered by in_document
 
         """
-        # Get the default connection
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
         queryset = QuerySet(cls, connection)
-
-        # Apply the in_document filter and any additional filters
+        # Normalize in_doc to a plain ID value
+        if isinstance(in_doc, Document):
+            in_doc = in_doc.id
+        elif isinstance(in_doc, RecordID):
+            in_doc = str(in_doc)
+        elif isinstance(in_doc, dict) and in_doc.get('id'):
+            in_doc = in_doc['id']
         filters = {'in': in_doc, **additional_filters}
         return queryset.filter(**filters)
 
@@ -4439,7 +4534,7 @@ class RelationDocument(Document):
                             return self.out_document_class.from_db(doc)
                         elif self._meta.get('out_document_type'):
                             return self._meta['out_document_type'].from_db(doc)
-                        
+
                         # Try to resolve class from registry based on 'id'
                         if isinstance(doc, dict) and 'id' in doc:
                             try:
@@ -4449,32 +4544,14 @@ class RelationDocument(Document):
                                      table = val.table_name
                                 else:
                                      table = str(val).split(':')[0]
-                                
+
                                 if table:
                                     doc_cls = DocumentMetaclass._registry.get(table)
                                     if doc_cls:
                                         return doc_cls.from_db(doc)
                             except Exception:
                                 pass
-                        
-                        return doc
-                        # Try to resolve class from registry based on 'id'
-                        if isinstance(doc, dict) and 'id' in doc:
-                            try:
-                                val = doc['id']
-                                table = None
-                                if hasattr(val, 'table_name'):
-                                     table = val.table_name
-                                else:
-                                     table = str(val).split(':')[0]
-                                
-                                if table:
-                                    doc_cls = DocumentMetaclass._registry.get(table)
-                                    if doc_cls:
-                                        return doc_cls.from_db(doc)
-                            except Exception:
-                                pass
-                        
+
                         return doc
             except Exception as e:
                 logger.error(f"Error resolving out_document {self.out_document}: {str(e)}")

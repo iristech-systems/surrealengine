@@ -12,19 +12,47 @@ class ListField(Field):
 
     Attributes:
         field_type: The field type for items in the list
+
+    Examples:
+        Typed list for proper DDL (generates ``array<float>``):
+
+        >>> embedding = ListField(item_type=float)
+        >>> tags = ListField(item_type=str)
+
+        Equivalent using a Field instance directly:
+
+        >>> embedding = ListField(FloatField())
     """
 
     def __init__(self, field_type: Optional[Field] = None,
+                 item_type: Optional[Any] = None,
                  max_items: Optional[int] = None,
                  surreal_functions: Optional[List[str]] = None, **kwargs: Any) -> None:
         """Initialize a new ListField.
 
         Args:
-            field_type: The field type for items in the list
+            field_type: The field type for items in the list (Field instance)
+            item_type: Shorthand for field_type — accepts a Python primitive type
+                (``float``, ``int``, ``str``, ``bool``) and auto-creates the
+                corresponding Field instance.  Ignored when *field_type* is given.
             max_items: Maximum number of items allowed in the list
             surreal_functions: List of SurrealQL array functions to apply (array::sort, array::unique, etc.)
             **kwargs: Additional arguments to pass to the parent class
         """
+        # Resolve item_type shorthand → Field instance
+        if item_type is not None and field_type is None:
+            from .scalar import FloatField, IntField, StringField, BooleanField
+            _PYTHON_TO_FIELD: Dict[Any, Any] = {
+                float: FloatField,
+                int: IntField,
+                str: StringField,
+                bool: BooleanField,
+            }
+            if isinstance(item_type, type) and item_type in _PYTHON_TO_FIELD:
+                field_type = _PYTHON_TO_FIELD[item_type]()
+            elif isinstance(item_type, Field):
+                field_type = item_type
+
         self.field_type = field_type
         self.max_items = max_items
         self.surreal_functions = surreal_functions or []
@@ -69,16 +97,23 @@ class ListField(Field):
         """Convert Python list to database representation.
 
         This method converts a Python list to a database representation by
-        converting each item using the field_type if provided.
+        converting each item using the field_type if provided.  The return
+        value is always a plain ``list`` (never a ``TrackedList`` subclass) so
+        that the SurrealDB SDK's serializer receives a native type it can
+        reliably encode via CBOR/JSON.
 
         Args:
             value: The Python list to convert
 
         Returns:
-            The database representation of the list
+            The database representation of the list as a plain list
         """
-        if value is not None and self.field_type:
-            return [self.field_type.to_db(item) for item in value]
+        if value is not None:
+            if self.field_type:
+                return [self.field_type.to_db(item) for item in value]
+            # Coerce TrackedList (or any list subclass) to a plain list so the
+            # SDK encoder handles it as a regular array.
+            return list(value)
         return value
 
     def from_db(self, value: Optional[List[Any]]) -> Optional[List[Any]]:

@@ -9,7 +9,7 @@ python-source = "src"
 
 [project]
 name = "surrealengine"
-version = "0.9.91"
+version = "0.9.95"
 description = "A powerful, asynchronous Object-Graph Mapper (OGM) and utility library for SurrealDB."
 readme = "README.md"
 requires-python = ">=3.10"
