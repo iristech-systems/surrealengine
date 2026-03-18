@@ -5,6 +5,14 @@ All notable changes to the SurrealEngine project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.9.96] - 2026-03-17
+
+### Fixed
+- **Query Builder Translators**: Fixed `__in` and `__nin` operators generating invalid SurrealQL (`INSIDE` and `NOT INSIDE`). They are now correctly translated to `IN` and `NOT IN` respectively across the codebase, fixing `RuntimeError: Parse error` on queries containing these operators.
+
+
 ## [0.9.95] - 2026-03-11
 
 ### Fixed
@@ -17,8 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`find_by_in_document()` polyglot** (`RelationDocument`): Added missing polyglot wrapper for the singular variant. Previously only `find_by_in_document_sync()` existed; the plural `find_by_in_documents()` worked correctly but the singular had no polyglot entry point.
 - **`resolve_out_sync()` dead code removed**: A duplicate registry-lookup block unreachable after a `return` statement has been removed.
 - **`find_by_in_document()` normalization**: Both the polyglot and sync variants now normalize `in_doc` to a plain ID value before building the filter, matching the behaviour of `find_by_in_documents()`. Passing a `Document` instance, a `RecordID`, or a `dict` with an `id` key all work correctly now instead of embedding the raw object in the query.
-
-## [Unreleased]
 
 ## [0.9.91] - 2026-03-02
 

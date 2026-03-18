@@ -108,8 +108,8 @@ class BaseQuerySet:
                     operator = parts[1]
                     
                     op_map = {
-                        'in': 'INSIDE',
-                        'nin': 'NOT INSIDE',
+                        'in': 'IN',
+                        'nin': 'NOT IN',
                         'eq': '=',
                         'ne': '!=',
                     }
@@ -133,8 +133,8 @@ class BaseQuerySet:
                         'gte': '>=',
                         'lte': '<=',
                         'ne': '!=',
-                        'in': 'INSIDE',
-                        'nin': 'NOT INSIDE',
+                        'in': 'IN',
+                        'nin': 'NOT IN',
                         'contains': 'CONTAINS',
                         'startswith': 'STARTSWITH',
                         'endswith': 'ENDSWITH',
@@ -361,8 +361,8 @@ class BaseQuerySet:
                             conditions.append(f"{field} {op} {normalized}")
                         else:
                             conditions.append(f"{field} {op} {escape_literal(value)}")
-                # Special handling for INSIDE and NOT INSIDE operators
-                elif op in ('INSIDE', 'NOT INSIDE'):
+                # Special handling for IN and NOT IN operators
+                elif op in ('IN', 'NOT IN'):
                     # Only treat list items as record IDs if the field is a RecordID field
                     treat_items_as_ids = _field_is_record_id(field)
                     def _is_record_id_str(s):

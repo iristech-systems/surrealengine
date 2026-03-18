@@ -3405,7 +3405,7 @@ class Document(metaclass=DocumentMetaclass):
                              vals.append(f'"{s}"')
                          else:
                              vals.append(str(v).lower() if isinstance(v, bool) else str(v))
-                     exprs.append(f"$value INSIDE [{', '.join(vals)}]")
+                     exprs.append(f"$value IN [{', '.join(vals)}]")
 
             if exprs:
                 query += " ASSERT " + " AND ".join(exprs)
@@ -3537,7 +3537,7 @@ class Document(metaclass=DocumentMetaclass):
                                 vals.append(f'"{s}"')
                             else:
                                 vals.append(str(v).lower() if isinstance(v, bool) else str(v))
-                        exprs.append(f"$value INSIDE [{', '.join(vals)}]")
+                        exprs.append(f"$value IN [{', '.join(vals)}]")
 
                 # Number constraints (NumberField and subclasses)
                 if NumberField and isinstance(field, NumberField):
@@ -3555,7 +3555,7 @@ class Document(metaclass=DocumentMetaclass):
                             vals.append(f'"{s}"')
                         else:
                             vals.append(str(v).lower() if isinstance(v, bool) else str(v))
-                    exprs.append(f"$value INSIDE [{', '.join(vals)}]")
+                    exprs.append(f"$value IN [{', '.join(vals)}]")
 
                 if exprs:
                     field_query += " ASSERT " + " AND ".join(exprs)

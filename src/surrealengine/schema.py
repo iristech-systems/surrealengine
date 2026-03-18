@@ -174,7 +174,7 @@ def _generate_field_statements(table: str, current_path: str, field: Any, docume
                     vals.append(f'"{s}"')
                 else:
                     vals.append(str(v).lower() if isinstance(v, bool) else str(v))
-            exprs.append(f"$value INSIDE [{', '.join(vals)}]")
+            exprs.append(f"$value IN [{', '.join(vals)}]")
 
     if NumberField and isinstance(field, NumberField):
         if getattr(field, 'min_value', None) is not None:
@@ -190,7 +190,7 @@ def _generate_field_statements(table: str, current_path: str, field: Any, docume
                 vals.append(f'"{s}"')
             else:
                 vals.append(str(v).lower() if isinstance(v, bool) else str(v))
-        exprs.append(f"$value INSIDE [{', '.join(vals)}]")
+        exprs.append(f"$value IN [{', '.join(vals)}]")
 
     if getattr(field, 'assertion', None):
         exprs.append(field.assertion)

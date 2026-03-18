@@ -457,9 +457,9 @@ class QuerySet(BaseQuerySet):
                             return False
                         if op == '<=' and not (lhs is not None and lhs <= value):
                             return False
-                        if op == 'INSIDE' and isinstance(value, (list, tuple, set)) and lhs not in value:
+                        if op == 'IN' and isinstance(value, (list, tuple, set)) and lhs not in value:
                             return False
-                        if op == 'NOT INSIDE' and isinstance(value, (list, tuple, set)) and lhs in value:
+                        if op == 'NOT IN' and isinstance(value, (list, tuple, set)) and lhs in value:
                             return False
                         if op == 'CONTAINS':
                             if isinstance(lhs, str) and isinstance(value, str):
@@ -1922,7 +1922,7 @@ class QuerySet(BaseQuerySet):
         for field, op, value in self.query_parts:
             if field != 'id' and field not in analyzed_fields:  # ID doesn't need indexing
                 analyzed_fields.add(field)
-                if op in ('=', '!=', '>', '<', '>=', '<=', 'INSIDE', 'NOT INSIDE'):
+                if op in ('=', '!=', '>', '<', '>=', '<=', 'IN', 'NOT IN'):
                     suggestions.append(
                         f"DEFINE INDEX idx_{collection_name}_{field} ON {collection_name} FIELDS {field}"
                     )

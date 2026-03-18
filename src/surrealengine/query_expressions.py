@@ -139,8 +139,8 @@ class Q:
                         'gte': '>=',
                         'lte': '<=',
                         'ne': '!=',
-                        'in': 'INSIDE',
-                        'nin': 'NOT INSIDE',
+                        'in': 'IN',
+                        'nin': 'NOT IN',
                         'contains': 'CONTAINS',
                         'startswith': 'STARTSWITH',
                         'endswith': 'ENDSWITH',
@@ -201,7 +201,7 @@ class Q:
                             condition_strs.append(f"string::ends_with({field}, {escape_literal(value)})")
                     elif op == 'REGEX':
                         condition_strs.append(f"string::matches({field}, {escape_literal(value)})")
-                    elif op in ('INSIDE', 'NOT INSIDE'):
+                    elif op in ('IN', 'NOT IN'):
                         value_str = escape_literal(value)
                         condition_strs.append(f"{field} {op} {value_str}")
                     else:
