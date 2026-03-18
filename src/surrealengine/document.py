@@ -315,28 +315,10 @@ class CallableRelationship:
         if target is None:
             return self._default_qs
             
-        # Refine target: ->edge->target_collection
-        collection = target
-        is_model = False
-        
-        # Check if target is a Document model
-        if hasattr(target, "_get_collection_name"):
-            collection = target._get_collection_name()
-            is_model = True
-            
-        # Manually construct the traversal path
-        # We start from the base queryset (which has no traversal yet)
-        clone = self._qs._clone()
-        base_path = getattr(clone, "_traversal_path", "") or ""
-        # Append explicit path: ->edge->collection
-        clone._traversal_path = f"{base_path}->{self._edge_name}->{collection}"
-        
-        # Configure hydration if target is a model
-        if is_model:
-            clone._traversal_target_is_model = True
-            clone.document_class = target
-            
-        return clone
+        # Refine target using standard QuerySet graph traversal logic
+        # This will automatically find the trailing `->?` and substitute
+        # the model's collection name, whilst applying our Base_table fix.
+        return self._default_qs.out(target)
 
     def __getattr__(self, name):
         return getattr(self._default_qs, name)

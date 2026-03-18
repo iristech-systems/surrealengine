@@ -1085,9 +1085,6 @@ class QuerySet(BaseQuerySet):
         # If this is a traversal query, return raw rows (shape may not match document schema)
         # If this is a traversal query, return raw rows unless we're targeting a model
         if getattr(self, "_traversal_path", None):
-            if not getattr(self, "_traversal_target_is_model", False):
-                return rows
-            
             # Extract and flatten traversal results
             traversed_rows = []
             for row in rows:
@@ -1098,6 +1095,9 @@ class QuerySet(BaseQuerySet):
                     elif val:
                          traversed_rows.append(val)
             rows = traversed_rows
+
+            if not getattr(self, "_traversal_target_is_model", False):
+                return rows
 
         is_partial = self.select_fields is not None
         processed_results = [self.document_class.from_db(doc, dereference=dereference, partial=is_partial) for doc in rows]
@@ -1142,9 +1142,6 @@ class QuerySet(BaseQuerySet):
         # If this is a traversal query, return raw rows (shape may not match document schema)
         # If this is a traversal query, return raw rows unless we're targeting a model
         if getattr(self, "_traversal_path", None):
-            if not getattr(self, "_traversal_target_is_model", False):
-                return rows
-            
             # Extract and flatten traversal results
             traversed_rows = []
             for row in rows:
@@ -1155,6 +1152,9 @@ class QuerySet(BaseQuerySet):
                     elif val:
                          traversed_rows.append(val)
             rows = traversed_rows
+
+            if not getattr(self, "_traversal_target_is_model", False):
+                return rows
 
         is_partial = self.select_fields is not None
         processed_results = [self.document_class.from_db(doc, dereference=dereference, partial=is_partial) for doc in rows]

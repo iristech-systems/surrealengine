@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.98] - 2026-03-18
+
+### Fixed
+- **Record Traversal Hydration**: Fixed `.traverse()` method not properly returning flat object lists when queried via `filter()`. It now safely flattens `traversed` lists even when models aren't passed as arguments.
+- **Rel Accessor Generates '?'**: Fixed a bug where `.rel.edge_name(TargetModel)` generated queries containing `?` placeholders (e.g. `->has_contact->?`) instead of resolving the actual document collection name. The internal `CallableRelationship` interceptor now correctly composes queries reusing `.out()`.
+
 ## [0.9.97] - 2026-03-18
 
 ### Fixed
