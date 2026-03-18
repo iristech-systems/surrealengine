@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.97] - 2026-03-18
+
+### Fixed
+- **Graph Traversal `FROM` Clause**: Fixed a bug where `.out()` or `.in_()` graph traversals would incorrectly overwrite the `FROM` table with the target model's table name, resulting in generated queries matching nothing. The query builder now correctly tracks the original `_base_table`.
+
 ## [0.9.96] - 2026-03-17
 
 ### Fixed

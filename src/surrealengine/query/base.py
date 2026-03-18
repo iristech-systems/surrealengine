@@ -148,16 +148,22 @@ class QuerySet(BaseQuerySet):
             # If so, replace the ? with the actual table name
             if current_path.endswith('->?'):
                 clone._traversal_path = current_path[:-1] + step
+                if getattr(clone, '_base_table', None) is None:
+                    clone._base_table = clone.document_class._get_collection_name()
                 clone.document_class = target
                 clone._traversal_target_is_model = True
                 return clone
             elif current_path.endswith('<-?'):
                 clone._traversal_path = current_path[:-1] + step
+                if getattr(clone, '_base_table', None) is None:
+                    clone._base_table = clone.document_class._get_collection_name()
                 clone.document_class = target
                 clone._traversal_target_is_model = True
                 return clone
             elif current_path.endswith('<->?'):
                 clone._traversal_path = current_path[:-1] + step
+                if getattr(clone, '_base_table', None) is None:
+                    clone._base_table = clone.document_class._get_collection_name()
                 clone.document_class = target
                 clone._traversal_target_is_model = True
                 return clone
@@ -170,6 +176,8 @@ class QuerySet(BaseQuerySet):
         
         # If target is a model class, update the document class for hydration
         if hasattr(target, '_get_collection_name'):
+             if getattr(clone, '_base_table', None) is None:
+                 clone._base_table = clone.document_class._get_collection_name()
              clone.document_class = target
              clone._traversal_target_is_model = True
 
@@ -812,7 +820,7 @@ class QuerySet(BaseQuerySet):
         # Fall back to regular query building
         # SurrealQL does not support SQL-style SELECT DISTINCT for full rows.
         # When traversal uniqueness is requested, we will deduplicate by grouping on id.
-        from_part = self.document_class._get_collection_name()
+        from_part = getattr(self, "_base_table", None) or self.document_class._get_collection_name()
 
         # If traversal is configured, render it in the SELECT projection, not in FROM
         traversal = getattr(self, "_traversal_path", None)
