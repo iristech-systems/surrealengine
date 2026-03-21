@@ -283,13 +283,13 @@ class SchemalessQuerySet(BaseQuerySet):
             batch = documents[i:i + batch_size]
 
             # Construct optimized bulk insert query
-            from .document import serialize_http_safe
-            batch = [serialize_http_safe(doc) for doc in batch]
-            query = f"INSERT INTO {self.table_name} {json.dumps(batch)};"
+            from .document import serialize_db_safe
+            batch = [serialize_db_safe(doc) for doc in batch]
+            query = f"INSERT INTO {self.table_name} $batch;"
 
             # Execute batch insert
             try:
-                result = await self.connection.client.query(query)
+                result = await self.connection.client.query(query, {"batch": batch})
 
                 if return_documents and result and result[0]:
                     # Process results if needed
@@ -340,13 +340,13 @@ class SchemalessQuerySet(BaseQuerySet):
             batch = documents[i:i + batch_size]
 
             # Construct optimized bulk insert query
-            from .document import serialize_http_safe
-            batch = [serialize_http_safe(doc) for doc in batch]
-            query = f"INSERT INTO {self.table_name} {json.dumps(batch)};"
+            from .document import serialize_db_safe
+            batch = [serialize_db_safe(doc) for doc in batch]
+            query = f"INSERT INTO {self.table_name} $batch;"
 
             # Execute batch insert
             try:
-                result = self.connection.client.query(query)
+                result = self.connection.client.query(query, {"batch": batch})
 
                 if return_documents and result and result[0]:
                     # Process results if needed

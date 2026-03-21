@@ -10,7 +10,7 @@ from .connection import (
     SurrealEngineSyncConnection,
     _current_transaction_connection,
 )
-from .document import serialize_http_safe
+from .surrealql import escape_literal
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class AsyncTransactionClientProxy:
             # Very basic variable substitution for buffered queries (complex bindings aren't trivial here yet)
             # In a full ORM, we'd rely on the already-constructed SQL strings from schemaless/query.
             for k, v in vars.items():
-                val_str = json.dumps(serialize_http_safe(v))
+                val_str = escape_literal(v)
                 sql = sql.replace(f"${k}", val_str)
                 
         # Ensure it ends with a semicolon for batching
@@ -78,7 +78,7 @@ class AsyncTransactionClientProxy:
         
     async def create(self, table: str, data: Any) -> Any:
         """Intercept record creation."""
-        data_str = json.dumps(serialize_http_safe(data))
+        data_str = escape_literal(data)
         query = f"CREATE {table} CONTENT {data_str};"
         self._buffer(query)
         # Return a mocked dictionary with the ID if possible, otherwise empty dict so it unwraps safely
@@ -87,21 +87,21 @@ class AsyncTransactionClientProxy:
         
     async def insert(self, table: str, data: Any) -> Any:
         """Intercept record insertions."""
-        data_str = json.dumps(serialize_http_safe(data))
+        data_str = escape_literal(data)
         query = f"INSERT INTO {table} {data_str};"
         self._buffer(query)
         return [{"result": [], "status": "OK", "time": "0ms"}]
 
     async def merge(self, table: str, data: Any) -> Any:
         """Intercept record merges (updates)."""
-        data_str = json.dumps(serialize_http_safe(data))
+        data_str = escape_literal(data)
         query = f"UPDATE {table} MERGE {data_str};"
         self._buffer(query)
         return [{"result": [], "status": "OK", "time": "0ms"}]
         
     async def update(self, table: str, data: Any) -> Any:
         """Intercept full record updates."""
-        data_str = json.dumps(serialize_http_safe(data))
+        data_str = escape_literal(data)
         query = f"UPDATE {table} CONTENT {data_str};"
         self._buffer(query)
         return [{"result": [], "status": "OK", "time": "0ms"}]
@@ -138,7 +138,7 @@ class TransactionSyncClientProxy:
              
         if vars:
             for k, v in vars.items():
-                val_str = json.dumps(serialize_http_safe(v))
+                val_str = escape_literal(v)
                 sql = sql.replace(f"${k}", val_str)
                 
         if not sql.strip().endswith(";"):
@@ -148,26 +148,26 @@ class TransactionSyncClientProxy:
         return [{"result": [], "status": "OK", "time": "0ms"}]
         
     def create(self, table: str, data: Any) -> Any:
-        data_str = json.dumps(serialize_http_safe(data))
+        data_str = escape_literal(data)
         query = f"CREATE {table} CONTENT {data_str};"
         self._buffer(query)
         mock_id = data.get('id') if isinstance(data, dict) else None
         return [{"result": [{"id": mock_id}] if mock_id else [{"id": f"{table}:pending"}], "status": "OK", "time": "0ms"}]
         
     def insert(self, table: str, data: Any) -> Any:
-        data_str = json.dumps(serialize_http_safe(data))
+        data_str = escape_literal(data)
         query = f"INSERT INTO {table} {data_str};"
         self._buffer(query)
         return [{"result": [], "status": "OK", "time": "0ms"}]
 
     def merge(self, table: str, data: Any) -> Any:
-        data_str = json.dumps(serialize_http_safe(data))
+        data_str = escape_literal(data)
         query = f"UPDATE {table} MERGE {data_str};"
         self._buffer(query)
         return [{"result": [], "status": "OK", "time": "0ms"}]
         
     def update(self, table: str, data: Any) -> Any:
-        data_str = json.dumps(serialize_http_safe(data))
+        data_str = escape_literal(data)
         query = f"UPDATE {table} CONTENT {data_str};"
         self._buffer(query)
         return [{"result": [], "status": "OK", "time": "0ms"}]

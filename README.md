@@ -17,6 +17,7 @@ without the operational complexity of managing multiple databases.
 
 [![Documentation](https://img.shields.io/badge/docs-visualized-blue.svg)](https://iristech-systems.github.io/SurrealEngine-Docs/)
 [![PyPI](https://img.shields.io/pypi/v/surrealengine.svg)](https://pypi.org/project/surrealengine/)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/release/python-3130/)
 [![License](https://img.shields.io/github/license/iristech-systems/surrealengine.svg)](https://github.com/iristech-systems/surrealengine/blob/main/LICENSE)
 [![SurrealDB](https://img.shields.io/badge/Powered%20by-SurrealDB-ff00a0)](https://surrealdb.com)
 

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.99] - 2026-03-21
+
+### Added
+- **Python 3.13 Support**: Added official support for Python 3.13.
+- **Rust Dependencies**: Upgraded `pyo3` to `0.23.0`, `arrow` to `54.0.0`, and `pyo3-arrow` to `0.17.0` for Python 3.13 ABI compatibility.
+
+### Fixed
+- **Serialization**: Fixed critical issues with `RecordID` and `datetime` serialization across synchronous operations (`bulk_create_sync`, `upsert_sync`), as well as Schemaless query sets and Transactions, by moving away from raw `json.dumps()` string formatting to native driver parameters (`$batch`) and `escape_literal()` utility.
+
 ## [0.9.98] - 2026-03-18
 
 ### Fixed

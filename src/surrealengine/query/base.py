@@ -1774,14 +1774,13 @@ class QuerySet(BaseQuerySet):
         # Remove ID from kwargs
         data = {k: v for k, v in kwargs.items() if k != 'id'}
         
-        from ..document import serialize_http_safe
-        data = serialize_http_safe(data)
+        from ..document import serialize_db_safe
+        data = serialize_db_safe(data)
 
         # Use UPSERT syntax in a query directly since sync SDK doesn't expose upsert reliably
-        import json
-        query = f"UPSERT {record_id_str} CONTENT {json.dumps(data)}"
+        query = f"UPSERT {record_id_str} CONTENT $data"
         
-        result = self.connection.client.query(query)
+        result = self.connection.client.query(query, {"data": data})
 
         if not result or not result[0]:
             from .exceptions import DoesNotExist
@@ -1828,15 +1827,15 @@ class QuerySet(BaseQuerySet):
 
             # Convert batch to DB representation
             data = [doc.to_db() for doc in batch]
-            from ..document import serialize_http_safe
-            data = [serialize_http_safe(d) for d in data]
+            from ..document import serialize_db_safe
+            data = [serialize_db_safe(d) for d in data]
 
             # Construct optimized bulk insert query
-            query = f"INSERT INTO {collection} {json.dumps(data)};"
+            query = f"INSERT INTO {collection} $batch;"
 
             # Execute batch insert
             try:
-                result = self.connection.client.query(query)
+                result = self.connection.client.query(query, {"batch": data})
 
                 if return_documents and result and result[0]:
                     # Process results if needed

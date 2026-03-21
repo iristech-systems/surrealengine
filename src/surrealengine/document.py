@@ -105,8 +105,46 @@ def serialize_http_safe(value: Any):
     if isinstance(value, dict):
         return {k: serialize_http_safe(v) for k, v in value.items()}
 
+    # Stringify RecordID for HTTP
+    try:
+        from surrealdb import RecordID
+        if isinstance(value, RecordID):
+            return str(value)
+    except ImportError:
+        pass
+
     # Pass through everything else unchanged
     return value
+
+
+def serialize_db_safe(value: Any) -> Any:
+    """Recursively convert objects to representations safe for the SurrealDB driver (preserving RecordID/datetime)."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    try:
+        from surrealdb import Datetime, RecordID
+        if isinstance(value, (Datetime, RecordID)):
+            return value
+    except ImportError:
+        pass
+    if IsoDateTimeWrapper and isinstance(value, IsoDateTimeWrapper):
+        dt_val = getattr(value, 'dt', None)
+        if isinstance(dt_val, datetime.datetime):
+            return dt_val
+        iso_val = getattr(value, 'iso', None)
+        if isinstance(iso_val, str):
+            try:
+                return datetime.datetime.fromisoformat(iso_val.replace('Z', '+00:00'))
+            except Exception:
+                pass
+    if isinstance(value, datetime.datetime):
+        return value
+    if isinstance(value, list):
+        return [serialize_db_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: serialize_db_safe(v) for k, v in value.items()}
+    return value
+
 
 
 def _serialize_for_surreal(value: Any) -> str:
