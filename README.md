@@ -1,6 +1,8 @@
 # SurrealEngine
 **Replace Your Multi-Database Stack with One Pythonic ORM**
 
+> **Now generally available as v1.0.0**
+
 Documents, graphs, vectors, real-time, and analytics—without the operational nightmare.
 Powered by SurrealDB. Built for Python developers.
 
@@ -33,11 +35,71 @@ Why choose SurrealEngine? Because you can do **this** in a single query:
 # Try doing THIS with PostgreSQL + Neo4j + Pinecone.
 
 similar_users = await User.objects \
-    .filter(embedding__knn=(user_vector, 10)) \
+    .semantic_search(field="embedding", vector=user_vector, k=10) \
     .out("friends") \
     .out(Person) \
     .all()
 # Result: Top 10 similar users' friends (Deep traversal)
+```
+
+---
+
+## Vector Query Migration
+
+Preferred style (new):
+
+```python
+results = await Article.objects \
+    .semantic_search(field="embedding", vector=query_embedding, k=10) \
+    .filter(published=True) \
+    .all()
+```
+
+Legacy-compatible style (still supported):
+
+```python
+results = await Article.objects \
+    .filter(embedding__knn=(query_embedding, 10)) \
+    .filter(published=True) \
+    .all()
+```
+
+Use `metric="COSINE"` (or other supported metrics) when your model index metadata does not uniquely define a `dist` value.
+
+---
+
+## Upgrade to 1.0
+
+- Preferred vector query API is now `semantic_search(...)` for readability and fluent chaining.
+- Existing `embedding__knn=(vector, k)` remains supported for backward compatibility.
+- If metric inference is ambiguous or missing from `Meta.indexes`, pass `metric="COSINE"` (or another supported metric) explicitly.
+
+```python
+# Preferred in v1.0
+results = await Article.objects.semantic_search(
+    field="embedding",
+    vector=query_embedding,
+    k=10,
+    metric="COSINE",
+).filter(published=True).all()
+```
+
+Release-note migration example (raw SurrealQL -> SurrealEngine fluent API):
+
+```python
+# Before (raw SurrealQL)
+rows = await conn.client.query(
+    "SELECT id, title, content FROM articles WHERE embedding <|8,COSINE|> $vec",
+    {"vec": query_embedding},
+)
+
+# After (v1.0 preferred)
+rows = await Article.objects.semantic_search(
+    field="embedding",
+    vector=query_embedding,
+    k=8,
+    metric="COSINE",
+).all()
 ```
 
 ---
@@ -214,7 +276,7 @@ stats = await Transaction.objects.aggregate() \
 friend_ids = [u.id for u in await user.rel.friends(User)]
 
 recommendations = await Product.objects \
-    .filter(embedding__knn=(user_preference_vector, 20)) \
+    .semantic_search(field="embedding", vector=user_preference_vector, k=20) \
     .in_("purchased") \
     .filter(id__inside=friend_ids) \
     .all()
@@ -234,13 +296,18 @@ stats = await Order.objects.aggregate() \
 ```python
 # Semantic search + full-text filters
 # using HNSW vector index and BM25 full-text search
-from surrealengine import Q
 
 results = await Article.objects \
-    .filter(embedding__knn=(query_embedding, 10)) \
-    .filter(Q.raw("content @1@ 'machine learning'")) \
+    .semantic_search(field="embedding", vector=query_embedding, k=10) \
+    .filter(content__search="machine learning") \
     .filter(published=True) \
     .all()
+```
+
+```python
+# FTS ergonomic aliases (both compile to @@)
+docs = await Article.objects.filter(title__search="surrealdb").all()
+docs = await Article.objects.filter(title__match="surrealdb").all()
 ```
 
 👉 **[See 20+ more examples in the docs](https://iristech-systems.github.io/SurrealEngine-Docs/)**
@@ -296,7 +363,7 @@ SurrealEngine is designed to be a robust, high-level abstraction. However, be aw
     When using `create_connection(..., auto_connect=True)`, the connection is established immediately. For **async** connections, ensure this is called within a running event loop.
 
 5.  **Transactions**:
-    SurrealDB supports transactions (`BEGIN`, `COMMIT`, `CANCEL`). **SurrealEngine** provides a helper `await connection.transaction([coro1, coro2])` that ensures atomicity via connection pinning when using pools. A high-level `async with` context manager is planned for v0.8.0.
+    SurrealDB supports transactions (`BEGIN`, `COMMIT`, `CANCEL`). **SurrealEngine** provides a helper `await connection.transaction([coro1, coro2])` that ensures atomicity via connection pinning when using pools.
 
 ---
 

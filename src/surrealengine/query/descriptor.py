@@ -24,7 +24,7 @@ class QuerySetDescriptor:
         self.owner: Optional[Type] = None
         self.connection: Optional[Any] = None
 
-    def using(self, connection: Any) -> 'QuerySet':
+    def using(self, connection: Any) -> "QuerySet":
         """Create a QuerySet using the specified connection.
 
         This allows switching connections (e.g. to a RawSurrealConnection)
@@ -38,7 +38,7 @@ class QuerySetDescriptor:
         """
         return QuerySet(self.owner, connection)
 
-    def __get__(self, obj: Any, owner: Type) -> 'QuerySetDescriptor':
+    def __get__(self, obj: Any, owner: Type) -> "QuerySetDescriptor":
         """Get the descriptor for the given owner.
 
         This method is called when the descriptor is accessed through
@@ -56,8 +56,14 @@ class QuerySetDescriptor:
         self.connection = None
         return self
 
-    def __call__(self, query=None, limit: Optional[int] = None, start: Optional[int] = None,
-                       page: Optional[tuple] = None, **kwargs: Any) -> Union[List[Any], Any]:
+    def __call__(
+        self,
+        query=None,
+        limit: Optional[int] = None,
+        start: Optional[int] = None,
+        page: Optional[tuple] = None,
+        **kwargs: Any,
+    ) -> Union[List[Any], Any]:
         """Allow direct filtering through call syntax.
 
         Polyglot method: executes synchronously if the active connection is synchronous,
@@ -79,11 +85,11 @@ class QuerySetDescriptor:
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        
+
         # Apply query object if provided
         if query is not None:
             queryset = queryset.filter(query)
-        
+
         # Apply filters and pagination
         if kwargs:
             queryset = queryset.filter(**kwargs)
@@ -102,8 +108,14 @@ class QuerySetDescriptor:
             return queryset.all_sync()
         return queryset.all()
 
-    def call_sync(self, query=None, limit: Optional[int] = None, start: Optional[int] = None,
-                  page: Optional[tuple] = None, **kwargs: Any) -> List[Any]:
+    def call_sync(
+        self,
+        query=None,
+        limit: Optional[int] = None,
+        start: Optional[int] = None,
+        page: Optional[tuple] = None,
+        **kwargs: Any,
+    ) -> List[Any]:
         """Allow direct filtering through call syntax synchronously.
 
         This method allows calling the descriptor directly with filters or query objects
@@ -125,11 +137,11 @@ class QuerySetDescriptor:
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        
+
         # Apply query object if provided
         if query is not None:
             queryset = queryset.filter(query)
-        
+
         # Apply filters and pagination
         if kwargs:
             queryset = queryset.filter(**kwargs)
@@ -167,7 +179,7 @@ class QuerySetDescriptor:
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        
+
         if not connection.is_async():
             return queryset.get_sync(**kwargs)
         return queryset.get(**kwargs)
@@ -194,8 +206,9 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.get_sync(**kwargs)
 
-
-    def update(self, returning: Optional[str] = None, **kwargs: Any) -> Union[List[Any], Any]:
+    def update(
+        self, returning: Optional[str] = None, **kwargs: Any
+    ) -> Union[List[Any], Any]:
         """Update all documents in the collection.
 
         Polyglot method: executes synchronously if the active connection is synchronous,
@@ -216,7 +229,7 @@ class QuerySetDescriptor:
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        
+
         if not connection.is_async():
             return queryset.update_sync(returning=returning, **kwargs)
         return queryset.update(returning=returning, **kwargs)
@@ -259,7 +272,7 @@ class QuerySetDescriptor:
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        
+
         if not connection.is_async():
             return queryset.delete_sync()
         return queryset.delete()
@@ -317,6 +330,70 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.filter(query=query, **kwargs)
 
+    def omit(self, *fields: str) -> QuerySet:
+        """Exclude fields from query results."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.omit(*fields)
+
+    def omit_sync(self, *fields: str) -> QuerySet:
+        """Exclude fields from query results using sync connection."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.omit(*fields)
+
+    def timeout(self, duration: str) -> QuerySet:
+        """Set query timeout duration."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.timeout(duration)
+
+    def timeout_sync(self, duration: str) -> QuerySet:
+        """Set query timeout duration using sync connection."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.timeout(duration)
+
+    def tempfiles(self, value: bool = True) -> QuerySet:
+        """Enable or disable temporary files for query execution."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.tempfiles(value)
+
+    def tempfiles_sync(self, value: bool = True) -> QuerySet:
+        """Enable or disable tempfiles using sync connection."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.tempfiles(value)
+
+    def with_explain(self, full: bool = False) -> QuerySet:
+        """Attach EXPLAIN clause to the query."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.with_explain(full=full)
+
+    def with_explain_sync(self, full: bool = False) -> QuerySet:
+        """Attach EXPLAIN clause using sync connection."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.with_explain(full=full)
+
     def limit(self, value: int) -> QuerySet:
         """Set the maximum number of results to return.
 
@@ -349,7 +426,9 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.limit(value)
 
-    def traverse(self, path: str, max_depth: Optional[int] = None, unique: bool = True) -> QuerySet:
+    def traverse(
+        self, path: str, max_depth: Optional[int] = None, unique: bool = True
+    ) -> QuerySet:
         """Configure a graph traversal for this query using the default async connection.
 
         Args:
@@ -367,7 +446,9 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.traverse(path, max_depth, unique)
 
-    def traverse_sync(self, path: str, max_depth: Optional[int] = None, unique: bool = True) -> QuerySet:
+    def traverse_sync(
+        self, path: str, max_depth: Optional[int] = None, unique: bool = True
+    ) -> QuerySet:
         """Configure a graph traversal for this query using the default sync connection.
 
         Args:
@@ -387,10 +468,10 @@ class QuerySetDescriptor:
 
     def out(self, target: Union[str, Type, None] = None) -> QuerySet:
         """Traverse outgoing edges or nodes using the default connection.
-        
+
         Args:
             target: The relation or document class to traverse to, or a string table name.
-        
+
         Returns:
             A QuerySet with the traversal appended.
         """
@@ -402,10 +483,10 @@ class QuerySetDescriptor:
 
     def out_sync(self, target: Union[str, Type, None] = None) -> QuerySet:
         """Traverse outgoing edges or nodes using the default sync connection.
-        
+
         Args:
             target: The relation or document class to traverse to, or a string table name.
-        
+
         Returns:
             A QuerySet with the traversal appended.
         """
@@ -417,10 +498,10 @@ class QuerySetDescriptor:
 
     def in_(self, target: Union[str, Type, None] = None) -> QuerySet:
         """Traverse incoming edges or nodes using the default connection.
-        
+
         Args:
             target: The relation or document class to traverse from, or a string table name.
-        
+
         Returns:
             A QuerySet with the traversal appended.
         """
@@ -432,10 +513,10 @@ class QuerySetDescriptor:
 
     def in_sync(self, target: Union[str, Type, None] = None) -> QuerySet:
         """Traverse incoming edges or nodes using the default sync connection.
-        
+
         Args:
             target: The relation or document class to traverse from, or a string table name.
-        
+
         Returns:
             A QuerySet with the traversal appended.
         """
@@ -447,10 +528,10 @@ class QuerySetDescriptor:
 
     def both(self, target: Union[str, Type, None] = None) -> QuerySet:
         """Traverse both incoming and outgoing edges or nodes using the default connection.
-        
+
         Args:
             target: The relation or document class to traverse, or a string table name.
-        
+
         Returns:
             A QuerySet with the traversal appended.
         """
@@ -462,10 +543,10 @@ class QuerySetDescriptor:
 
     def both_sync(self, target: Union[str, Type, None] = None) -> QuerySet:
         """Traverse both incoming and outgoing edges or nodes using the default sync connection.
-        
+
         Args:
             target: The relation or document class to traverse, or a string table name.
-        
+
         Returns:
             A QuerySet with the traversal appended.
         """
@@ -475,7 +556,9 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.both(target)
 
-    def shortest_path(self, src: Union[str, Any], dst: Union[str, Any], edge: str) -> QuerySet:
+    def shortest_path(
+        self, src: Union[str, Any], dst: Union[str, Any], edge: str
+    ) -> QuerySet:
         """Helper for shortest path queries using the default async connection.
 
         Args:
@@ -493,7 +576,9 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.shortest_path(src, dst, edge)
 
-    def shortest_path_sync(self, src: Union[str, Any], dst: Union[str, Any], edge: str) -> QuerySet:
+    def shortest_path_sync(
+        self, src: Union[str, Any], dst: Union[str, Any], edge: str
+    ) -> QuerySet:
         """Helper for shortest path queries using the default sync connection.
 
         Args:
@@ -526,6 +611,30 @@ class QuerySetDescriptor:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.search(text, *fields)
+
+    def semantic_search(
+        self,
+        field: Union[str, Any],
+        vector: Any,
+        k: int = 10,
+        metric: Optional[str] = None,
+    ) -> QuerySet:
+        """Perform semantic vector search using SurrealQL KNN operator syntax.
+
+        Args:
+            field: Vector field name (or Field instance)
+            vector: Query embedding/vector
+            k: Number of nearest neighbors
+            metric: Optional explicit distance metric
+
+        Returns:
+            A QuerySet with semantic KNN condition.
+        """
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.semantic_search(field=field, vector=vector, k=k, metric=metric)
 
     def upsert(self, **kwargs) -> Any:
         """Upsert a document: update if exists, otherwise create.
@@ -673,7 +782,6 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return await queryset.reactive()
 
-
     def start(self, value: int) -> QuerySet:
         """Set the number of results to skip (for pagination).
 
@@ -706,7 +814,7 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.start(value)
 
-    def order_by(self, field: str, direction: str = 'ASC') -> QuerySet:
+    def order_by(self, field: str, direction: str = "ASC") -> QuerySet:
         """Set the field and direction to order results by.
 
         Args:
@@ -723,7 +831,7 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.order_by(field, direction)
 
-    def order_by_sync(self, field: str, direction: str = 'ASC') -> QuerySet:
+    def order_by_sync(self, field: str, direction: str = "ASC") -> QuerySet:
         """Set the field and direction to order results by using the default sync connection.
 
         Args:
@@ -868,6 +976,14 @@ class QuerySetDescriptor:
             return queryset.to_arrow_sync()
         return queryset.to_arrow()
 
+    def to_arrow_sync(self) -> Any:
+        """Execute query and return results as a PyArrow Table synchronously."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.to_arrow_sync()
+
     def to_polars(self) -> Any:
         """
         Execute the query and return the results as a Polars DataFrame.
@@ -888,6 +1004,13 @@ class QuerySetDescriptor:
             return queryset.to_polars_sync()
         return queryset.to_polars()
 
+    def to_polars_sync(self) -> Any:
+        """Execute query and return results as a Polars DataFrame synchronously."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.to_polars_sync()
 
     def first(self) -> Any:
         """Get the first result from the query.
@@ -906,7 +1029,7 @@ class QuerySetDescriptor:
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        
+
         if not connection.is_async():
             return queryset.first_sync()
         return queryset.first()
@@ -961,7 +1084,7 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.page(number, size)
 
-    def paginate(self, page: int, per_page: int) -> Union['PaginationResult', Any]:
+    def paginate(self, page: int, per_page: int) -> Union["PaginationResult", Any]:
         """Get a page of results with pagination metadata.
 
         Polyglot method: executes synchronously if the active connection is synchronous,
@@ -985,7 +1108,7 @@ class QuerySetDescriptor:
             return queryset.paginate_sync(page, per_page)
         return queryset.paginate(page, per_page)
 
-    def paginate_sync(self, page: int, per_page: int) -> 'PaginationResult':
+    def paginate_sync(self, page: int, per_page: int) -> "PaginationResult":
         """Get a page of results with pagination metadata synchronously.
 
         This method gets a page of results along with metadata about the
@@ -1041,7 +1164,13 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.aggregate()
 
-    def join(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> Union[List[Any], Any]:
+    def join(
+        self,
+        field_name: str,
+        target_fields: Optional[List[str]] = None,
+        dereference: bool = True,
+        dereference_depth: int = 1,
+    ) -> Union[List[Any], Any]:
         """Perform a JOIN-like operation on a reference field.
 
         Polyglot method: executes synchronously if the active connection is synchronous,
@@ -1066,10 +1195,26 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
 
         if not connection.is_async():
-            return queryset.join_sync(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
-        return queryset.join(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
+            return queryset.join_sync(
+                field_name,
+                target_fields,
+                dereference=dereference,
+                dereference_depth=dereference_depth,
+            )
+        return queryset.join(
+            field_name,
+            target_fields,
+            dereference=dereference,
+            dereference_depth=dereference_depth,
+        )
 
-    def join_sync(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
+    def join_sync(
+        self,
+        field_name: str,
+        target_fields: Optional[List[str]] = None,
+        dereference: bool = True,
+        dereference_depth: int = 1,
+    ) -> List[Any]:
         """Perform a JOIN-like operation on a reference field synchronously.
 
         This method performs a JOIN-like operation on a reference field by using
@@ -1093,17 +1238,22 @@ class QuerySetDescriptor:
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        return queryset.join_sync(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
+        return queryset.join_sync(
+            field_name,
+            target_fields,
+            dereference=dereference,
+            dereference_depth=dereference_depth,
+        )
 
     def get_many(self, ids: List[Union[str, Any]]) -> QuerySet:
         """Get multiple records by IDs using optimized direct record access.
-        
+
         This method uses SurrealDB's direct record selection syntax for better
         performance compared to WHERE clause filtering.
-        
+
         Args:
             ids: List of record IDs (can be strings or other ID types)
-            
+
         Returns:
             The query set instance configured for direct record access
         """
@@ -1116,10 +1266,10 @@ class QuerySetDescriptor:
 
     def get_many_sync(self, ids: List[Union[str, Any]]) -> QuerySet:
         """Get multiple records by IDs using optimized direct record access synchronously.
-        
+
         Args:
             ids: List of record IDs (can be strings or other ID types)
-            
+
         Returns:
             The query set instance configured for direct record access
         """
@@ -1130,18 +1280,19 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.get_many(ids)
 
-    def get_range(self, start_id: Union[str, Any], end_id: Union[str, Any], 
-                  inclusive: bool = True) -> QuerySet:
+    def get_range(
+        self, start_id: Union[str, Any], end_id: Union[str, Any], inclusive: bool = True
+    ) -> QuerySet:
         """Get a range of records by ID using optimized range syntax.
-        
+
         This method uses SurrealDB's range selection syntax for better
         performance compared to WHERE clause filtering.
-        
+
         Args:
             start_id: Starting ID of the range
-            end_id: Ending ID of the range  
+            end_id: Ending ID of the range
             inclusive: Whether the range is inclusive (default: True)
-            
+
         Returns:
             The query set instance configured for range access
         """
@@ -1152,15 +1303,16 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.get_range(start_id, end_id, inclusive)
 
-    def get_range_sync(self, start_id: Union[str, Any], end_id: Union[str, Any], 
-                       inclusive: bool = True) -> QuerySet:
+    def get_range_sync(
+        self, start_id: Union[str, Any], end_id: Union[str, Any], inclusive: bool = True
+    ) -> QuerySet:
         """Get a range of records by ID using optimized range syntax synchronously.
-        
+
         Args:
             start_id: Starting ID of the range
-            end_id: Ending ID of the range  
+            end_id: Ending ID of the range
             inclusive: Whether the range is inclusive (default: True)
-            
+
         Returns:
             The query set instance configured for range access
         """
@@ -1171,8 +1323,13 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.get_range(start_id, end_id, inclusive)
 
-    def bulk_create(self, documents: List[Any], batch_size: int = 1000,
-                         validate: bool = True, return_documents: bool = True) -> Union[List[Any], int, Any]:
+    def bulk_create(
+        self,
+        documents: List[Any],
+        batch_size: int = 1000,
+        validate: bool = True,
+        return_documents: bool = True,
+    ) -> Union[List[Any], int, Any]:
         """Create multiple documents in a single operation.
 
         Polyglot method: executes synchronously if the active connection is synchronous,
@@ -1192,13 +1349,20 @@ class QuerySetDescriptor:
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        
+
         if not connection.is_async():
-            return queryset.bulk_create_sync(documents, batch_size, validate, return_documents)
+            return queryset.bulk_create_sync(
+                documents, batch_size, validate, return_documents
+            )
         return queryset.bulk_create(documents, batch_size, validate, return_documents)
 
-    def bulk_create_sync(self, documents: List[Any], batch_size: int = 1000,
-                        validate: bool = True, return_documents: bool = True) -> Union[List[Any], int]:
+    def bulk_create_sync(
+        self,
+        documents: List[Any],
+        batch_size: int = 1000,
+        validate: bool = True,
+        return_documents: bool = True,
+    ) -> Union[List[Any], int]:
         """Create multiple documents in a single operation synchronously.
 
         Args:
@@ -1216,11 +1380,13 @@ class QuerySetDescriptor:
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        return queryset.bulk_create_sync(documents, batch_size, validate, return_documents)
+        return queryset.bulk_create_sync(
+            documents, batch_size, validate, return_documents
+        )
 
     def all(self) -> Union[List[Any], Any]:
         """Execute the query and return all results.
-        
+
         Polyglot method: executes synchronously if the active connection is synchronous,
         otherwise returns an awaitable.
 
@@ -1232,14 +1398,14 @@ class QuerySetDescriptor:
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        
+
         if not connection.is_async():
             return queryset.all_sync()
         return queryset.all()
 
     def all_sync(self) -> List[Any]:
         """Execute the query and return all results synchronously.
-        
+
         Returns:
             List of all documents matching any implicit query
         """
@@ -1255,7 +1421,7 @@ class QuerySetDescriptor:
 
         Polyglot method: executes synchronously if the active connection is synchronous,
         otherwise returns an awaitable.
-        
+
         Returns:
             Number of documents (or awaitable)
         """
@@ -1264,14 +1430,14 @@ class QuerySetDescriptor:
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
-        
+
         if not connection.is_async():
             return queryset.count_sync()
         return queryset.count()
 
     def count_sync(self) -> int:
         """Count all documents synchronously.
-        
+
         Returns:
             Number of documents
         """
@@ -1281,3 +1447,47 @@ class QuerySetDescriptor:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.count_sync()
+
+    def create(self, **kwargs: Any) -> Union[Any, Any]:
+        """Create a new document (polyglot sync/async)."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        if not connection.is_async():
+            return queryset.create_sync(**kwargs)
+        return queryset.create(**kwargs)
+
+    def create_sync(self, **kwargs: Any) -> Any:
+        """Create a new document synchronously."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.create_sync(**kwargs)
+
+    def explain(self, full: bool = False) -> Union[List[dict], Any]:
+        """Explain query execution plan (polyglot sync/async)."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        if not connection.is_async():
+            return queryset.explain_sync(full=full)
+        return queryset.explain(full=full)
+
+    def explain_sync(self, full: bool = False) -> List[dict]:
+        """Explain query execution plan synchronously."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.explain_sync(full=full)
+
+    def suggest_indexes(self) -> List[str]:
+        """Suggest indexes for current query shape."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.suggest_indexes()

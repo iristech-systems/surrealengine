@@ -5,7 +5,39 @@ All notable changes to the SurrealEngine project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2026-03-29
+
+### Breaking Changes
+- None.
+
+### Behavior Changes
+- **Early Validation for Vector Queries**: Vector query paths now validate dimension and metric metadata more strictly. Some invalid queries that previously reached the database may now fail earlier with actionable `ValueError` messages.
+- **Preferred Vector Query Path**: `semantic_search(...)` is now the recommended API for vector retrieval in docs and examples.
+
+### Added
+- **Ergonomic Vector Query API**: Added `QuerySet.semantic_search(field=..., vector=..., k=..., metric=...)` and manager passthrough on `Document.objects`, enabling fluent semantic retrieval without writing raw SurrealQL.
+- **KNN Filter Operator Support**: Added `__knn` query operator support (`embedding__knn=(vector, k)` and `embedding__knn=(vector, k, metric)`) in `BaseQuerySet.filter()`.
+- **FTS Filter Aliases**: Added ergonomic `__search` / `__match` filter operators that compile directly to SurrealQL `@@` full-text syntax.
+- **Vector Query Validation**: Added vector dimension validation against `VectorField(dimension=...)` and metric normalization/validation for documented SurrealQL distance metrics.
+- **Metric Inference from Schema Metadata**: Added metric inference from `Meta.indexes` vector index metadata (`dist`) with explicit errors for missing or ambiguous metric definitions.
+- **Vector Query Test Coverage**: Added unit and integration tests for semantic search query generation and runtime execution on `memory://`.
+
+### Changed
+- **README Examples**: Updated vector-search examples to prefer `semantic_search(...)` while keeping `__knn` syntax documented as legacy-compatible.
+- **SurrealQL Alignment**: Vector query generation now follows documented SurrealQL KNN operator syntax: `field <|K,DISTANCE_METRIC|> [vector]`.
+- **QuerySet Manager Parity**: Expanded `Document.objects` passthrough coverage for missing `QuerySet` methods (`create`, `explain`, sync Arrow/Polars helpers, and query-builder chain helpers like `omit`, `timeout`, `tempfiles`, `with_explain`).
+
+### Fixed
+- **WebSocket Import Compatibility**: `RawSurrealConnection` now prefers non-deprecated websockets client import paths for newer websockets versions, while keeping fallback compatibility for older releases.
+
+### Deprecation Policy
+- `__knn` filter syntax remains supported throughout the 1.x line.
+- `semantic_search(...)` is the preferred long-term ergonomic API and will continue to receive new vector-query enhancements first.
+
+## [0.9.991] - 2026-03-23
+
+### Fixed
+- **RecordID Serialization**: Fixed a bug in `bulk_relate` and `bulk_relate_sync` where `RecordID` objects in relation edges or extra fields were incorrectly serialized as quoted strings. They are now correctly resolved and serialized as unquoted record references (e.g., `table:id`), ensuring compatibility with different SDK versions and SurrealDB record types.
 
 ## [0.9.99] - 2026-03-21
 

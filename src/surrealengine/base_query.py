@@ -5,12 +5,24 @@ from .pagination import PaginationResult
 from .record_id_utils import RecordIdUtils
 from .surrealql import escape_literal
 
-T = TypeVar('T', bound='BaseQuerySet')
+T = TypeVar("T", bound="BaseQuerySet")
+
+_ALLOWED_VECTOR_METRICS = {
+    "COSINE",
+    "EUCLIDEAN",
+    "MANHATTAN",
+    "MINKOWSKI",
+    "HAMMING",
+    "CHEBYSHEV",
+}
+
 
 # Import these at runtime to avoid circular imports
 def _get_connection_classes():
     from .connection import SurrealEngineAsyncConnection, SurrealEngineSyncConnection
+
     return SurrealEngineAsyncConnection, SurrealEngineSyncConnection
+
 
 class BaseQuerySet:
     """Base query builder for SurrealDB.
@@ -68,22 +80,24 @@ class BaseQuerySet:
         Returns:
             True if the connection is asynchronous, False otherwise
         """
-        SurrealEngineAsyncConnection, SurrealEngineSyncConnection = _get_connection_classes()
+        SurrealEngineAsyncConnection, SurrealEngineSyncConnection = (
+            _get_connection_classes()
+        )
         return isinstance(self.connection, SurrealEngineAsyncConnection)
 
     def filter(self: T, query=None, **kwargs) -> T:
         """Add filter conditions to the query with automatic ID optimization.
-        
+
         # ... (implementation same)
         """
         # Clone first to avoid mutating the original queryset
         result = self if (query is None and not kwargs) else self._clone()
         if query:
             # Handle QueryExpression
-            if hasattr(query, 'apply_to_queryset'):
+            if hasattr(query, "apply_to_queryset"):
                 result = query.apply_to_queryset(result)
             # Handle Q object
-            elif hasattr(query, 'to_conditions'):
+            elif hasattr(query, "to_conditions"):
                 conditions = query.to_conditions()
                 if conditions:
                     result.query_parts.extend(conditions)
@@ -91,65 +105,72 @@ class BaseQuerySet:
                     # Fallback to raw WHERE clause for complex queries
                     where_clause = query.to_where_clause()
                     if where_clause:
-                        result.query_parts.append(('__raw__', '=', where_clause))
-        
+                        result.query_parts.append(("__raw__", "=", where_clause))
+
         # Handle kwargs
         for key, value in kwargs.items():
             # Check for subqueries (if value is a QuerySet)
-            if hasattr(value, '_build_query'):
+            if hasattr(value, "_build_query"):
                 # Compile the QuerySet into a subquery string
                 compiled_subquery = value._build_query()
                 # Wrap the subquery in parentheses for SurrealQL
                 subquery_str = f"({compiled_subquery})"
-                
-                if '__' in key:
-                    parts = key.split('__')
+
+                if "__" in key:
+                    parts = key.split("__")
                     field_name = parts[0]
                     operator = parts[1]
-                    
+
                     op_map = {
-                        'in': 'IN',
-                        'nin': 'NOT IN',
-                        'eq': '=',
-                        'ne': '!=',
+                        "in": "IN",
+                        "nin": "NOT IN",
+                        "eq": "=",
+                        "ne": "!=",
                     }
-                    op = op_map.get(operator, '=')
-                    
+                    op = op_map.get(operator, "=")
+
                     # Store as a raw condition to avoid parameterization on the subquery itself
-                    result.query_parts.append(('__raw__', '=', f"{field_name} {op} {subquery_str}"))
+                    result.query_parts.append(
+                        ("__raw__", "=", f"{field_name} {op} {subquery_str}")
+                    )
                 else:
                     # Default to exactly equal to the subquery result
-                    result.query_parts.append(('__raw__', '=', f"{key} = {subquery_str}"))
+                    result.query_parts.append(
+                        ("__raw__", "=", f"{key} = {subquery_str}")
+                    )
             else:
-                if '__' in key:
-                    parts = key.split('__')
+                if "__" in key:
+                    parts = key.split("__")
                     field_name = parts[0]
                     operator = parts[1]
-                    
+
                     # Map operators
                     op_map = {
-                        'gt': '>',
-                        'lt': '<', 
-                        'gte': '>=',
-                        'lte': '<=',
-                        'ne': '!=',
-                        'in': 'IN',
-                        'nin': 'NOT IN',
-                        'contains': 'CONTAINS',
-                        'startswith': 'STARTSWITH',
-                        'endswith': 'ENDSWITH',
-                        'regex': 'REGEX'
+                        "gt": ">",
+                        "lt": "<",
+                        "gte": ">=",
+                        "lte": "<=",
+                        "ne": "!=",
+                        "in": "IN",
+                        "nin": "NOT IN",
+                        "contains": "CONTAINS",
+                        "startswith": "STARTSWITH",
+                        "endswith": "ENDSWITH",
+                        "regex": "REGEX",
+                        "search": "SEARCH",
+                        "match": "SEARCH",
+                        "knn": "KNN",
                     }
-                    op = op_map.get(operator, '=')
+                    op = op_map.get(operator, "=")
                     result.query_parts.append((field_name, op, value))
                 else:
-                    result.query_parts.append((key, '=', value))
-        
+                    result.query_parts.append((key, "=", value))
+
         return result
 
     def search(self: T, text: str, *fields: Union[str, Any]) -> T:
         """Perform a full-text search using the @@ operator.
-        
+
         Args:
             text: The text to search for
             *fields: Optional. Specific fields to search in. Can be field names or Field instances.
@@ -157,24 +178,197 @@ class BaseQuerySet:
             A cloned QuerySet with the search condition
         """
         clone = self._clone()
-        
+
         if fields:
             # Extract names if they are Field instances
-            field_names = [f.name if hasattr(f, 'name') else str(f) for f in fields]
-            
+            field_names = [f.name if hasattr(f, "name") else str(f) for f in fields]
+
             # If multiple fields, we use an OR group, typically mapping to index fields
             if len(field_names) == 1:
-                clone.query_parts.append(('__raw__', '=', f"{field_names[0]} @@ {escape_literal(text)}"))
+                clone.query_parts.append(
+                    ("__raw__", "=", f"{field_names[0]} @@ {escape_literal(text)}")
+                )
             else:
                 parts = [f"{f} @@ {escape_literal(text)}" for f in field_names]
                 group = " OR ".join(parts)
-                clone.query_parts.append(('__raw__', '=', f"({group})"))
+                clone.query_parts.append(("__raw__", "=", f"({group})"))
         else:
-             # Basic fallback to search against a generic text field or similar
-             # Often useful when `with_index` is used
-            clone.query_parts.append(('__raw__', '=', f"text @@ {escape_literal(text)}"))
-            
+            # Basic fallback to search against a generic text field or similar
+            # Often useful when `with_index` is used
+            clone.query_parts.append(
+                ("__raw__", "=", f"text @@ {escape_literal(text)}")
+            )
+
         return clone
+
+    def semantic_search(
+        self: T,
+        field: Union[str, Any],
+        vector: Any,
+        k: int = 10,
+        metric: Optional[str] = None,
+    ) -> T:
+        """Perform semantic vector search using SurrealQL KNN syntax.
+
+        The generated condition follows SurrealQL's documented KNN operator form:
+        `field <|K,DISTANCE_METRIC|> [vector...]`.
+
+        Args:
+            field: Vector field name (or Field instance)
+            vector: Query embedding/vector
+            k: Number of nearest neighbors to retrieve
+            metric: Optional distance metric. If omitted, inferred from Meta.indexes.
+
+        Returns:
+            A cloned QuerySet with a vector KNN condition.
+        """
+        clone = self._clone()
+        field_name = field.name if hasattr(field, "name") else str(field)
+        payload = {
+            "vector": vector,
+            "k": k,
+            "metric": metric,
+        }
+        clone.query_parts.append((field_name, "KNN", payload))
+        return clone
+
+    def _normalize_vector_metric(self, metric: str) -> str:
+        """Normalize and validate vector distance metric names."""
+        normalized = str(metric).strip().upper()
+        if normalized not in _ALLOWED_VECTOR_METRICS:
+            allowed = ", ".join(sorted(_ALLOWED_VECTOR_METRICS))
+            raise ValueError(
+                f"Unsupported vector distance metric '{metric}'. "
+                f"Allowed values: {allowed}."
+            )
+        return normalized
+
+    def _validate_vector_dimension(self, field_name: str, vector_value: Any) -> None:
+        """Validate query vector length against VectorField dimension when available."""
+        document_class = getattr(self, "document_class", None)
+        if not document_class or not hasattr(document_class, "_fields"):
+            return
+
+        field_obj = document_class._fields.get(field_name)
+        expected_dim = getattr(field_obj, "dimension", None)
+        if expected_dim is None:
+            return
+
+        if not isinstance(vector_value, (list, tuple)):
+            raise ValueError(
+                f"Vector value for field '{field_name}' must be a list/tuple, "
+                f"got {type(vector_value).__name__}."
+            )
+
+        if len(vector_value) != expected_dim:
+            raise ValueError(
+                f"Vector dimension mismatch for field '{field_name}'. "
+                f"Expected {expected_dim}, got {len(vector_value)}."
+            )
+
+    def _infer_vector_metric(
+        self, field_name: str, explicit_metric: Optional[str]
+    ) -> str:
+        """Infer metric from Meta.indexes when not provided explicitly.
+
+        Precedence:
+        1) explicit metric argument
+        2) single unique dist from vector index metadata for the field
+        3) raise clear validation error
+        """
+        if explicit_metric is not None:
+            return self._normalize_vector_metric(explicit_metric)
+
+        document_class = getattr(self, "document_class", None)
+        if not document_class or not hasattr(document_class, "_meta"):
+            raise ValueError(
+                f"Unable to infer vector metric for field '{field_name}'; "
+                "provide metric explicitly."
+            )
+
+        indexes = (document_class._meta or {}).get("indexes", []) or []
+        inferred_metrics: List[str] = []
+        for index in indexes:
+            if not isinstance(index, dict):
+                continue
+            if not index.get("dimension"):
+                continue
+            fields = index.get("fields", []) or []
+            if field_name not in fields:
+                continue
+            dist = index.get("dist")
+            if dist:
+                inferred_metrics.append(self._normalize_vector_metric(dist))
+
+        unique_metrics = sorted(set(inferred_metrics))
+        if len(unique_metrics) == 1:
+            return unique_metrics[0]
+
+        if len(unique_metrics) > 1:
+            raise ValueError(
+                f"Ambiguous vector metric for field '{field_name}'. "
+                f"Found multiple metrics in index metadata: {', '.join(unique_metrics)}. "
+                "Provide metric explicitly."
+            )
+
+        raise ValueError(
+            f"Unable to infer vector metric for field '{field_name}' from index metadata; "
+            "provide metric explicitly."
+        )
+
+    def _normalize_knn_payload(
+        self, field_name: str, value: Any
+    ) -> Tuple[List[float], int, str]:
+        """Normalize KNN payload into (vector, k, metric)."""
+        vector_value: Any
+        k_value: Any
+        metric_value: Optional[str]
+
+        if isinstance(value, dict):
+            if "vector" not in value or "k" not in value:
+                raise ValueError(
+                    f"KNN value for field '{field_name}' must include 'vector' and 'k'."
+                )
+            vector_value = value.get("vector")
+            k_value = value.get("k")
+            metric_value = value.get("metric")
+        elif isinstance(value, (tuple, list)):
+            if len(value) == 2:
+                vector_value, k_value = value
+                metric_value = None
+            elif len(value) == 3:
+                vector_value, k_value, metric_value = value
+            else:
+                raise ValueError(
+                    f"KNN tuple/list for field '{field_name}' must be (vector, k) "
+                    "or (vector, k, metric)."
+                )
+        else:
+            raise ValueError(
+                f"KNN value for field '{field_name}' must be dict, tuple, or list."
+            )
+
+        if hasattr(vector_value, "tolist"):
+            vector_value = vector_value.tolist()
+
+        if not isinstance(k_value, int) or k_value <= 0:
+            raise ValueError(
+                f"KNN 'k' for field '{field_name}' must be a positive integer."
+            )
+
+        converted_vector = self._convert_value_for_query(field_name, vector_value)
+        if hasattr(converted_vector, "tolist"):
+            converted_vector = converted_vector.tolist()
+
+        if not isinstance(converted_vector, (list, tuple)):
+            raise ValueError(
+                f"KNN vector for field '{field_name}' must be list/tuple-like."
+            )
+
+        vector_list = [float(v) for v in converted_vector]
+        self._validate_vector_dimension(field_name, vector_list)
+        metric = self._infer_vector_metric(field_name, metric_value)
+        return vector_list, k_value, metric
 
     def only(self: T, *fields: str) -> T:
         """Select only the specified fields.
@@ -182,8 +376,8 @@ class BaseQuerySet:
         """
         clone = self._clone()
         select_fields = list(fields)
-        if 'id' not in select_fields:
-            select_fields.append('id')
+        if "id" not in select_fields:
+            select_fields.append("id")
         clone.select_fields = select_fields
         return clone
 
@@ -209,7 +403,7 @@ class BaseQuerySet:
         self.start_value = value
         return self
 
-    def order_by(self: T, field: str, direction: str = 'ASC') -> T:
+    def order_by(self: T, field: str, direction: str = "ASC") -> T:
         """Set the field and direction to order results by.
         # ...
         """
@@ -245,9 +439,13 @@ class BaseQuerySet:
         clone = self._clone()
         clone._bulk_id_selection = ids
         return clone
-    
-    def get_range(self: T, start_id: Union[str, Any], end_id: Union[str, Any], 
-                  inclusive: bool = True) -> T:
+
+    def get_range(
+        self: T,
+        start_id: Union[str, Any],
+        end_id: Union[str, Any],
+        inclusive: bool = True,
+    ) -> T:
         """Get a range of records by ID using optimized range syntax.
         # ...
         """
@@ -255,14 +453,13 @@ class BaseQuerySet:
         clone._id_range_selection = (start_id, end_id, inclusive)
         return clone
 
-
     def with_index(self: T, index: str) -> T:
         """Use the specified index for the query.
         # ...
         """
         self._with_index = index
         return self
-    
+
     def no_index(self: T) -> T:
         """Do not use any index for the query.
         # ...
@@ -291,7 +488,7 @@ class BaseQuerySet:
         self.explain_value = True
         self.explain_full_value = full
         return self
-    
+
     def use_direct_access(self: T) -> T:
         """Mark this queryset to prefer direct record access when possible.
         # ...
@@ -326,51 +523,69 @@ class BaseQuerySet:
         conditions = []
         for field, op, value in self.query_parts:
             # Handle raw query conditions
-            if field == '__raw__':
+            if field == "__raw__":
                 conditions.append(value)
             # Handle special cases
-            elif op == '=' and isinstance(field, str) and '::' in field:
+            elif op == "=" and isinstance(field, str) and "::" in field:
                 conditions.append(f"{field}")
             else:
                 # Determine if field is a RecordID field
                 def _field_is_record_id(field_name: str) -> bool:
-                    document_class = getattr(self, 'document_class', None)
-                    if not document_class or not hasattr(document_class, '_fields'):
+                    document_class = getattr(self, "document_class", None)
+                    if not document_class or not hasattr(document_class, "_fields"):
                         return False
                     field_obj = document_class._fields.get(field_name)
                     try:
                         from .fields.id import RecordIDField  # type: ignore
+
                         return isinstance(field_obj, RecordIDField)
                     except Exception:
                         return False
 
                 # Special handling for RecordIDs - only for id or RecordIDField or RecordID object
-                if field == 'id' or _field_is_record_id(field) or isinstance(value, RecordID):
+                if (
+                    field == "id"
+                    or _field_is_record_id(field)
+                    or isinstance(value, RecordID)
+                ):
                     # Ensure RecordID is properly formatted
-                    if isinstance(value, str) and RecordIdUtils.is_valid_record_id(value):
+                    if isinstance(value, str) and RecordIdUtils.is_valid_record_id(
+                        value
+                    ):
                         conditions.append(f"{field} {op} {value}")
                     elif isinstance(value, RecordID):
                         conditions.append(f"{field} {op} {str(value)}")
                     else:
                         # Try to normalize the RecordID
                         table_name = None
-                        if hasattr(self, 'document_class') and self.document_class:
+                        if hasattr(self, "document_class") and self.document_class:
                             table_name = self.document_class._get_collection_name()
-                        normalized = RecordIdUtils.normalize_record_id(value, table_name)
+                        normalized = RecordIdUtils.normalize_record_id(
+                            value, table_name
+                        )
                         if normalized and RecordIdUtils.is_valid_record_id(normalized):
                             conditions.append(f"{field} {op} {normalized}")
                         else:
                             conditions.append(f"{field} {op} {escape_literal(value)}")
                 # Special handling for IN and NOT IN operators
-                elif op in ('IN', 'NOT IN'):
+                elif op in ("IN", "NOT IN"):
                     # Only treat list items as record IDs if the field is a RecordID field
                     treat_items_as_ids = _field_is_record_id(field)
+
                     def _is_record_id_str(s):
-                        return isinstance(s, str) and RecordIdUtils.is_valid_record_id(s)
+                        return isinstance(s, str) and RecordIdUtils.is_valid_record_id(
+                            s
+                        )
+
                     def _format_literal(item):
                         # Accept dicts with 'id'
-                        if isinstance(item, dict) and 'id' in item and _is_record_id_str(item['id']) and treat_items_as_ids:
-                            return item['id']
+                        if (
+                            isinstance(item, dict)
+                            and "id" in item
+                            and _is_record_id_str(item["id"])
+                            and treat_items_as_ids
+                        ):
+                            return item["id"]
                         # RecordID object
                         if isinstance(item, RecordID) and treat_items_as_ids:
                             return str(item)
@@ -379,8 +594,9 @@ class BaseQuerySet:
                             return item
                         # Fallback to escape_literal for proper quoting/escaping
                         return escape_literal(item)
+
                     if isinstance(value, (list, tuple, set)):
-                        items = ', '.join(_format_literal(v) for v in value)
+                        items = ", ".join(_format_literal(v) for v in value)
                         value_str = f"[{items}]"
                     else:
                         # Single non-iterable value - still format appropriately
@@ -389,22 +605,44 @@ class BaseQuerySet:
                 elif isinstance(value, RecordID):
                     # If value is a RecordID object but field is not RecordID-typed, quote it to be safe
                     conditions.append(f"{field} {op} {escape_literal(str(value))}")
-                elif op == 'STARTSWITH':
-                    conditions.append(f"string::starts_with({field}, {escape_literal(value)})")
-                elif op == 'ENDSWITH':
-                    conditions.append(f"string::ends_with({field}, {escape_literal(value)})")
-                elif op == 'CONTAINS':
+                elif op == "STARTSWITH":
+                    conditions.append(
+                        f"string::starts_with({field}, {escape_literal(value)})"
+                    )
+                elif op == "ENDSWITH":
+                    conditions.append(
+                        f"string::ends_with({field}, {escape_literal(value)})"
+                    )
+                elif op == "CONTAINS":
                     if isinstance(value, str):
-                        conditions.append(f"string::contains({field}, {escape_literal(value)})")
+                        conditions.append(
+                            f"string::contains({field}, {escape_literal(value)})"
+                        )
                     else:
                         conditions.append(f"{field} CONTAINS {escape_literal(value)}")
-                elif op in ('CONTAINSANY', 'CONTAINSALL', 'CONTAINSNONE', 'ALLINSIDE', 'ANYINSIDE', 'NONEINSIDE'):
+                elif op in (
+                    "CONTAINSANY",
+                    "CONTAINSALL",
+                    "CONTAINSNONE",
+                    "ALLINSIDE",
+                    "ANYINSIDE",
+                    "NONEINSIDE",
+                ):
                     # Handle new set operators
                     conditions.append(f"{field} {op} {escape_literal(value)}")
+                elif op == "SEARCH":
+                    conditions.append(f"{field} @@ {escape_literal(value)}")
+                elif op == "KNN":
+                    vector_list, k_value, metric = self._normalize_knn_payload(
+                        field, value
+                    )
+                    conditions.append(
+                        f"{field} <|{k_value},{metric}|> {escape_literal(vector_list)}"
+                    )
                 # Special handling for URL values
-                elif isinstance(value, dict) and '__url_value__' in value:
+                elif isinstance(value, dict) and "__url_value__" in value:
                     # Extract the URL value and ensure it's properly quoted
-                    url_value = value['__url_value__']
+                    url_value = value["__url_value__"]
                     conditions.append(f"{field} {op} {escape_literal(url_value)}")
                 else:
                     # Convert value to database format if we have field information
@@ -416,58 +654,58 @@ class BaseQuerySet:
 
     def _convert_value_for_query(self, field_name: str, value: Any) -> Any:
         """Convert a value to its database representation for query conditions.
-        
+
         This method checks if the document class has a field definition for the given
         field name and uses its to_db() method to convert the value properly.
-        
+
         Args:
             field_name: The name of the field
             value: The value to convert
-            
+
         Returns:
             The converted value ready for JSON serialization
         """
         # Check if we have a document class with field definitions
-        document_class = getattr(self, 'document_class', None)
-        if document_class and hasattr(document_class, '_fields'):
+        document_class = getattr(self, "document_class", None)
+        if document_class and hasattr(document_class, "_fields"):
             # Get the field definition
             field_obj = document_class._fields.get(field_name)
-            if field_obj and hasattr(field_obj, 'to_db'):
+            if field_obj and hasattr(field_obj, "to_db"):
                 # Use the field's to_db method to convert the value
                 try:
                     return field_obj.to_db(value)
                 except Exception:
                     # If conversion fails, return the original value
                     pass
-        
+
         # If no field definition or conversion failed, return original value
         return value
 
     def _format_record_id(self, id_value: Any) -> str:
         """Format an ID value into a proper SurrealDB record ID.
-        
+
         This method handles various RecordID formats including URL-encoded versions.
-        
+
         Args:
             id_value: The ID value to format
-            
+
         Returns:
             Properly formatted record ID string
         """
         # Get table name if available
         table_name = None
-        if hasattr(self, 'document_class') and self.document_class:
+        if hasattr(self, "document_class") and self.document_class:
             table_name = self.document_class._get_collection_name()
-        
+
         # Use RecordIdUtils for comprehensive handling
         normalized = RecordIdUtils.normalize_record_id(id_value, table_name)
-        
+
         # If normalization succeeded, return it
         if normalized is not None:
             return normalized
-            
+
         # Fall back to original behavior if normalization fails
-        if isinstance(id_value, str) and ':' in id_value:
+        if isinstance(id_value, str) and ":" in id_value:
             return id_value
         elif isinstance(id_value, RecordID):
             return str(id_value)
@@ -475,10 +713,10 @@ class BaseQuerySet:
             return f"{table_name}:{id_value}"
         else:
             return str(id_value)
-    
+
     def _build_direct_record_query(self) -> Optional[str]:
         """Build optimized direct record access query if applicable.
-        
+
         Returns:
             Optimized query string or None if not applicable
         """
@@ -486,49 +724,59 @@ class BaseQuerySet:
         if self._bulk_id_selection:
             if not self._bulk_id_selection:  # Empty list
                 return None
-            
-            record_ids = [self._format_record_id(id_val) for id_val in self._bulk_id_selection]
+
+            record_ids = [
+                self._format_record_id(id_val) for id_val in self._bulk_id_selection
+            ]
             query = f"SELECT * FROM {', '.join(record_ids)}"
-            
+
             # Add other clauses (but skip WHERE since we're using direct access)
             clauses = self._build_clauses()
             for clause_name, clause_sql in clauses.items():
-                if clause_name != 'WHERE':  # Skip WHERE for direct access
+                if clause_name != "WHERE":  # Skip WHERE for direct access
                     query += f" {clause_sql}"
-            
+
             return query
-            
-        # Handle ID range selection optimization  
+
+        # Handle ID range selection optimization
         if self._id_range_selection:
             start_id, end_id, inclusive = self._id_range_selection
-            
+
             # Format record IDs to validate/normalize them (even if variables are unused, we validate here)
             self._format_record_id(start_id)
             self._format_record_id(end_id)
-            
+
             # Extract just the numeric part for range syntax
-            collection_name = getattr(self, 'document_class', None)
+            collection_name = getattr(self, "document_class", None)
             if collection_name:
                 collection_name = collection_name._get_collection_name()
-                
+
                 # Extract numeric IDs from record IDs
-                start_num = str(start_id).split(':')[-1] if ':' in str(start_id) else str(start_id)
-                end_num = str(end_id).split(':')[-1] if ':' in str(end_id) else str(end_id)
-                
+                start_num = (
+                    str(start_id).split(":")[-1]
+                    if ":" in str(start_id)
+                    else str(start_id)
+                )
+                end_num = (
+                    str(end_id).split(":")[-1] if ":" in str(end_id) else str(end_id)
+                )
+
                 range_op = "..=" if inclusive else ".."
-                query = f"SELECT * FROM {collection_name}:{start_num}{range_op}{end_num}"
+                query = (
+                    f"SELECT * FROM {collection_name}:{start_num}{range_op}{end_num}"
+                )
             else:
                 # Fall back to WHERE clause if we can't determine collection
                 return None
-            
+
             # Add other clauses (but skip WHERE since we're using direct access)
             clauses = self._build_clauses()
             for clause_name, clause_sql in clauses.items():
-                if clause_name != 'WHERE':  # Skip WHERE for direct access
+                if clause_name != "WHERE":  # Skip WHERE for direct access
                     query += f" {clause_sql}"
-            
+
             return query
-            
+
         return None
 
     def _build_clauses(self) -> Dict[str, str]:
@@ -545,65 +793,65 @@ class BaseQuerySet:
         # Build WHERE clause
         if self.query_parts:
             conditions = self._build_conditions()
-            clauses['WHERE'] = f"WHERE {' AND '.join(conditions)}"
+            clauses["WHERE"] = f"WHERE {' AND '.join(conditions)}"
 
         if self.group_by_fields:
-            clauses['GROUP BY'] = f"GROUP BY {', '.join(self.group_by_fields)}"
+            clauses["GROUP BY"] = f"GROUP BY {', '.join(self.group_by_fields)}"
         elif self.group_by_all:
-             clauses['GROUP BY'] = "GROUP ALL"
+            clauses["GROUP BY"] = "GROUP ALL"
 
         # Build SPLIT clause
         if self.split_fields:
-            clauses['SPLIT'] = f"SPLIT {', '.join(self.split_fields)}"
+            clauses["SPLIT"] = f"SPLIT {', '.join(self.split_fields)}"
 
         # Build WITH clause
         if self._with_index:
-            clauses['WITH'] = f"WITH INDEX {self._with_index}"
+            clauses["WITH"] = f"WITH INDEX {self._with_index}"
 
         # Build ORDER BY clause
         if self.order_by_value:
             field, direction = self.order_by_value
-            clauses['ORDER BY'] = f"ORDER BY {field} {direction}"
+            clauses["ORDER BY"] = f"ORDER BY {field} {direction}"
 
         # Build LIMIT clause
         if self.limit_value is not None:
-            clauses['LIMIT'] = f"LIMIT {self.limit_value}"
+            clauses["LIMIT"] = f"LIMIT {self.limit_value}"
 
         # Build START clause
         if self.start_value is not None:
-            clauses['START'] = f"START {self.start_value}"
+            clauses["START"] = f"START {self.start_value}"
 
         # IMPORTANT: In SurrealQL, FETCH must be the last clause
         if self.fetch_fields:
-            clauses['FETCH'] = f"FETCH {', '.join(self.fetch_fields)}"
+            clauses["FETCH"] = f"FETCH {', '.join(self.fetch_fields)}"
 
         # Build TIMEOUT clause
         if self.timeout_value:
-            clauses['TIMEOUT'] = f"TIMEOUT {self.timeout_value}"
+            clauses["TIMEOUT"] = f"TIMEOUT {self.timeout_value}"
 
         # Build TEMPFILES clause
         if self.tempfiles_value:
-            clauses['TEMPFILES'] = "TEMPFILES"
-            
+            clauses["TEMPFILES"] = "TEMPFILES"
+
         # Build EXPLAIN clause
         if self.explain_value:
             if self.explain_full_value:
-                clauses['EXPLAIN'] = "EXPLAIN FULL"
+                clauses["EXPLAIN"] = "EXPLAIN FULL"
             else:
-                clauses['EXPLAIN'] = "EXPLAIN"
+                clauses["EXPLAIN"] = "EXPLAIN"
 
         return clauses
-    
+
     def _get_collection_name(self) -> Optional[str]:
         """Get the collection name for this queryset.
-        
+
         Returns:
             Collection name or None if not available
         """
-        document_class = getattr(self, 'document_class', None)
-        if document_class and hasattr(document_class, '_get_collection_name'):
+        document_class = getattr(self, "document_class", None)
+        if document_class and hasattr(document_class, "_get_collection_name"):
             return document_class._get_collection_name()
-        return getattr(self, 'table_name', None)
+        return getattr(self, "table_name", None)
 
     def all(self, **kwargs: Any) -> Union[List[Any], Any]:
         """Execute the query and return all results.
@@ -695,18 +943,18 @@ class BaseQuerySet:
             MultipleObjectsReturned: If multiple matching documents are found
         """
         # Special handling for ID-based lookup
-        if len(kwargs) == 1 and 'id' in kwargs:
-            id_value = kwargs['id']
+        if len(kwargs) == 1 and "id" in kwargs:
+            id_value = kwargs["id"]
             # If it's already a full record ID (table:id format)
-            if isinstance(id_value, str) and ':' in id_value:
+            if isinstance(id_value, str) and ":" in id_value:
                 query = f"SELECT * FROM {id_value}"
             else:
                 # Get table name from document class if available
-                table_name = getattr(self, 'document_class', None)
+                table_name = getattr(self, "document_class", None)
                 if table_name:
                     table_name = table_name._get_collection_name()
                 else:
-                    table_name = getattr(self, 'table_name', None)
+                    table_name = getattr(self, "table_name", None)
 
                 if table_name:
                     query = f"SELECT * FROM {table_name}:{id_value}"
@@ -754,18 +1002,18 @@ class BaseQuerySet:
             MultipleObjectsReturned: If multiple matching documents are found
         """
         # Special handling for ID-based lookup
-        if len(kwargs) == 1 and 'id' in kwargs:
-            id_value = kwargs['id']
+        if len(kwargs) == 1 and "id" in kwargs:
+            id_value = kwargs["id"]
             # If it's already a full record ID (table:id format)
-            if isinstance(id_value, str) and ':' in id_value:
+            if isinstance(id_value, str) and ":" in id_value:
                 query = f"SELECT * FROM {id_value}"
             else:
                 # Get table name from document class if available
-                table_name = getattr(self, 'document_class', None)
+                table_name = getattr(self, "document_class", None)
                 if table_name:
                     table_name = table_name._get_collection_name()
                 else:
-                    table_name = getattr(self, 'table_name', None)
+                    table_name = getattr(self, "table_name", None)
 
                 if table_name:
                     query = f"SELECT * FROM {table_name}:{id_value}"
@@ -873,7 +1121,7 @@ class BaseQuerySet:
         """
         return self.all().__await__()
 
-    def page(self, number: int, size: int) -> 'BaseQuerySet':
+    def page(self, number: int, size: int) -> "BaseQuerySet":
         """Set pagination parameters using page number and size.
 
         This method calculates the appropriate LIMIT and START values
@@ -972,6 +1220,7 @@ class BaseQuerySet:
             aggregation queries.
         """
         from .aggregation import AggregationPipeline
+
         return AggregationPipeline(self)
 
     def _clone(self: T) -> T:
@@ -984,10 +1233,10 @@ class BaseQuerySet:
             A new queryset instance with the same parameters
         """
         # Create a new instance of the same class
-        if hasattr(self, 'document_class'):
+        if hasattr(self, "document_class"):
             # For QuerySet subclass
             clone = self.__class__(self.document_class, self.connection)
-        elif hasattr(self, 'table_name'):
+        elif hasattr(self, "table_name"):
             # For SchemalessQuerySet subclass
             clone = self.__class__(self.table_name, self.connection)
         else:

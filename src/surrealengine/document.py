@@ -4142,7 +4142,9 @@ class RelationDocument(Document):
                     )
                 return str(_id)
             if isinstance(val, _RID):
-                return f"{val.table_name}:{val.id}"
+                table = getattr(val, 'table', getattr(val, 'table_name', None))
+                rid_id = getattr(val, 'id', getattr(val, 'record_id', None))
+                return f"{table}:{rid_id}"
             return str(val)
 
         def _val_to_sql(v: Any) -> str:
@@ -4153,6 +4155,10 @@ class RelationDocument(Document):
                 return str(v)
             if v is None:
                 return "NONE"
+            if isinstance(v, _RID):
+                table = getattr(v, 'table', getattr(v, 'table_name', None))
+                rid_id = getattr(v, 'id', getattr(v, 'record_id', None))
+                return f"{table}:{rid_id}"
             # Strings and anything else: quote and escape
             escaped = str(v).replace("\\", "\\\\").replace('"', '\\"')
             return f'"{escaped}"'
@@ -4241,7 +4247,9 @@ class RelationDocument(Document):
                     )
                 return str(_id)
             if isinstance(val, _RID):
-                return f"{val.table_name}:{val.id}"
+                table = getattr(val, 'table', getattr(val, 'table_name', None))
+                rid_id = getattr(val, 'id', getattr(val, 'record_id', None))
+                return f"{table}:{rid_id}"
             return str(val)
 
         def _val_to_sql(v: Any) -> str:
@@ -4251,6 +4259,10 @@ class RelationDocument(Document):
                 return str(v)
             if v is None:
                 return "NONE"
+            if isinstance(v, _RID):
+                table = getattr(v, 'table', getattr(v, 'table_name', None))
+                rid_id = getattr(v, 'id', getattr(v, 'record_id', None))
+                return f"{table}:{rid_id}"
             escaped = str(v).replace("\\", "\\\\").replace('"', '\\"')
             return f'"{escaped}"'
 

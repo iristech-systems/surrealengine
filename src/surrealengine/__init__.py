@@ -2,7 +2,7 @@
 
 SurrealEngine is a comprehensive Object-Document Mapper (ODM) for SurrealDB that provides
 an intuitive Python interface for database operations. It supports both synchronous and
-asynchronous operations, connection pooling, field validation, query building, and 
+asynchronous operations, connection pooling, field validation, query building, and
 graph-based relationships.
 
 Key Features:
@@ -20,18 +20,18 @@ Example:
 
     >>> from surrealengine import Document, StringField, IntField
     >>> from surrealengine import create_connection
-    >>> 
+    >>>
     >>> class User(Document):
     ...     name = StringField(required=True)
     ...     age = IntField()
-    ...     
+    ...
     ...     class Meta:
     ...         collection = "users"
-    >>> 
+    >>>
     >>> # Create connection and save user
     >>> connection = create_connection("ws://localhost:8000/rpc")
     >>> # await connection.connect()  # in async context
-    >>> 
+    >>>
     >>> user = User(name="Alice", age=30)
     >>> # await user.save()  # in async context
     >>> print(f"Created user: {user.id}")
@@ -49,11 +49,11 @@ Modules:
 """
 
 from .connection import (
-    SurrealEngineAsyncConnection, 
-    SurrealEngineSyncConnection, 
+    SurrealEngineAsyncConnection,
+    SurrealEngineSyncConnection,
     ConnectionRegistry,
     create_connection,
-    BaseSurrealEngineConnection
+    BaseSurrealEngineConnection,
 )
 from .raw_connection import RawSurrealConnection
 
@@ -103,17 +103,17 @@ from .fields import (
     BytesField,
     RegexField,
     UUIDField,
-    TableField
+    TableField,
 )
 from .embedded import EmbeddedDocument
 from .materialized_view import (
-    MaterializedView, 
-    Aggregation, 
-    Count, 
-    Mean, 
-    Sum, 
-    Min, 
-    Max, 
+    MaterializedView,
+    Aggregation,
+    Count,
+    Mean,
+    Sum,
+    Min,
+    Max,
     ArrayCollect,
     Median,
     StdDev,
@@ -126,7 +126,7 @@ from .materialized_view import (
     MeanIf,
     MinIf,
     MaxIf,
-    DistinctCountIf
+    DistinctCountIf,
 )
 from .meta import DocumentMetaOptions
 from .query import QuerySet, RelationQuerySet
@@ -141,27 +141,32 @@ from .schema import (
     create_tables_from_module,
     create_tables_from_module_sync,
     generate_schema_statements,
-    generate_schema_statements_from_module
+    generate_schema_statements_from_module,
 )
 from .datagrid_api import (
     DataGridQueryBuilder,
     get_grid_data,
     get_grid_data_sync,
     parse_datatables_params,
-    format_datatables_response
+    format_datatables_response,
 )
 from .context import using_connection, get_active_connection
 from .reactive import ReactiveQuerySet
 from .events import LiveEvent, Event
 from .functions import surreal_func, SurrealFunction
 from .relation_update import patch_relation_document
-from .transaction import transaction, transaction_sync, transactional, transactional_sync
+from .transaction import (
+    transaction,
+    transaction_sync,
+    transactional,
+    transactional_sync,
+)
 from .mixins import TimestampMixin, SoftDeleteMixin
 
 # For backward compatibility
 SurrealEngineConnection = SurrealEngineAsyncConnection
 
-__version__ = "0.9.5"
+__version__ = "1.0.0"
 __all__ = [
     "SurrealEngine",
     "SurrealEngineAsyncConnection",
@@ -255,7 +260,7 @@ __all__ = [
     "ReactiveQuerySet",
     "LiveEvent",
     "Event",
-    "surreal_func", 
+    "surreal_func",
     "SurrealFunction",
     "RecordIDField",
     "RecordID",
