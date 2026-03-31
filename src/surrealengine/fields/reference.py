@@ -4,6 +4,7 @@ from surrealdb import RecordID
 
 from .base import Field
 
+
 class ReferenceField(Field):
     """Reference to another document.
 
@@ -54,7 +55,7 @@ class ReferenceField(Field):
             index_with: List of other field names to include in the index
         """
         self.document_type = document_type
-        self.reference = kwargs.pop('reference', False)
+        self.reference = kwargs.pop("reference", False)
         super().__init__(**kwargs)
         self.py_type = Union[Type, str, dict]
 
@@ -69,20 +70,40 @@ class ReferenceField(Field):
         if isinstance(self.document_type, str):
             try:
                 from surrealengine.document import Document
+
                 # get_document_class() keys on collection name (snake_case).
                 # Try the raw string first (works if it's already a collection name),
                 # then try converting CamelCase class name to snake_case.
                 resolved = Document.get_document_class(self.document_type)
                 if resolved is None:
                     import re
-                    snake = re.sub(r'(?<!^)(?=[A-Z])', '_', self.document_type).lower()
+
+                    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", self.document_type).lower()
                     resolved = Document.get_document_class(snake)
+                    if resolved is None and not snake.endswith("s"):
+                        # Common collection naming convention is pluralized snake_case
+                        resolved = Document.get_document_class(f"{snake}s")
                 if resolved is not None:
                     return resolved
             except Exception:
                 pass
             return None  # not yet resolvable — skip strict type checks
         return self.document_type
+
+    @staticmethod
+    def _coerce_record_id(value: Any) -> Any:
+        """Coerce record-id-like strings to RecordID objects."""
+        if isinstance(value, RecordID):
+            return value
+        if isinstance(value, str) and ":" in value:
+            table, id_part = value.split(":", 1)
+            return RecordID(table, id_part)
+        if hasattr(value, "table_name") and hasattr(value, "id"):
+            try:
+                return RecordID(str(value.table_name), str(value.id))
+            except Exception:
+                return value
+        return value
 
     def validate(self, value: Any) -> Any:
         """Validate the reference value.
@@ -109,17 +130,20 @@ class ReferenceField(Field):
                 if not isinstance(value, (resolved, str, dict, RecordID)):
                     raise TypeError(
                         f"Expected {resolved.__name__}, id string, record dict, or RecordID "
-                        f"for field '{self.name}', got {type(value)}")
+                        f"for field '{self.name}', got {type(value)}"
+                    )
                 if isinstance(value, resolved) and value.id is None:
                     raise ValueError(
-                        f"Cannot reference an unsaved {resolved.__name__} document")
+                        f"Cannot reference an unsaved {resolved.__name__} document"
+                    )
             else:
                 # Forward ref not yet resolvable — only reject obviously wrong types
                 if not isinstance(value, (str, dict, RecordID)):
                     # Could still be a Document instance — check by duck-typing
-                    if not hasattr(value, 'id'):
+                    if not hasattr(value, "id"):
                         raise TypeError(
-                            f"Invalid reference value for field '{self.name}': {type(value)}")
+                            f"Invalid reference value for field '{self.name}': {type(value)}"
+                        )
 
         return value
 
@@ -142,8 +166,8 @@ class ReferenceField(Field):
             return None
 
         if isinstance(value, str):
-            if ':' in value:
-                table, id_part = value.split(':', 1)
+            if ":" in value:
+                table, id_part = value.split(":", 1)
                 return RecordID(table, id_part)
             return value
 
@@ -157,17 +181,18 @@ class ReferenceField(Field):
             if isinstance(value, resolved):
                 if value.id is None:
                     raise ValueError(
-                        f"Cannot reference an unsaved {resolved.__name__} document")
-                return value.id
-        elif hasattr(value, 'id') and not isinstance(value, (str, dict, RecordID)):
+                        f"Cannot reference an unsaved {resolved.__name__} document"
+                    )
+                return self._coerce_record_id(value.id)
+        elif hasattr(value, "id") and not isinstance(value, (str, dict, RecordID)):
             # Unresolved forward ref — treat any object with .id as a document instance
             if value.id is None:
                 raise ValueError(f"Cannot reference an unsaved document")
-            return value.id
+            return self._coerce_record_id(value.id)
 
         # If it's a dict (partial reference)
-        if isinstance(value, dict) and value.get('id'):
-            return value['id']
+        if isinstance(value, dict) and value.get("id"):
+            return self._coerce_record_id(value["id"])
 
         return value
 
@@ -188,7 +213,7 @@ class ReferenceField(Field):
         """
         resolved = self._resolve_document_type()
         # If value is already a dict (fetched document), convert it to document instance
-        if isinstance(value, dict) and 'id' in value:
+        if isinstance(value, dict) and "id" in value:
             if resolved is not None:
                 try:
                     return resolved.from_db(value)
@@ -196,7 +221,7 @@ class ReferenceField(Field):
                     pass
             return value
 
-        if isinstance(value, str) and ':' in value:
+        if isinstance(value, str) and ":" in value:
             # This is a record ID reference
             if dereference and resolved is not None:
                 try:
@@ -263,7 +288,8 @@ class RelationField(Field):
         if value is not None:
             if not isinstance(value, (self.to_document, str, dict, RecordID)):
                 raise TypeError(
-                    f"Expected {self.to_document.__name__}, id string, record dict, or RecordID for field '{self.name}', got {type(value)}")
+                    f"Expected {self.to_document.__name__}, id string, record dict, or RecordID for field '{self.name}', got {type(value)}"
+                )
 
         return value
 
@@ -286,9 +312,9 @@ class RelationField(Field):
             return None
 
         if isinstance(value, str):
-            if ':' not in value:
+            if ":" not in value:
                 return RecordID(self.to_document._get_collection_name(), value)
-            table, id_part = value.split(':', 1)
+            table, id_part = value.split(":", 1)
             return RecordID(table, id_part)
 
         # If it's a RecordID object
@@ -298,19 +324,21 @@ class RelationField(Field):
         # If it's a document instance
         if isinstance(value, self.to_document):
             if value.id is None:
-                raise ValueError(f"Cannot relate to an unsaved {self.to_document.__name__} document")
-            
+                raise ValueError(
+                    f"Cannot relate to an unsaved {self.to_document.__name__} document"
+                )
+
             # If the ID already includes the collection name, return it as is
-            if isinstance(value.id, str) and ':' in value.id:
+            if isinstance(value.id, str) and ":" in value.id:
                 return value.id
             # Otherwise, add the collection name
             return f"{self.to_document._get_collection_name()}:{value.id}"
 
         # If it's a dict
-        if isinstance(value, dict) and value.get('id'):
-            id_val = value['id']
+        if isinstance(value, dict) and value.get("id"):
+            id_val = value["id"]
             # If the ID already includes the collection name, return it as is
-            if isinstance(id_val, str) and ':' in id_val:
+            if isinstance(id_val, str) and ":" in id_val:
                 return id_val
             # Otherwise, add the collection name
             return f"{self.to_document._get_collection_name()}:{id_val}"
@@ -333,14 +361,14 @@ class RelationField(Field):
             The Python representation of the relation
         """
         # If value is already a dict (fetched document), convert it to document instance
-        if isinstance(value, dict) and 'id' in value:
+        if isinstance(value, dict) and "id" in value:
             try:
                 return self.to_document.from_db(value)
             except Exception:
                 # If conversion fails, return the dict as is
                 return value
-        
-        if isinstance(value, str) and ':' in value:
+
+        if isinstance(value, str) and ":" in value:
             # This is a record ID reference
             if dereference:
                 # If dereference is True, fetch the related document
@@ -387,17 +415,19 @@ class RelationField(Field):
 
         # Use the RelationQuerySet to get related documents
         from ..query import RelationQuerySet
+
         relation_name = self.name
 
         # Get the default connection
         from ..connection import ConnectionRegistry
+
         connection = ConnectionRegistry.get_default_connection(async_mode=True)
 
         # Create a RelationQuerySet for the relation
         relation_queryset = RelationQuerySet(
             from_document=instance.__class__,
             relation=relation_name,
-            connection=connection
+            connection=connection,
         )
 
         # Get related documents
@@ -425,17 +455,19 @@ class RelationField(Field):
 
         # Use the RelationQuerySet to get related documents
         from ..query import RelationQuerySet
+
         relation_name = self.name
 
         # Get the default connection
         from ..connection import ConnectionRegistry
+
         connection = ConnectionRegistry.get_default_connection(async_mode=False)
 
         # Create a RelationQuerySet for the relation
         relation_queryset = RelationQuerySet(
             from_document=instance.__class__,
             relation=relation_name,
-            connection=connection
+            connection=connection,
         )
 
         # Get related documents
@@ -447,7 +479,7 @@ class RelationField(Field):
 class IncomingReferenceField(Field):
     """Field for incoming references (bidirectional links).
 
-    In SurrealDB 3.0.0+, bidirectional record links can be natively 
+    In SurrealDB 3.0.0+, bidirectional record links can be natively
     tracked using `COMPUTED <~model` without needing to execute a `RELATE` statement.
 
     Attributes:
@@ -470,15 +502,16 @@ class IncomingReferenceField(Field):
         # Translates to: COMPUTED <~model
         if isinstance(self.document_type, str):
             import re
+
             name = self.document_type
-            s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
-            collection = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+            s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
+            collection = re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
         else:
             collection = self.document_type._get_collection_name()
         return f"<~{collection}"
 
     def to_db(self, value: Any) -> Any:
-        # Incoming references are computed natively by the db, 
+        # Incoming references are computed natively by the db,
         # so they shouldn't need to be sent manually on create/update.
         return None
 
@@ -498,8 +531,8 @@ class IncomingReferenceField(Field):
 
             def _scan(cls):
                 for sub in cls.__subclasses__():
-                    meta = getattr(sub, '_meta', {})
-                    if meta.get('collection') == table_name:
+                    meta = getattr(sub, "_meta", {})
+                    if meta.get("collection") == table_name:
                         return sub
                     found = _scan(sub)
                     if found:
@@ -512,7 +545,8 @@ class IncomingReferenceField(Field):
         resolved = None
         if isinstance(self.document_type, str):
             import re
-            snake = re.sub(r'(?<!^)(?=[A-Z])', '_', self.document_type).lower()
+
+            snake = re.sub(r"(?<!^)(?=[A-Z])", "_", self.document_type).lower()
             resolved = _live_scan(self.document_type) or _live_scan(snake)
         else:
             resolved = self.document_type
@@ -520,13 +554,14 @@ class IncomingReferenceField(Field):
         if isinstance(value, list):
             res = []
             for item in value:
-                if isinstance(item, dict) and 'id' in item:
+                if isinstance(item, dict) and "id" in item:
                     cls_to_use = resolved
                     # Last-resort: derive class from the item's own RecordID table name.
                     if cls_to_use is None:
                         try:
                             from surrealdb import RecordID as _RID
-                            item_id = item['id']
+
+                            item_id = item["id"]
                             if isinstance(item_id, _RID):
                                 cls_to_use = _live_scan(item_id.table_name)
                         except Exception:
@@ -541,6 +576,5 @@ class IncomingReferenceField(Field):
                 else:
                     res.append(item)
             return res
-
 
         return value

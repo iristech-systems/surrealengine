@@ -5,6 +5,16 @@ All notable changes to the SurrealEngine project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-03-31
+
+### Fixed
+- **ReferenceField `option<record>` Writes**: Fixed `ReferenceField` serialization paths to preserve native `RecordID` values for optional record fields, preventing database-side type errors like `expected a option<record>` during creates/updates in real apps.
+- **Forward-Reference Coercion**: Improved `ReferenceField` handling for unresolved/forward-ref document types by coercing record-id-like values more reliably.
+- **Save Failure Visibility**: `Document.save()` now raises `DocumentNotSavedError` when the database returns a non-document payload (e.g. error string), preventing silent unsaved instances that later fail in relation creation.
+
+### Added
+- **Regression Coverage**: Added tests for reference coercion and save-guard behavior to prevent recurrence.
+
 ## [1.0.0] - 2026-03-29
 
 ### Breaking Changes
