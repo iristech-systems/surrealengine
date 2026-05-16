@@ -182,7 +182,7 @@ from .sync_manager import (
 # For backward compatibility
 SurrealEngineConnection = SurrealEngineAsyncConnection
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 __all__ = [
     "SurrealEngine",
     "SurrealEngineAsyncConnection",

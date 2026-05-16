@@ -5,6 +5,21 @@ All notable changes to the SurrealEngine project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-05-16
+
+### Fixed
+- **Replay/Checkpoint Runtime Compatibility**: Hardened checkpoint persistence/loading across response envelopes and fallback query forms, including strict datetime handling for metadata writes.
+- **Replay Changefeed Parsing**: Added support for native changefeed entry shapes (`update` / `delete` / `create`) so replay applies events and advances checkpoints reliably.
+- **FTS Runtime Portability**: Updated `search_and(...)` / `search_or(...)` to use portable `@@` boolean composition instead of `@AND@` / `@OR@` parser-dependent forms.
+- **Default Analyzer Bootstrap**: Improved full-text index creation behavior when default analyzers are missing in embedded/runtime variants.
+
+### Improved
+- **Notebook Reliability**: Updated v1.2 notebooks with deterministic seeding, explicit expected outcomes, and clear pass/fail checks for routing, context scoping, replay, and search flows.
+- **LIVE Validation Utility**: Added `scripts/live_reliability_smoke.py` for repeatable non-notebook LIVE reliability smoke/soak verification.
+
+### Notes
+- `1.2.0` should be treated as superseded by `1.2.1` for runtime stability.
+
 ## [1.2.0] - 2026-04-03
 
 ### Added
