@@ -338,6 +338,22 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.omit(*fields)
 
+    def only(self, *fields: str) -> QuerySet:
+        """Select only specified fields in query results."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.only(*fields)
+
+    def only_sync(self, *fields: str) -> QuerySet:
+        """Select only specified fields using sync connection."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.only(*fields)
+
     def omit_sync(self, *fields: str) -> QuerySet:
         """Exclude fields from query results using sync connection."""
         connection = self.connection or get_active_connection(async_mode=False)
@@ -346,7 +362,7 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.omit(*fields)
 
-    def timeout(self, duration: str) -> QuerySet:
+    def timeout(self, duration: Any) -> QuerySet:
         """Set query timeout duration."""
         connection = self.connection or get_active_connection(async_mode=None)
         if self.owner is None:
@@ -354,13 +370,29 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.timeout(duration)
 
-    def timeout_sync(self, duration: str) -> QuerySet:
+    def timeout_sync(self, duration: Any) -> QuerySet:
         """Set query timeout duration using sync connection."""
         connection = self.connection or get_active_connection(async_mode=False)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.timeout(duration)
+
+    def freshness(self, mode: str) -> QuerySet:
+        """Set freshness routing mode for query execution."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.freshness(mode)
+
+    def freshness_sync(self, mode: str) -> QuerySet:
+        """Set freshness routing mode using sync connection."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.freshness(mode)
 
     def tempfiles(self, value: bool = True) -> QuerySet:
         """Enable or disable temporary files for query execution."""
@@ -393,6 +425,22 @@ class QuerySetDescriptor:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.with_explain(full=full)
+
+    def use_direct_access(self) -> QuerySet:
+        """Force direct record-id access optimization when possible."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.use_direct_access()
+
+    def use_direct_access_sync(self) -> QuerySet:
+        """Force direct access optimization using sync connection."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.use_direct_access()
 
     def limit(self, value: int) -> QuerySet:
         """Set the maximum number of results to return.
@@ -612,6 +660,65 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.search(text, *fields)
 
+    def search_and(self, text: str, *fields: Union[str, Any]) -> QuerySet:
+        """Perform full-text search requiring all terms to match."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.search_and(text, *fields)
+
+    def search_or(self, text: str, *fields: Union[str, Any]) -> QuerySet:
+        """Perform full-text search where any term can match."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.search_or(text, *fields)
+
+    def with_search_score(self, reference: int = 1, alias: str = "score") -> QuerySet:
+        """Project `search::score(reference)` in SELECT."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.with_search_score(reference=reference, alias=alias)
+
+    def with_search_highlight(
+        self,
+        prefix: str = "<b>",
+        suffix: str = "</b>",
+        reference: int = 1,
+        alias: str = "highlight",
+    ) -> QuerySet:
+        """Project `search::highlight(prefix, suffix, reference)` in SELECT."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.with_search_highlight(
+            prefix=prefix,
+            suffix=suffix,
+            reference=reference,
+            alias=alias,
+        )
+
+    def version_at(self, version: Any) -> QuerySet:
+        """Apply SELECT VERSION clause for temporal reads."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.version_at(version)
+
+    def version_at_raw(self, expression: str) -> QuerySet:
+        """Apply raw SELECT VERSION expression (e.g. `time::now()`)."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.version_at_raw(expression)
+
     def semantic_search(
         self,
         field: Union[str, Any],
@@ -635,6 +742,82 @@ class QuerySetDescriptor:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.semantic_search(field=field, vector=vector, k=k, metric=metric)
+
+    def order_by_knn(
+        self,
+        field: Union[str, Any],
+        vector: Any,
+        k: int = 10,
+        metric: Optional[str] = None,
+    ) -> QuerySet:
+        """Order by vector KNN distance with ergonomic ANN syntax."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.order_by_knn(field=field, vector=vector, k=k, metric=metric)
+
+    def order_by_knn_sync(
+        self,
+        field: Union[str, Any],
+        vector: Any,
+        k: int = 10,
+        metric: Optional[str] = None,
+    ) -> QuerySet:
+        """Order by vector KNN distance (sync connection)."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.order_by_knn(field=field, vector=vector, k=k, metric=metric)
+
+    def with_vector_similarity(
+        self,
+        field: Union[str, Any],
+        vector: Any,
+        alias: str = "similarity",
+        metric: str = "COSINE",
+    ) -> QuerySet:
+        """Project vector similarity score in SELECT list."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.with_vector_similarity(
+            field=field, vector=vector, alias=alias, metric=metric
+        )
+
+    def with_vector_similarity_sync(
+        self,
+        field: Union[str, Any],
+        vector: Any,
+        alias: str = "similarity",
+        metric: str = "COSINE",
+    ) -> QuerySet:
+        """Project vector similarity score (sync connection)."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.with_vector_similarity(
+            field=field, vector=vector, alias=alias, metric=metric
+        )
+
+    def order_by_raw(self, expression: str) -> QuerySet:
+        """Apply raw ORDER BY expression."""
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.order_by_raw(expression)
+
+    def order_by_raw_sync(self, expression: str) -> QuerySet:
+        """Apply raw ORDER BY expression (sync connection)."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.order_by_raw(expression)
 
     def upsert(self, **kwargs) -> Any:
         """Upsert a document: update if exists, otherwise create.

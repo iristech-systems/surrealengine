@@ -16,6 +16,56 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class _LiveBackpressureQueue(asyncio.Queue):
+    """Queue with explicit drop/block behavior for LIVE fanout."""
+
+    def __init__(self, maxsize: int, policy: str) -> None:
+        super().__init__(maxsize=max(1, int(maxsize)))
+        self.policy = policy
+        self.dropped = 0
+
+    def _drop_oldest_and_put_nowait(self, item: Any) -> None:
+        try:
+            self.get_nowait()
+            self.dropped += 1
+        except Exception:
+            pass
+        super().put_nowait(item)
+
+    def put_nowait(self, item: Any) -> None:
+        if not self.full():
+            super().put_nowait(item)
+            return
+
+        if self.policy == "drop_oldest":
+            self._drop_oldest_and_put_nowait(item)
+            return
+
+        if self.policy == "drop_latest":
+            self.dropped += 1
+            return
+
+        # `put_nowait` cannot truly block; best-effort fallback is to drop latest
+        # while preserving queue stability for external producers.
+        self.dropped += 1
+        return
+
+    async def put(self, item: Any) -> None:
+        if not self.full():
+            await super().put(item)
+            return
+
+        if self.policy == "drop_oldest":
+            self._drop_oldest_and_put_nowait(item)
+            return
+
+        if self.policy == "drop_latest":
+            self.dropped += 1
+            return
+
+        await super().put(item)
+
+
 class QuerySet(BaseQuerySet):
     """Query builder for SurrealDB.
 
@@ -38,10 +88,10 @@ class QuerySet(BaseQuerySet):
         super().__init__(connection)
         self.document_class = document_class
 
-    def using(self, connection: Any) -> 'QuerySet':
+    def using(self, connection: Any) -> "QuerySet":
         """Select which database connection to use for this query.
 
-        This allows switching between standard connections (for writes) and 
+        This allows switching between standard connections (for writes) and
         RawSurrealConnections (for high-performance zero-copy reads).
 
         Args:
@@ -54,7 +104,9 @@ class QuerySet(BaseQuerySet):
         clone.connection = connection
         return clone
 
-    def traverse(self, path: str, max_depth: Optional[int] = None, unique: bool = True) -> 'QuerySet':
+    def traverse(
+        self, path: str, max_depth: Optional[int] = None, unique: bool = True
+    ) -> "QuerySet":
         """Configure a graph traversal for this query.
 
         Args:
@@ -72,67 +124,71 @@ class QuerySet(BaseQuerySet):
         # Store as-is; _build_query applies simple bounded expansion
         clone._traversal_path = path
         clone._traversal_unique = bool(unique)
-        clone._traversal_max_depth = max_depth if (isinstance(max_depth, int) and max_depth > 0) else None
+        clone._traversal_max_depth = (
+            max_depth if (isinstance(max_depth, int) and max_depth > 0) else None
+        )
         return clone
 
-    def out(self, target: Union[str, Type, None] = None) -> 'QuerySet':
+    def out(self, target: Union[str, Type, None] = None) -> "QuerySet":
         """Traverse outgoing edges or nodes.
-        
+
         Args:
             target: The relation or document class to traverse to, or a string table name.
                    If None, traverses outgoing edges generally (->?).
-        
+
         Returns:
             A cloned QuerySet with the traversal appended.
         """
         return self._append_traversal("->", target)
 
-    def in_(self, target: Union[str, Type, None] = None) -> 'QuerySet':
+    def in_(self, target: Union[str, Type, None] = None) -> "QuerySet":
         """Traverse incoming edges or nodes.
-        
+
         Args:
             target: The relation or document class to traverse from, or a string table name.
                    If None, traverses incoming edges generally (<-?).
-        
+
         Returns:
             A cloned QuerySet with the traversal appended.
         """
         return self._append_traversal("<-", target)
 
-    def both(self, target: Union[str, Type, None] = None) -> 'QuerySet':
+    def both(self, target: Union[str, Type, None] = None) -> "QuerySet":
         """Traverse both incoming and outgoing edges or nodes.
-        
+
         Args:
             target: The relation or document class to traverse, or a string table name.
                    If None, traverses edges generally (<->?).
-        
+
         Returns:
             A cloned QuerySet with the traversal appended.
         """
         return self._append_traversal("<->", target)
 
-    def _append_traversal(self, direction: str, target: Union[str, Type, None]) -> 'QuerySet':
+    def _append_traversal(
+        self, direction: str, target: Union[str, Type, None]
+    ) -> "QuerySet":
         """Helper to append a graph traversal step.
-        
+
         For SurrealQL, graph traversal syntax is:
         - ->edge->node (outbound: traverse through edge to destination node)
         - <-edge<-node (inbound: traverse through edge to source node)
         - <->edge<->node (both directions)
-        
-        When a string is given, it's treated as an edge name - we append ->edge->* 
+
+        When a string is given, it's treated as an edge name - we append ->edge->*
         to traverse through the edge to any node type (enables chaining).
         When a model class is given, we use its collection name as destination.
         When None is given, we use ? as wildcard.
-        
+
         Example chains:
         - .out("follows") -> "->follows->?"
-        - .out("follows").out("follows") -> "->follows->?->follows->?"  
+        - .out("follows").out("follows") -> "->follows->?->follows->?"
         - .out("follows").out(User) -> "->follows->?->users"
         """
         clone = self._clone()
-        
+
         current_path = getattr(clone, "_traversal_path", "") or ""
-        
+
         if target is None:
             # Wildcard traversal
             new_step = f"{direction}?"
@@ -141,28 +197,28 @@ class QuerySet(BaseQuerySet):
             # Append ->edge->? to traverse through edge to any node
             # This enables proper chaining of traversals
             new_step = f"{direction}{target}{direction}?"
-        elif hasattr(target, '_get_collection_name'):
+        elif hasattr(target, "_get_collection_name"):
             # Model class - get its collection name as destination
             step = target._get_collection_name()
             # Check if current path ends with ->? from a previous edge traversal
             # If so, replace the ? with the actual table name
-            if current_path.endswith('->?'):
+            if current_path.endswith("->?"):
                 clone._traversal_path = current_path[:-1] + step
-                if getattr(clone, '_base_table', None) is None:
+                if getattr(clone, "_base_table", None) is None:
                     clone._base_table = clone.document_class._get_collection_name()
                 clone.document_class = target
                 clone._traversal_target_is_model = True
                 return clone
-            elif current_path.endswith('<-?'):
+            elif current_path.endswith("<-?"):
                 clone._traversal_path = current_path[:-1] + step
-                if getattr(clone, '_base_table', None) is None:
+                if getattr(clone, "_base_table", None) is None:
                     clone._base_table = clone.document_class._get_collection_name()
                 clone.document_class = target
                 clone._traversal_target_is_model = True
                 return clone
-            elif current_path.endswith('<->?'):
+            elif current_path.endswith("<->?"):
                 clone._traversal_path = current_path[:-1] + step
-                if getattr(clone, '_base_table', None) is None:
+                if getattr(clone, "_base_table", None) is None:
                     clone._base_table = clone.document_class._get_collection_name()
                 clone.document_class = target
                 clone._traversal_target_is_model = True
@@ -171,19 +227,21 @@ class QuerySet(BaseQuerySet):
         else:
             step = str(target)
             new_step = f"{direction}{step}"
-            
+
         clone._traversal_path = current_path + new_step
-        
+
         # If target is a model class, update the document class for hydration
-        if hasattr(target, '_get_collection_name'):
-             if getattr(clone, '_base_table', None) is None:
-                 clone._base_table = clone.document_class._get_collection_name()
-             clone.document_class = target
-             clone._traversal_target_is_model = True
+        if hasattr(target, "_get_collection_name"):
+            if getattr(clone, "_base_table", None) is None:
+                clone._base_table = clone.document_class._get_collection_name()
+            clone.document_class = target
+            clone._traversal_target_is_model = True
 
         return clone
 
-    def shortest_path(self, src: Union[str, RecordID], dst: Union[str, RecordID], edge: str) -> 'QuerySet':
+    def shortest_path(
+        self, src: Union[str, RecordID], dst: Union[str, RecordID], edge: str
+    ) -> "QuerySet":
         """Configuration for a shortest path query from src to dst.
 
         This uses the SurrealQL idiom `src.{..+shortest=dst}->edge->dst_table`.
@@ -198,7 +256,7 @@ class QuerySet(BaseQuerySet):
         """
         # Ensure we filter to the source record
         qs = cast("QuerySet", self.filter(id=src))
-        
+
         # Determine destination table for the arrow path
         # If dst is a RecordID, use table_name. If string, parse it.
         if isinstance(dst, RecordID):
@@ -220,9 +278,8 @@ class QuerySet(BaseQuerySet):
         # Example: id.{..+shortest=person:star}->knows->person
         # We assume 'edge' is the relationship name.
         path = f"id.{{..+shortest={dst_str}}}->{edge}->{dst_table}"
-        
-        return qs.traverse(path)
 
+        return qs.traverse(path)
 
     async def start_live(self, connection=None) -> str:
         """Start a LIVE SELECT subscription and return the query UUID.
@@ -253,17 +310,28 @@ class QuerySet(BaseQuerySet):
         """
         if connection is None:
             connection = self.connection
-        client = getattr(connection, 'client', None)
-        if client is None or not hasattr(client, 'live') or not hasattr(client, 'subscribe_live'):
+        client = getattr(connection, "client", None)
+        if (
+            client is None
+            or not hasattr(client, "live")
+            or not hasattr(client, "subscribe_live")
+        ):
             raise NotImplementedError(
                 "start_live() requires a WebSocket connection; "
-                "embedded connections (mem://, file://) are not supported."
+                "embedded connections (mem://, file://, surrealkv://) are not supported."
             )
         table = self.document_class._get_collection_name()
         qid = await client.live(table)
         return str(qid)
 
-    async def subscribe_to_live(self, uuid: str, connection=None):
+    async def subscribe_to_live(
+        self,
+        uuid: str,
+        connection=None,
+        *,
+        queue_maxsize: int = 1000,
+        backpressure_policy: str = "drop_oldest",
+    ):
         """Attach to an already-running LIVE query by UUID as an async generator.
 
         This is the subscriber side of the fan-out pattern.  The live query
@@ -302,66 +370,99 @@ class QuerySet(BaseQuerySet):
 
         if connection is None:
             connection = self.connection
-        client = getattr(connection, 'client', None)
-        if client is None or not hasattr(client, 'subscribe_live'):
+        client = getattr(connection, "client", None)
+        if client is None or not hasattr(client, "subscribe_live"):
             raise NotImplementedError(
                 "subscribe_to_live() requires a WebSocket connection."
             )
 
         # Try to hook directly into the SDK's internal live_queues dict to get
         # full payloads (action + result + time).  Same approach as live().
-        import asyncio as _asyncio
-
         under = None
-        for attr in ('connection', '_connection', 'conn', '_conn', 'ws'):
+        for attr in ("connection", "_connection", "conn", "_conn", "ws"):
             obj = getattr(client, attr, None)
-            if obj is not None and hasattr(obj, 'live_queues'):
+            if obj is not None and hasattr(obj, "live_queues"):
                 under = obj
                 break
-        if under is None and hasattr(client, 'live_queues'):
+        if under is None and hasattr(client, "live_queues"):
             under = client
 
-        if under is not None and hasattr(under, 'live_queues') and str(uuid) in under.live_queues:
-            full_queue: _asyncio.Queue = _asyncio.Queue()
-            under.live_queues[str(uuid)].append(full_queue)
-            while True:
-                msg = await full_queue.get()
-                action_str = msg.get('action') or msg.get('event') or 'UNKNOWN'
-                data = msg.get('result') or msg.get('record') or msg.get('data') or msg
-                ts = msg.get('time') or msg.get('ts')
-                if isinstance(data, dict):
-                    record = self.document_class.from_db(data)
-                else:
-                    record = data
-                yield LiveEvent(
-                    action=str(action_str).upper(),
-                    data=data,
-                    ts=ts,
-                    id=getattr(record, '_data', {}).get('id') if hasattr(record, '_data') else getattr(record, 'id', None),
-                    document=record,
-                )
+        resolved_policy = str(backpressure_policy).strip().lower()
+        if resolved_policy not in {"drop_oldest", "drop_latest", "block"}:
+            raise ValueError(
+                "backpressure_policy must be one of: drop_oldest, drop_latest, block"
+            )
+
+        if (
+            under is not None
+            and hasattr(under, "live_queues")
+            and str(uuid) in under.live_queues
+        ):
+            full_queue = _LiveBackpressureQueue(
+                maxsize=max(1, int(queue_maxsize)), policy=resolved_policy
+            )
+            subscribers = under.live_queues[str(uuid)]
+            subscribers.append(full_queue)
+            try:
+                while True:
+                    msg = await full_queue.get()
+                    action_str = msg.get("action") or msg.get("event") or "UNKNOWN"
+                    data = (
+                        msg.get("result") or msg.get("record") or msg.get("data") or msg
+                    )
+                    ts = msg.get("time") or msg.get("ts")
+                    if isinstance(data, dict):
+                        record = self.document_class.from_db(data)
+                    else:
+                        record = data
+                    yield LiveEvent(
+                        action=str(action_str).upper(),
+                        data=data,
+                        ts=ts,
+                        id=getattr(record, "_data", {}).get("id")
+                        if hasattr(record, "_data")
+                        else getattr(record, "id", None),
+                        document=record,
+                    )
+            finally:
+                try:
+                    subscribers.remove(full_queue)
+                except Exception:
+                    pass
 
         else:
             # Fallback: use SDK generator (inner result only, no action metadata)
             agen = await client.subscribe_live(uuid)
-            async for msg in agen:
-                if isinstance(msg, dict):
-                    record = self.document_class.from_db(msg)
-                    yield LiveEvent(
-                        action='UNKNOWN',
-                        data=msg,
-                        ts=None,
-                        id=getattr(record, 'id', None),
-                        document=record,
-                    )
+            try:
+                async for msg in agen:
+                    if isinstance(msg, dict):
+                        record = self.document_class.from_db(msg)
+                        yield LiveEvent(
+                            action="UNKNOWN",
+                            data=msg,
+                            ts=None,
+                            id=getattr(record, "id", None),
+                            document=record,
+                        )
+            finally:
+                if hasattr(agen, "aclose"):
+                    try:
+                        await agen.aclose()
+                    except Exception:
+                        pass
 
-    async def live(self,
-                  where: Optional[Union["Q", dict]] = None,
-                  action: Optional[Union[str, List[str]]] = None,
-                  *,
-                  retry_limit: int = 3,
-                  initial_delay: float = 0.5,
-                  backoff: float = 2.0):
+    async def live(
+        self,
+        where: Optional[Union["Q", dict]] = None,
+        action: Optional[Union[str, List[str]]] = None,
+        *,
+        retry_limit: int = 3,
+        initial_delay: float = 0.5,
+        backoff: float = 2.0,
+        queue_maxsize: int = 1000,
+        drop_oldest: bool = True,
+        backpressure_policy: Optional[str] = None,
+    ):
         """Subscribe to changes on this table via LIVE queries as an async generator.
 
         This method provides real-time updates for table changes using SurrealDB's LIVE
@@ -408,7 +509,7 @@ class QuerySet(BaseQuerySet):
         """
         # Import LiveEvent locally to avoid circular imports during module load
         from ..events import LiveEvent
-        
+
         # Normalize action filter
         allowed_actions = None
         if action:
@@ -418,15 +519,23 @@ class QuerySet(BaseQuerySet):
                 allowed_actions = {a.upper() for a in action}
 
         # Ensure async client and availability of live API
-        client = getattr(self.connection, 'client', None)
-        
+        client = getattr(self.connection, "client", None)
+
         # Check if the client supports live queries (must have live_queues)
-        if client is None or not hasattr(client, 'live') or not hasattr(client, 'subscribe_live') or not hasattr(client, 'kill') or not hasattr(client, 'live_queues'):
-            raise NotImplementedError("LIVE queries require a WebSocket connection; embedded connections (mem://, file://) are not currently supported by the SurrealDB Python SDK.")
+        if (
+            client is None
+            or not hasattr(client, "live")
+            or not hasattr(client, "subscribe_live")
+            or not hasattr(client, "kill")
+            or not hasattr(client, "live_queues")
+        ):
+            raise NotImplementedError(
+                "LIVE queries require a WebSocket connection; embedded connections (mem://, file://, surrealkv://) are not currently supported by the SurrealDB Python SDK."
+            )
 
         # Create a dedicated connection clone for this LIVE subscription
         dedicated_connection = None
-        if hasattr(self.connection, 'clone'):
+        if hasattr(self.connection, "clone"):
             dedicated_connection = await self.connection.clone()
             await dedicated_connection.connect()
             client = dedicated_connection.client
@@ -438,6 +547,7 @@ class QuerySet(BaseQuerySet):
         if where is not None:
             try:
                 from ..query_expressions import Q
+
                 if isinstance(where, dict):
                     q = Q(**where)
                 elif isinstance(where, Q):
@@ -447,29 +557,38 @@ class QuerySet(BaseQuerySet):
 
                 # Build a simple predicate using Q.to_conditions semantics
                 conditions = q.to_conditions()
+
                 def _eval(record):
                     for field, op, value in conditions:
-                        if field == '__raw__':
+                        if field == "__raw__":
                             # raw cannot be evaluated here; accept all
                             continue
                         lhs = record.get(field)
-                        if op == '=' and lhs != value:
+                        if op == "=" and lhs != value:
                             return False
-                        if op == '!=' and lhs == value:
+                        if op == "!=" and lhs == value:
                             return False
-                        if op == '>' and not (lhs is not None and lhs > value):
+                        if op == ">" and not (lhs is not None and lhs > value):
                             return False
-                        if op == '<' and not (lhs is not None and lhs < value):
+                        if op == "<" and not (lhs is not None and lhs < value):
                             return False
-                        if op == '>=' and not (lhs is not None and lhs >= value):
+                        if op == ">=" and not (lhs is not None and lhs >= value):
                             return False
-                        if op == '<=' and not (lhs is not None and lhs <= value):
+                        if op == "<=" and not (lhs is not None and lhs <= value):
                             return False
-                        if op == 'IN' and isinstance(value, (list, tuple, set)) and lhs not in value:
+                        if (
+                            op == "IN"
+                            and isinstance(value, (list, tuple, set))
+                            and lhs not in value
+                        ):
                             return False
-                        if op == 'NOT IN' and isinstance(value, (list, tuple, set)) and lhs in value:
+                        if (
+                            op == "NOT IN"
+                            and isinstance(value, (list, tuple, set))
+                            and lhs in value
+                        ):
                             return False
-                        if op == 'CONTAINS':
+                        if op == "CONTAINS":
                             if isinstance(lhs, str) and isinstance(value, str):
                                 if value not in lhs:
                                     return False
@@ -479,6 +598,7 @@ class QuerySet(BaseQuerySet):
                             else:
                                 return False
                     return True
+
                 predicate = _eval
             except Exception:
                 # If anything goes wrong, fallback to no filtering
@@ -487,46 +607,77 @@ class QuerySet(BaseQuerySet):
         attempt = 0
         delay = initial_delay
 
+        resolved_backpressure = (
+            str(backpressure_policy).strip().lower()
+            if backpressure_policy is not None
+            else ("drop_oldest" if drop_oldest else "block")
+        )
+        if resolved_backpressure not in {"drop_oldest", "drop_latest", "block"}:
+            raise ValueError(
+                "backpressure_policy must be one of: drop_oldest, drop_latest, block"
+            )
+
         async def _start_live():
             # returns (uuid, agen or full queue consumer)
             qid = await client.live(table)
             # Try to access underlying connection live_queues to get full event payloads
-            candidate_attrs = (
-                'connection', '_connection', 'conn', '_conn', 'ws'
-            )
+            candidate_attrs = ("connection", "_connection", "conn", "_conn", "ws")
             under = None
             for attr in candidate_attrs:
                 obj = getattr(client, attr, None)
-                if obj is not None and hasattr(obj, 'live_queues'):
+                if obj is not None and hasattr(obj, "live_queues"):
                     under = obj
                     break
             # Some SDK variants may expose live_queues on the client itself
-            if under is None and hasattr(client, 'live_queues'):
+            if under is None and hasattr(client, "live_queues"):
                 under = client  # type: ignore
-            if under is not None and hasattr(under, 'live_queues'):
+            if under is not None and hasattr(under, "live_queues"):
                 import asyncio as _asyncio
-                full_queue: _asyncio.Queue = _asyncio.Queue()
+
+                full_queue = _LiveBackpressureQueue(
+                    maxsize=max(1, int(queue_maxsize)),
+                    policy=resolved_backpressure,
+                )
                 under.live_queues[str(qid)].append(full_queue)
-                # Log limited client attributes for diagnosis at debug level
-                try:
-                    attrs = [a for a in dir(client) if ('live' in a.lower() or 'conn' in a.lower())]
-                    logger.debug('Client attributes (filtered): %s', attrs)
-                except Exception:
-                    pass
-                return qid, ('queue', full_queue, under)
+                return qid, ("queue", full_queue, under)
             # Fallback to SDK generator which yields only the inner 'result'
             agen = await client.subscribe_live(qid)
-            # Log limited client attributes for diagnosis at debug level
-            try:
-                attrs = [a for a in dir(client) if ('live' in a.lower() or 'conn' in a.lower())]
-                logger.debug('Client attributes (filtered): %s', attrs)
-            except Exception:
-                pass
-            return qid, ('agen', agen, None)
+            return qid, ("agen", agen, None)
 
         qid = None
         agen = None
         extra = None
+
+        async def _cleanup_current_live_state():
+            nonlocal qid, agen, extra
+            try:
+                if qid is not None:
+                    await client.kill(qid)
+            except Exception:
+                pass
+
+            if agen is not None:
+                kind, source = agen
+                if kind == "agen" and hasattr(source, "aclose"):
+                    try:
+                        await source.aclose()
+                    except Exception:
+                        pass
+
+            if agen is not None and extra is not None:
+                # queue mode cleanup: remove our queue subscriber from internal fan-out
+                try:
+                    kind, source = agen
+                    if kind == "queue" and hasattr(extra, "live_queues") and qid is not None:
+                        subscribers = extra.live_queues.get(str(qid), [])
+                        if source in subscribers:
+                            subscribers.remove(source)
+                except Exception:
+                    pass
+
+            agen = None
+            extra = None
+            qid = None
         try:
             while True:
                 try:
@@ -538,45 +689,49 @@ class QuerySet(BaseQuerySet):
                         attempt = 0
                         delay = initial_delay
                     kind, source = agen
-                    if kind == 'queue':
+                    if kind == "queue":
                         # Consume full payloads with action/time/result
                         while True:
                             msg = await source.get()
-                            # Log full live envelope at debug level to help locate fields
-                            try:
-                                logger.debug("Live envelope: %s", msg)
-                            except Exception:
-                                pass
-                            
-                            action_str = msg.get('action') or msg.get('event') or 'UNKNOWN'
+
+                            action_str = (
+                                msg.get("action") or msg.get("event") or "UNKNOWN"
+                            )
                             action_upper = str(action_str).upper()
-                            
+
                             # Filter by action if requested
                             if allowed_actions and action_upper not in allowed_actions:
                                 continue
-                                
-                            data = msg.get('result') or msg.get('record') or msg.get('data') or msg
-                            ts = msg.get('time') or msg.get('ts')
-                            
-                            if predicate is None or (isinstance(data, dict) and predicate(data)):
+
+                            data = (
+                                msg.get("result")
+                                or msg.get("record")
+                                or msg.get("data")
+                                or msg
+                            )
+                            ts = msg.get("time") or msg.get("ts")
+
+                            if predicate is None or (
+                                isinstance(data, dict) and predicate(data)
+                            ):
                                 # Parse timestamp if possible
                                 ts_val = ts
-                                
+
                                 # Convert ID to RecordID if possible
                                 id_val = None
-                                if isinstance(data, dict) and 'id' in data:
+                                if isinstance(data, dict) and "id" in data:
                                     try:
-                                        raw_id = str(data['id'])
-                                        if ':' in raw_id:
-                                            tb, rid = raw_id.split(':', 1)
+                                        raw_id = str(data["id"])
+                                        if ":" in raw_id:
+                                            tb, rid = raw_id.split(":", 1)
                                             id_val = RecordID(tb, rid)
                                         else:
-                                            # Fallback or keep as None? 
+                                            # Fallback or keep as None?
                                             # If we can't parse it, we can't create a valid RecordID
                                             pass
                                     except Exception:
                                         pass
-                                
+
                                 if isinstance(data, dict):
                                     doc_inst = self.document_class.from_db(data)
                                 else:
@@ -587,26 +742,26 @@ class QuerySet(BaseQuerySet):
                                     data=data,
                                     ts=ts_val,
                                     id=id_val,
-                                    document=doc_inst
+                                    document=doc_inst,
                                 )
                     else:
                         # agen path: yields only inner result; no metadata available
                         async for msg in source:
-                            # Log inner message yielded by SDK subscribe_live at debug level
-                            try:
-                                logger.debug("Live inner message: %s", msg)
-                            except Exception:
-                                pass
-                            data = msg.get('result') or msg.get('record') or msg.get('data') or msg
+                            data = (
+                                msg.get("result")
+                                or msg.get("record")
+                                or msg.get("data")
+                                or msg
+                            )
                             # Heuristic: if payload has only 'id', treat as DELETE; else as UPSERT (CREATE/UPDATE)
-                            inferred_action = 'UNKNOWN'
+                            inferred_action = "UNKNOWN"
                             if isinstance(data, dict):
                                 keys = [k for k in data.keys()]
-                                if len(keys) == 1 and keys[0] == 'id':
-                                    inferred_action = 'DELETE'
+                                if len(keys) == 1 and keys[0] == "id":
+                                    inferred_action = "DELETE"
                                 else:
-                                    inferred_action = 'UPSERT'
-                            
+                                    inferred_action = "UPSERT"
+
                             # Filter by action if requested
                             if allowed_actions:
                                 # Start with inferred action match
@@ -614,26 +769,31 @@ class QuerySet(BaseQuerySet):
                                 if inferred_action in allowed_actions:
                                     match = True
                                 # If allowed contains CREATE or UPDATE and we have UPSERT, allow it
-                                elif inferred_action == 'UPSERT' and ('CREATE' in allowed_actions or 'UPDATE' in allowed_actions):
+                                elif inferred_action == "UPSERT" and (
+                                    "CREATE" in allowed_actions
+                                    or "UPDATE" in allowed_actions
+                                ):
                                     match = True
-                                
+
                                 if not match:
                                     continue
-                                    
-                            if predicate is None or (isinstance(data, dict) and predicate(data)):
+
+                            if predicate is None or (
+                                isinstance(data, dict) and predicate(data)
+                            ):
                                 # Convert ID to RecordID if possible
                                 id_val = None
-                                if isinstance(data, dict) and 'id' in data:
+                                if isinstance(data, dict) and "id" in data:
                                     try:
-                                        raw_id = str(data['id'])
-                                        if ':' in raw_id:
-                                            tb, rid = raw_id.split(':', 1)
+                                        raw_id = str(data["id"])
+                                        if ":" in raw_id:
+                                            tb, rid = raw_id.split(":", 1)
                                             id_val = RecordID(tb, rid)
                                         else:
                                             pass
                                     except Exception:
                                         pass
-                                        
+
                                 if isinstance(data, dict):
                                     doc_inst = self.document_class.from_db(data)
                                 else:
@@ -644,26 +804,32 @@ class QuerySet(BaseQuerySet):
                                     data=data,
                                     ts=None,
                                     id=id_val,
-                                    document=doc_inst
+                                    document=doc_inst,
                                 )
                     agen = None
                 except asyncio.CancelledError:
                     # Graceful cancellation; cleanup below
                     raise
                 except Exception:
+                    await _cleanup_current_live_state()
                     attempt += 1
                     if attempt > retry_limit:
                         raise
                     # Exponential backoff
                     await asyncio.sleep(delay)
                     delay *= backoff
+                    if dedicated_connection:
+                        try:
+                            await dedicated_connection.disconnect()
+                        except Exception:
+                            pass
+                        try:
+                            await dedicated_connection.connect()
+                            client = dedicated_connection.client
+                        except Exception:
+                            pass
         finally:
-            if agen:
-                try:
-                    # Try to gracefully unsubscribe if the generator exits
-                    await client.kill(qid)
-                except Exception:
-                    pass
+            await _cleanup_current_live_state()
             # Cleanup the dedicated cloned connection
             if dedicated_connection:
                 try:
@@ -671,10 +837,15 @@ class QuerySet(BaseQuerySet):
                 except Exception:
                     pass
 
-
-    def join(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> Union[List[Any], Any]:
+    def join(
+        self,
+        field_name: str,
+        target_fields: Optional[List[str]] = None,
+        dereference: bool = True,
+        dereference_depth: int = 1,
+    ) -> Union[List[Any], Any]:
         """Perform a JOIN-like operation on a reference field using FETCH.
-        
+
         Polyglot method: executes synchronously if the connection is synchronous,
         otherwise returns an awaitable.
 
@@ -689,11 +860,27 @@ class QuerySet(BaseQuerySet):
         """
         # If connection is sync, execute sync logic immediately
         if not self.connection.is_async():
-            return self.join_sync(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
+            return self.join_sync(
+                field_name,
+                target_fields,
+                dereference=dereference,
+                dereference_depth=dereference_depth,
+            )
 
-        return self._join_async(field_name, target_fields, dereference=dereference, dereference_depth=dereference_depth)
+        return self._join_async(
+            field_name,
+            target_fields,
+            dereference=dereference,
+            dereference_depth=dereference_depth,
+        )
 
-    async def _join_async(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
+    async def _join_async(
+        self,
+        field_name: str,
+        target_fields: Optional[List[str]] = None,
+        dereference: bool = True,
+        dereference_depth: int = 1,
+    ) -> List[Any]:
         """Internal async implementation of join()."""
         # Ensure field_name is a ReferenceField
         field = self.document_class._fields.get(field_name)
@@ -707,17 +894,19 @@ class QuerySet(BaseQuerySet):
         # Use FETCH to join in a single query
         queryset = self._clone()
         queryset.fetch_fields.append(field_name)
-        
+
         try:
             documents = await queryset.all()
-            
+
             # If dereference_depth > 1, recursively resolve deeper references
             if dereference_depth > 1:
                 for doc in documents:
                     referenced_doc = getattr(doc, field_name, None)
-                    if referenced_doc and hasattr(referenced_doc, 'resolve_references'):
-                        await referenced_doc.resolve_references(depth=dereference_depth-1)
-            
+                    if referenced_doc and hasattr(referenced_doc, "resolve_references"):
+                        await referenced_doc.resolve_references(
+                            depth=dereference_depth - 1
+                        )
+
             return documents
         except Exception:
             # Fall back to manual resolution if FETCH fails
@@ -729,18 +918,28 @@ class QuerySet(BaseQuerySet):
                     ref_value = getattr(doc, field_name)
                     ref_id = None
 
-                    if isinstance(ref_value, str) and ':' in ref_value:
+                    if isinstance(ref_value, str) and ":" in ref_value:
                         ref_id = ref_value
-                    elif hasattr(ref_value, 'id'):
+                    elif hasattr(ref_value, "id"):
                         ref_id = ref_value.id
 
                     if ref_id:
-                        referenced_doc = await target_document_class.get(id=ref_id, dereference=dereference, dereference_depth=dereference_depth)
+                        referenced_doc = await target_document_class.get(
+                            id=ref_id,
+                            dereference=dereference,
+                            dereference_depth=dereference_depth,
+                        )
                         setattr(doc, field_name, referenced_doc)
 
             return documents
 
-    def join_sync(self, field_name: str, target_fields: Optional[List[str]] = None, dereference: bool = True, dereference_depth: int = 1) -> List[Any]:
+    def join_sync(
+        self,
+        field_name: str,
+        target_fields: Optional[List[str]] = None,
+        dereference: bool = True,
+        dereference_depth: int = 1,
+    ) -> List[Any]:
         """Perform a JOIN-like operation on a reference field synchronously using FETCH.
 
         This method performs a JOIN-like operation on a reference field by using
@@ -770,17 +969,21 @@ class QuerySet(BaseQuerySet):
         # Use FETCH to join in a single query
         queryset = self._clone()
         queryset.fetch_fields.append(field_name)
-        
+
         try:
             documents = queryset.all_sync()
-            
+
             # If dereference_depth > 1, recursively resolve deeper references
             if dereference_depth > 1:
                 for doc in documents:
                     referenced_doc = getattr(doc, field_name, None)
-                    if referenced_doc and hasattr(referenced_doc, 'resolve_references_sync'):
-                        referenced_doc.resolve_references_sync(depth=dereference_depth-1)
-            
+                    if referenced_doc and hasattr(
+                        referenced_doc, "resolve_references_sync"
+                    ):
+                        referenced_doc.resolve_references_sync(
+                            depth=dereference_depth - 1
+                        )
+
             return documents
         except Exception:
             # Fall back to manual resolution if FETCH fails
@@ -792,13 +995,17 @@ class QuerySet(BaseQuerySet):
                     ref_value = getattr(doc, field_name)
                     ref_id = None
 
-                    if isinstance(ref_value, str) and ':' in ref_value:
+                    if isinstance(ref_value, str) and ":" in ref_value:
                         ref_id = ref_value
-                    elif hasattr(ref_value, 'id'):
+                    elif hasattr(ref_value, "id"):
                         ref_id = ref_value.id
 
                     if ref_id:
-                        referenced_doc = target_document_class.get_sync(id=ref_id, dereference=dereference, dereference_depth=dereference_depth)
+                        referenced_doc = target_document_class.get_sync(
+                            id=ref_id,
+                            dereference=dereference,
+                            dereference_depth=dereference_depth,
+                        )
                         setattr(doc, field_name, referenced_doc)
 
             return documents
@@ -816,11 +1023,14 @@ class QuerySet(BaseQuerySet):
         optimized_query = self._build_direct_record_query()
         if optimized_query:
             return optimized_query
-        
+
         # Fall back to regular query building
         # SurrealQL does not support SQL-style SELECT DISTINCT for full rows.
         # When traversal uniqueness is requested, we will deduplicate by grouping on id.
-        from_part = getattr(self, "_base_table", None) or self.document_class._get_collection_name()
+        from_part = (
+            getattr(self, "_base_table", None)
+            or self.document_class._get_collection_name()
+        )
 
         # If traversal is configured, render it in the SELECT projection, not in FROM
         traversal = getattr(self, "_traversal_path", None)
@@ -846,33 +1056,33 @@ class QuerySet(BaseQuerySet):
         if self.omit_fields:
             select_keyword += f" OMIT {', '.join(self.omit_fields)}"
 
-
         select_query = f"{select_keyword} FROM {from_part}"
+
+        version_clause = self._build_version_clause()
+        if version_clause:
+            select_query += f" {version_clause}"
 
         if self.query_parts:
             conditions = self._build_conditions()
             select_query += f" WHERE {' AND '.join(conditions)}"
-        
-
 
         # Add other clauses from _build_clauses
         clauses = self._build_clauses()
 
         # Auto-fetch traversal alias ensuring hydration
         if traversal:
-            fetch_clause = clauses.get('FETCH')
+            fetch_clause = clauses.get("FETCH")
             if fetch_clause:
-                if 'traversed' not in fetch_clause:
-                    clauses['FETCH'] = f"{fetch_clause}, traversed"
+                if "traversed" not in fetch_clause:
+                    clauses["FETCH"] = f"{fetch_clause}, traversed"
             else:
-                clauses['FETCH'] = "FETCH traversed"
-
+                clauses["FETCH"] = "FETCH traversed"
 
         # Note: GROUP BY id for traversal deduplication can change result shapes in SurrealDB.
         # To keep traversal results straightforward, we do not auto-inject GROUP BY here.
 
         for clause_name, clause_sql in clauses.items():
-            if clause_name != 'WHERE':  # WHERE clause is already handled
+            if clause_name != "WHERE":  # WHERE clause is already handled
                 select_query += f" {clause_sql}"
 
         return select_query
@@ -901,16 +1111,17 @@ class QuerySet(BaseQuerySet):
             raise ImportError("pyarrow is required for to_arrow()")
 
         query = self._build_query()
+        exec_connection = self._get_execution_connection(self.document_class)
 
         # Check for optimized Raw Connection (Level 3 Zero-Copy)
-        if hasattr(self.connection, "query_arrow"):
-             result = await self.connection.query_arrow(query)
-             if result:
-                 return result
-             return pa.Table.from_pylist([])
+        if hasattr(exec_connection, "query_arrow"):
+            result = await exec_connection.query_arrow(query)
+            if result:
+                return result
+            return pa.Table.from_pylist([])
 
         # Fallback to standard SDK (Level 1 Zero-Copy / ODM Bypass)
-        results = await self.connection.client.query(query)
+        results = await exec_connection.client.query(query)
 
         if not results:
             return pa.Table.from_pylist([])
@@ -958,10 +1169,11 @@ class QuerySet(BaseQuerySet):
             raise ImportError("pyarrow is required for to_arrow()")
 
         query = self._build_query()
+        exec_connection = self._get_execution_connection(self.document_class)
 
         # Sync connection doesn't support optimized query_arrow (which is async WebSockets)
         # So we always fall back to standard SDK
-        results = self.connection.client.query(query)
+        results = exec_connection.client.query(query)
 
         if not results:
             return pa.Table.from_pylist([])
@@ -1037,13 +1249,12 @@ class QuerySet(BaseQuerySet):
         arrow_table = self.to_arrow_sync()
         return pl.from_arrow(arrow_table)
 
-
     def all(self, dereference: bool = False, **kwargs: Any) -> Union[List[Any], Any]:  # type: ignore[override]
         """Execute the query and return all results.
-        
+
         Polyglot method: executes synchronously if the connection is synchronous,
         otherwise returns an awaitable.
-        
+
         Args:
             dereference: Whether to dereference references (default: False)
             **kwargs: Additional arguments for compatibility
@@ -1060,7 +1271,8 @@ class QuerySet(BaseQuerySet):
     async def _all_async(self, dereference: bool = False, **kwargs: Any) -> List[Any]:
         """Internal async implementation of all()."""
         query = self._build_query()
-        results = await self.connection.client.query(query)
+        exec_connection = self._get_execution_connection(self.document_class)
+        results = await exec_connection.client.query(query)
 
         if not results:
             return []
@@ -1088,19 +1300,24 @@ class QuerySet(BaseQuerySet):
             # Extract and flatten traversal results
             traversed_rows = []
             for row in rows:
-                if 'traversed' in row:
-                    val = row['traversed']
+                if "traversed" in row:
+                    val = row["traversed"]
                     if isinstance(val, list):
                         traversed_rows.extend(val)
                     elif val:
-                         traversed_rows.append(val)
+                        traversed_rows.append(val)
             rows = traversed_rows
 
             if not getattr(self, "_traversal_target_is_model", False):
                 return rows
 
         is_partial = self.select_fields is not None
-        processed_results = [self.document_class.from_db(doc, dereference=dereference, partial=is_partial) for doc in rows]
+        processed_results = [
+            self.document_class.from_db(
+                doc, dereference=dereference, partial=is_partial
+            )
+            for doc in rows
+        ]
         return processed_results
 
     def all_sync(self, dereference: bool = False, **kwargs: Any) -> List[Any]:
@@ -1117,7 +1334,8 @@ class QuerySet(BaseQuerySet):
             List of document instances
         """
         query = self._build_query()
-        results = self.connection.client.query(query)
+        exec_connection = self._get_execution_connection(self.document_class)
+        results = exec_connection.client.query(query)
 
         if not results:
             return []
@@ -1145,24 +1363,29 @@ class QuerySet(BaseQuerySet):
             # Extract and flatten traversal results
             traversed_rows = []
             for row in rows:
-                if 'traversed' in row:
-                    val = row['traversed']
+                if "traversed" in row:
+                    val = row["traversed"]
                     if isinstance(val, list):
                         traversed_rows.extend(val)
                     elif val:
-                         traversed_rows.append(val)
+                        traversed_rows.append(val)
             rows = traversed_rows
 
             if not getattr(self, "_traversal_target_is_model", False):
                 return rows
 
         is_partial = self.select_fields is not None
-        processed_results = [self.document_class.from_db(doc, dereference=dereference, partial=is_partial) for doc in rows]
+        processed_results = [
+            self.document_class.from_db(
+                doc, dereference=dereference, partial=is_partial
+            )
+            for doc in rows
+        ]
         return processed_results
 
     def count(self) -> Union[int, Any]:  # type: ignore[override]
         """Count documents matching the query.
-        
+
         Polyglot method: executes synchronously if the connection is synchronous,
         otherwise returns an awaitable.
 
@@ -1175,20 +1398,62 @@ class QuerySet(BaseQuerySet):
 
         return self._count_async()
 
+    @staticmethod
+    def _extract_count_value(result: Any) -> int:
+        """Extract integer value from `SELECT count()` responses."""
+        if not result:
+            return 0
+
+        rows = result
+        if isinstance(result, list):
+            if result and isinstance(result[0], dict):
+                rows = result
+            else:
+                rows = None
+                for part in reversed(result):
+                    if isinstance(part, list):
+                        rows = part
+                        break
+                if rows is None:
+                    rows = result
+
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        if isinstance(rows, list) and rows:
+            first = rows[0]
+            if isinstance(first, dict):
+                # Prefer explicit count key when present
+                if "count" in first:
+                    try:
+                        return int(first["count"])
+                    except Exception:
+                        pass
+                # Fallback: first numeric value in row
+                for value in first.values():
+                    if isinstance(value, (int, float)):
+                        return int(value)
+
+        return 0
+
     async def _count_async(self) -> int:
         """Internal async implementation of count()."""
-        count_query = f"SELECT count() FROM {self.document_class._get_collection_name()}"
+        count_query = (
+            f"SELECT count() FROM {self.document_class._get_collection_name()}"
+        )
+
+        version_clause = self._build_version_clause()
+        if version_clause:
+            count_query += f" {version_clause}"
 
         if self.query_parts:
             conditions = self._build_conditions()
             count_query += f" WHERE {' AND '.join(conditions)}"
 
-        result = await self.connection.client.query(count_query)
+        exec_connection = self._get_execution_connection(self.document_class)
+        result = await exec_connection.client.query(count_query)
 
-        if not result or not result[0]:
-            return 0
-
-        return len(result)
+        return self._extract_count_value(result)
 
     def count_sync(self) -> int:
         """Count documents matching the query synchronously.
@@ -1199,22 +1464,28 @@ class QuerySet(BaseQuerySet):
         Returns:
             Number of matching documents
         """
-        count_query = f"SELECT count() FROM {self.document_class._get_collection_name()}"
+        count_query = (
+            f"SELECT count() FROM {self.document_class._get_collection_name()}"
+        )
+
+        version_clause = self._build_version_clause()
+        if version_clause:
+            count_query += f" {version_clause}"
 
         if self.query_parts:
             conditions = self._build_conditions()
             count_query += f" WHERE {' AND '.join(conditions)}"
 
-        result = self.connection.client.query(count_query)
+        exec_connection = self._get_execution_connection(self.document_class)
+        result = exec_connection.client.query(count_query)
 
-        if not result or not result[0]:
-            return 0
+        return self._extract_count_value(result)
 
-        return len(result)
-
-    def get(self, dereference: bool = False, allow_none: bool = False, **kwargs: Any) -> Union[Any, Any]:
+    def get(
+        self, dereference: bool = False, allow_none: bool = False, **kwargs: Any
+    ) -> Union[Any, Any]:
         """Get a single document matching the query.
-        
+
         Polyglot method: executes synchronously if the connection is synchronous,
         otherwise returns an awaitable.
 
@@ -1228,11 +1499,15 @@ class QuerySet(BaseQuerySet):
         """
         # If connection is sync, execute sync logic immediately
         if not self.connection.is_async():
-            return self.get_sync(dereference=dereference, allow_none=allow_none, **kwargs)
+            return self.get_sync(
+                dereference=dereference, allow_none=allow_none, **kwargs
+            )
 
         return self._get_async(dereference=dereference, allow_none=allow_none, **kwargs)
 
-    async def _get_async(self, dereference: bool = False, allow_none: bool = False, **kwargs: Any) -> Any:
+    async def _get_async(
+        self, dereference: bool = False, allow_none: bool = False, **kwargs: Any
+    ) -> Any:
         """Internal async implementation of get()."""
         queryset = self.filter(**kwargs)
         queryset.limit_value = 2  # Get 2 to check for multiple
@@ -1241,13 +1516,19 @@ class QuerySet(BaseQuerySet):
         if not results:
             if allow_none:
                 return None
-            raise DoesNotExist(f"{self.document_class.__name__} matching query does not exist.")
+            raise DoesNotExist(
+                f"{self.document_class.__name__} matching query does not exist."
+            )
         if len(results) > 1:
-            raise MultipleObjectsReturned(f"Multiple {self.document_class.__name__} objects returned instead of one")
+            raise MultipleObjectsReturned(
+                f"Multiple {self.document_class.__name__} objects returned instead of one"
+            )
 
         return results[0]
 
-    def get_sync(self, dereference: bool = False, allow_none: bool = False, **kwargs: Any) -> Any:
+    def get_sync(
+        self, dereference: bool = False, allow_none: bool = False, **kwargs: Any
+    ) -> Any:
         """Get a single document matching the query synchronously.
 
         This method applies filters and ensures that exactly one document is returned.
@@ -1271,15 +1552,19 @@ class QuerySet(BaseQuerySet):
         if not results:
             if allow_none:
                 return None
-            raise DoesNotExist(f"{self.document_class.__name__} matching query does not exist.")
+            raise DoesNotExist(
+                f"{self.document_class.__name__} matching query does not exist."
+            )
         if len(results) > 1:
-            raise MultipleObjectsReturned(f"Multiple {self.document_class.__name__} objects returned instead of one")
+            raise MultipleObjectsReturned(
+                f"Multiple {self.document_class.__name__} objects returned instead of one"
+            )
 
         return results[0]
 
     def create(self, **kwargs: Any) -> Union[Any, Any]:
         """Create a new document.
-        
+
         Polyglot method: executes synchronously if the connection is synchronous,
         otherwise returns an awaitable.
 
@@ -1314,7 +1599,9 @@ class QuerySet(BaseQuerySet):
         document = self.document_class(**kwargs)
         return document.save_sync(self.connection)
 
-    def update(self, returning: Optional[str] = None, **kwargs: Any) -> Union[List[Any], Any]:
+    def update(
+        self, returning: Optional[str] = None, **kwargs: Any
+    ) -> Union[List[Any], Any]:
         """Update documents matching the query.
 
         Polyglot method: executes synchronously if the connection is synchronous,
@@ -1333,7 +1620,9 @@ class QuerySet(BaseQuerySet):
 
         return self._update_async(returning=returning, **kwargs)
 
-    async def _update_async(self, returning: Optional[str] = None, **kwargs: Any) -> List[Any]:
+    async def _update_async(
+        self, returning: Optional[str] = None, **kwargs: Any
+    ) -> List[Any]:
         """Internal async implementation of update()."""
         # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
         if self._bulk_id_selection or self._id_range_selection:
@@ -1345,12 +1634,12 @@ class QuerySet(BaseQuerySet):
                 update_query = f"UPDATE ({subquery}) SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
                 if returning in ("before", "after", "diff"):
                     update_query += f" RETURN {returning.upper()}"
-                
+
                 result = await self.connection.client.query(update_query)
-                
+
                 if not result:
                     return []
-                
+
                 # Handle different result structures
                 if isinstance(result[0], dict):
                     # Subquery UPDATE case: result is a flat list of documents
@@ -1360,16 +1649,18 @@ class QuerySet(BaseQuerySet):
                     return [self.document_class.from_db(doc) for doc in result[0]]
                 else:
                     return []
-        
+
         # Fall back to regular update query
         update_query = f"UPDATE {self.document_class._get_collection_name()}"
 
-        update_query += f" SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
+        update_query += (
+            f" SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
+        )
 
         if self.query_parts:
             conditions = self._build_conditions()
             update_query += f" WHERE {' AND '.join(conditions)}"
-        
+
         if returning in ("before", "after", "diff"):
             update_query += f" RETURN {returning.upper()}"
 
@@ -1391,10 +1682,10 @@ class QuerySet(BaseQuerySet):
                         break
         else:
             rows = result
-            
+
         if not rows:
             return []
-            
+
         if isinstance(rows, dict):
             rows = [rows]
 
@@ -1422,12 +1713,12 @@ class QuerySet(BaseQuerySet):
                 update_query = f"UPDATE ({subquery}) SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
                 if returning in ("before", "after", "diff"):
                     update_query += f" RETURN {returning.upper()}"
-                
+
                 result = self.connection.client.query(update_query)
-                
+
                 if not result:
                     return []
-                
+
                 # Handle different result structures
                 if isinstance(result[0], dict):
                     # Subquery UPDATE case: result is a flat list of documents
@@ -1437,11 +1728,13 @@ class QuerySet(BaseQuerySet):
                     return [self.document_class.from_db(doc) for doc in result[0]]
                 else:
                     return []
-        
+
         # Fall back to regular update query
         update_query = f"UPDATE {self.document_class._get_collection_name()}"
 
-        update_query += f" SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
+        update_query += (
+            f" SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
+        )
 
         if self.query_parts:
             conditions = self._build_conditions()
@@ -1465,10 +1758,10 @@ class QuerySet(BaseQuerySet):
                         break
         else:
             rows = result
-            
+
         if not rows:
             return []
-            
+
         if isinstance(rows, dict):
             rows = [rows]
 
@@ -1476,7 +1769,7 @@ class QuerySet(BaseQuerySet):
 
     def delete(self) -> Union[int, Any]:
         """Delete documents matching the query.
-        
+
         Polyglot method: executes synchronously if the connection is synchronous,
         otherwise returns an awaitable.
 
@@ -1494,9 +1787,11 @@ class QuerySet(BaseQuerySet):
         # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
         if self._bulk_id_selection:
             # Use direct record deletion syntax for bulk ID operations
-            record_ids = [self._format_record_id(id_val) for id_val in self._bulk_id_selection]
+            record_ids = [
+                self._format_record_id(id_val) for id_val in self._bulk_id_selection
+            ]
             delete_query = f"DELETE {', '.join(record_ids)}"
-            
+
             result = await self.connection.client.query(delete_query)
             # Direct record deletion returns empty list on success
             # Return the count of IDs we attempted to delete
@@ -1508,12 +1803,12 @@ class QuerySet(BaseQuerySet):
                 # Convert SELECT to subquery for DELETE
                 subquery = optimized_query.replace("SELECT *", "SELECT id")
                 delete_query = f"DELETE ({subquery})"
-                
+
                 result = await self.connection.client.query(delete_query)
                 if not result or not result[0]:
                     return 0
                 return len(result[0])
-        
+
         # Fall back to regular delete query
         delete_query = f"DELETE FROM {self.document_class._get_collection_name()}"
 
@@ -1540,9 +1835,11 @@ class QuerySet(BaseQuerySet):
         # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
         if self._bulk_id_selection:
             # Use direct record deletion syntax for bulk ID operations
-            record_ids = [self._format_record_id(id_val) for id_val in self._bulk_id_selection]
+            record_ids = [
+                self._format_record_id(id_val) for id_val in self._bulk_id_selection
+            ]
             delete_query = f"DELETE {', '.join(record_ids)}"
-            
+
             result = self.connection.client.query(delete_query)
             # Direct record deletion returns empty list on success
             # Return the count of IDs we attempted to delete
@@ -1554,12 +1851,12 @@ class QuerySet(BaseQuerySet):
                 # Convert SELECT to subquery for DELETE
                 subquery = optimized_query.replace("SELECT *", "SELECT id")
                 delete_query = f"DELETE ({subquery})"
-                
+
                 result = self.connection.client.query(delete_query)
                 if not result or not result[0]:
                     return 0
                 return len(result[0])
-        
+
         # Fall back to regular delete query
         delete_query = f"DELETE FROM {self.document_class._get_collection_name()}"
 
@@ -1574,10 +1871,15 @@ class QuerySet(BaseQuerySet):
 
         return len(result[0])
 
-    def bulk_create(self, documents: List[Any], batch_size: int = 1000,
-                      validate: bool = True, return_documents: bool = True) -> Union[List[Any], int, Any]:
+    def bulk_create(
+        self,
+        documents: List[Any],
+        batch_size: int = 1000,
+        validate: bool = True,
+        return_documents: bool = True,
+    ) -> Union[List[Any], int, Any]:
         """Create multiple documents in a single operation.
-        
+
         Polyglot method: executes synchronously if the connection is synchronous,
         otherwise returns an awaitable.
 
@@ -1592,12 +1894,21 @@ class QuerySet(BaseQuerySet):
         """
         # If connection is sync, execute sync logic immediately
         if not self.connection.is_async():
-            return self.bulk_create_sync(documents, batch_size, validate, return_documents)
+            return self.bulk_create_sync(
+                documents, batch_size, validate, return_documents
+            )
 
-        return self._bulk_create_async(documents, batch_size, validate, return_documents)
+        return self._bulk_create_async(
+            documents, batch_size, validate, return_documents
+        )
 
-    async def _bulk_create_async(self, documents: List[Any], batch_size: int = 1000,
-                      validate: bool = True, return_documents: bool = True) -> Union[List[Any], int]:
+    async def _bulk_create_async(
+        self,
+        documents: List[Any],
+        batch_size: int = 1000,
+        validate: bool = True,
+        return_documents: bool = True,
+    ) -> Union[List[Any], int]:
         """Internal async implementation of bulk_create()."""
         if not documents:
             return [] if return_documents else 0
@@ -1608,7 +1919,7 @@ class QuerySet(BaseQuerySet):
 
         # Process in batches
         for i in range(0, len(documents), batch_size):
-            batch = documents[i:i + batch_size]
+            batch = documents[i : i + batch_size]
 
             # Validate batch if required
             if validate:
@@ -1619,66 +1930,72 @@ class QuerySet(BaseQuerySet):
             # Separate documents with and without explicit IDs
             docs_without_ids = []
             docs_with_ids = []
-            
+
             for doc in batch:
                 if doc.id:
                     docs_with_ids.append(doc)
                 else:
                     docs_without_ids.append(doc)
-            
+
             # Handle documents without IDs using bulk INSERT
             if docs_without_ids:
                 data = [doc.to_db() for doc in docs_without_ids]
-                
+
                 try:
                     # Use SDK insert method which handles serialization and query parameters efficiently
                     result = await self.connection.client.insert(collection, data)
-                    
+
                     if return_documents and result:
                         # Result from bulk insert is a list of created records
-                        batch_docs = [self.document_class.from_db(doc_data)
-                                      for doc_data in result]
+                        batch_docs = [
+                            self.document_class.from_db(doc_data) for doc_data in result
+                        ]
                         created_docs.extend(batch_docs)
                         total_created += len(batch_docs)
                     elif result:
                         total_created += len(result)
                 except Exception as e:
                     logger.error(f"Error in bulk create batch (no IDs): {str(e)}")
-            
+
             # Handle documents with explicit IDs using individual upserts
             for doc in docs_with_ids:
                 try:
                     data = doc.to_db()
                     # Remove ID from data and extract ID part
-                    if 'id' in data:
-                        del data['id']
-                        id_part = str(doc.id).split(':')[1]
+                    if "id" in data:
+                        del data["id"]
+                        id_part = str(doc.id).split(":")[1]
                         result = await self.connection.client.upsert(
-                            RecordID(collection, int(id_part) if id_part.isdigit() else id_part),
-                            data
+                            RecordID(
+                                collection,
+                                int(id_part) if id_part.isdigit() else id_part,
+                            ),
+                            data,
                         )
-                        
+
                         if return_documents and result:
                             if isinstance(result, list) and result:
                                 doc_data = result[0]
                             else:
                                 doc_data = result
-                            
+
                             if isinstance(doc_data, dict):
                                 if created_docs is not None:
-                                    created_docs.append(self.document_class.from_db(doc_data))
-                        
+                                    created_docs.append(
+                                        self.document_class.from_db(doc_data)
+                                    )
+
                         total_created += 1
-                        
+
                 except Exception as e:
                     logger.error(f"Error creating document with ID {doc.id}: {str(e)}")
                     continue
 
         return created_docs if return_documents else total_created
 
-    def upsert(self, **kwargs) -> Union['Document', Any]:
+    def upsert(self, **kwargs) -> Union["Document", Any]:
         """Upsert a document: update if exists, otherwise create.
-        
+
         Polyglot method: executes synchronously if the connection is synchronous,
         otherwise returns an awaitable.
 
@@ -1694,40 +2011,45 @@ class QuerySet(BaseQuerySet):
 
         return self._upsert_async(**kwargs)
 
-    async def _upsert_async(self, **kwargs) -> 'Document':
+    async def _upsert_async(self, **kwargs) -> "Document":
         """Internal async implementation of upsert()."""
         collection = self.document_class._get_collection_name()
-        
+
         # We need an ID to perform upsert, either from kwargs or a direct ID filter
-        doc_id = kwargs.get('id')
+        doc_id = kwargs.get("id")
         if not doc_id:
             # Check if an ID filter exists
             for field, op, value in self.query_parts:
-                if field == 'id' and op == '=':
+                if field == "id" and op == "=":
                     doc_id = value
                     break
-                    
+
         if not doc_id:
             from .exceptions import ValueError
-            raise ValueError("upsert() requires an 'id' either in kwargs or as an exact filter")
+
+            raise ValueError(
+                "upsert() requires an 'id' either in kwargs or as an exact filter"
+            )
 
         # Ensure ID format is <collection>:<id>
-        if isinstance(doc_id, str) and ':' not in doc_id:
+        if isinstance(doc_id, str) and ":" not in doc_id:
             record_id_str = f"{collection}:{doc_id}"
         else:
             record_id_str = str(doc_id)
 
         # Remove ID from kwargs since it goes in the URL path for SurrealDB
-        data = {k: v for k, v in kwargs.items() if k != 'id'}
-        
+        data = {k: v for k, v in kwargs.items() if k != "id"}
+
         # Serialize data
         from ..document import serialize_http_safe
+
         data = serialize_http_safe(data)
 
         # Upsert in SurrealDB merges if exists, creates if not
         # Since client.upsert uses RecordID object, we convert
         from surrealdb import RecordID
-        id_part = record_id_str.split(':')[1]
+
+        id_part = record_id_str.split(":")[1]
         id_val = int(id_part) if id_part.isdigit() else id_part
         record = RecordID(collection, id_val)
 
@@ -1735,13 +2057,14 @@ class QuerySet(BaseQuerySet):
 
         if not result:
             from .exceptions import DoesNotExist
+
             raise DoesNotExist(f"Failed to upsert document {record_id_str}")
 
         # Result might be a list
         doc_data = result[0] if isinstance(result, list) else result
         return self.document_class.from_db(doc_data)
 
-    def upsert_sync(self, **kwargs) -> 'Document':
+    def upsert_sync(self, **kwargs) -> "Document":
         """Upsert a document synchronously: update if exists, otherwise create.
 
         Args:
@@ -1751,47 +2074,57 @@ class QuerySet(BaseQuerySet):
             The upserted document
         """
         collection = self.document_class._get_collection_name()
-        
+
         # We need an ID to perform upsert, either from kwargs or a direct ID filter
-        doc_id = kwargs.get('id')
+        doc_id = kwargs.get("id")
         if not doc_id:
             # Check if an ID filter exists
             for field, op, value in self.query_parts:
-                if field == 'id' and op == '=':
+                if field == "id" and op == "=":
                     doc_id = value
                     break
-                    
+
         if not doc_id:
             from .exceptions import ValueError
-            raise ValueError("upsert() requires an 'id' either in kwargs or as an exact filter")
+
+            raise ValueError(
+                "upsert() requires an 'id' either in kwargs or as an exact filter"
+            )
 
         # Ensure ID format is <collection>:<id>
-        if isinstance(doc_id, str) and ':' not in doc_id:
+        if isinstance(doc_id, str) and ":" not in doc_id:
             record_id_str = f"{collection}:{doc_id}"
         else:
             record_id_str = str(doc_id)
 
         # Remove ID from kwargs
-        data = {k: v for k, v in kwargs.items() if k != 'id'}
-        
+        data = {k: v for k, v in kwargs.items() if k != "id"}
+
         from ..document import serialize_db_safe
+
         data = serialize_db_safe(data)
 
         # Use UPSERT syntax in a query directly since sync SDK doesn't expose upsert reliably
         query = f"UPSERT {record_id_str} CONTENT $data"
-        
+
         result = self.connection.client.query(query, {"data": data})
 
         if not result or not result[0]:
             from .exceptions import DoesNotExist
+
             raise DoesNotExist(f"Failed to upsert document {record_id_str}")
 
         # Returns list of lists
         doc_data = result[0][0]
         return self.document_class.from_db(doc_data)
 
-    def bulk_create_sync(self, documents: List[Any], batch_size: int = 1000,
-                      validate: bool = True, return_documents: bool = True) -> Union[List[Any], int]:
+    def bulk_create_sync(
+        self,
+        documents: List[Any],
+        batch_size: int = 1000,
+        validate: bool = True,
+        return_documents: bool = True,
+    ) -> Union[List[Any], int]:
         """Create multiple documents in a single operation synchronously.
 
         This method creates multiple documents in a single operation, processing
@@ -1817,7 +2150,7 @@ class QuerySet(BaseQuerySet):
 
         # Process in batches
         for i in range(0, len(documents), batch_size):
-            batch = documents[i:i + batch_size]
+            batch = documents[i : i + batch_size]
 
             # Validate batch if required
             if validate:
@@ -1828,6 +2161,7 @@ class QuerySet(BaseQuerySet):
             # Convert batch to DB representation
             data = [doc.to_db() for doc in batch]
             from ..document import serialize_db_safe
+
             data = [serialize_db_safe(d) for d in data]
 
             # Construct optimized bulk insert query
@@ -1839,8 +2173,9 @@ class QuerySet(BaseQuerySet):
 
                 if return_documents and result and result[0]:
                     # Process results if needed
-                    batch_docs = [self.document_class.from_db(doc_data)
-                                  for doc_data in result[0]]
+                    batch_docs = [
+                        self.document_class.from_db(doc_data) for doc_data in result[0]
+                    ]
                     created_docs.extend(batch_docs)
                     total_created += len(batch_docs)
                 elif result and result[0]:
@@ -1853,10 +2188,9 @@ class QuerySet(BaseQuerySet):
 
         return created_docs if return_documents else total_created
 
-    
     def explain(self, full: bool = False) -> Union[List[Dict[str, Any]], Any]:
         """Get query execution plan for performance analysis.
-        
+
         Polyglot method: executes synchronously if the connection is synchronous,
         otherwise returns an awaitable.
 
@@ -1878,19 +2212,16 @@ class QuerySet(BaseQuerySet):
         # But we override duplicates anyway.
         query = self._build_query()
         if "EXPLAIN" not in query:
-             query += " EXPLAIN FULL" if full else " EXPLAIN"
+            query += " EXPLAIN FULL" if full else " EXPLAIN"
         elif full and "EXPLAIN FULL" not in query:
-             query = query.replace("EXPLAIN", "EXPLAIN FULL")
-             
+            query = query.replace("EXPLAIN", "EXPLAIN FULL")
+
         result = await self.connection.client.query(query)
         return result[0] if result and result[0] else []
-    
-    
 
-    
     def explain_sync(self, full: bool = False) -> List[Dict[str, Any]]:
         """Get query execution plan for performance analysis synchronously.
-        
+
         Args:
             full: Whether to include full explanation including execution trace (default: False)
 
@@ -1899,22 +2230,22 @@ class QuerySet(BaseQuerySet):
         """
         query = self._build_query()
         if "EXPLAIN" not in query:
-             query += " EXPLAIN FULL" if full else " EXPLAIN"
+            query += " EXPLAIN FULL" if full else " EXPLAIN"
         elif full and "EXPLAIN FULL" not in query:
-             query = query.replace("EXPLAIN", "EXPLAIN FULL")
+            query = query.replace("EXPLAIN", "EXPLAIN FULL")
 
         result = self.connection.client.query(query)
         return result[0] if result and result[0] else []
-    
+
     def suggest_indexes(self) -> List[str]:
         """Suggest indexes based on current query patterns.
-        
+
         Analyzes the current query conditions and suggests optimal
         indexes that could improve performance.
-        
+
         Returns:
             List of suggested DEFINE INDEX statements
-            
+
         Example::
 
             suggestions = User.objects.filter(age__lt=18, city="NYC").suggest_indexes()
@@ -1923,24 +2254,26 @@ class QuerySet(BaseQuerySet):
         """
         suggestions = []
         collection_name = self.document_class._get_collection_name()
-        
+
         # Analyze filter conditions
         analyzed_fields = set()
         for field, op, value in self.query_parts:
-            if field != 'id' and field not in analyzed_fields:  # ID doesn't need indexing
+            if (
+                field != "id" and field not in analyzed_fields
+            ):  # ID doesn't need indexing
                 analyzed_fields.add(field)
-                if op in ('=', '!=', '>', '<', '>=', '<=', 'IN', 'NOT IN'):
+                if op in ("=", "!=", ">", "<", ">=", "<=", "IN", "NOT IN"):
                     suggestions.append(
                         f"DEFINE INDEX idx_{collection_name}_{field} ON {collection_name} FIELDS {field}"
                     )
-        
+
         # Suggest compound indexes for multiple conditions
         if len(analyzed_fields) > 1:
-            field_list = ', '.join(sorted(analyzed_fields))
+            field_list = ", ".join(sorted(analyzed_fields))
             suggestions.append(
                 f"DEFINE INDEX idx_{collection_name}_compound ON {collection_name} FIELDS {field_list}"
             )
-        
+
         # Suggest order by indexes
         if self.order_by_value:
             order_field, _ = self.order_by_value
@@ -1948,7 +2281,7 @@ class QuerySet(BaseQuerySet):
                 suggestions.append(
                     f"DEFINE INDEX idx_{collection_name}_{order_field} ON {collection_name} FIELDS {order_field}"
                 )
-        
+
         return list(set(suggestions))  # Remove duplicates
 
     async def reactive(self) -> "ReactiveQuerySet":
@@ -1962,6 +2295,7 @@ class QuerySet(BaseQuerySet):
             A new ReactiveQuerySet instance.
         """
         from ..reactive import ReactiveQuerySet
+
         rqs = ReactiveQuerySet(self)
         await rqs.sync()
         return rqs

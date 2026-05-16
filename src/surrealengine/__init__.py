@@ -150,7 +150,12 @@ from .datagrid_api import (
     parse_datatables_params,
     format_datatables_response,
 )
-from .context import using_connection, get_active_connection
+from .context import (
+    using_connection,
+    get_active_connection,
+    using_sync_manager,
+    get_active_sync_manager,
+)
 from .reactive import ReactiveQuerySet
 from .events import LiveEvent, Event
 from .functions import surreal_func, SurrealFunction
@@ -162,11 +167,22 @@ from .transaction import (
     transactional_sync,
 )
 from .mixins import TimestampMixin, SoftDeleteMixin
+from .sync_manager import (
+    SyncManager,
+    SyncConfig,
+    SyncStatus,
+    SyncPolicy,
+    SyncMode,
+    FreshnessMode,
+    BackpressurePolicy,
+    LiveSubscription,
+    create_sync_manager,
+)
 
 # For backward compatibility
 SurrealEngineConnection = SurrealEngineAsyncConnection
 
-__version__ = "1.0.1"
+__version__ = "1.2.0"
 __all__ = [
     "SurrealEngine",
     "SurrealEngineAsyncConnection",
@@ -257,7 +273,18 @@ __all__ = [
     # Context management
     "using_connection",
     "get_active_connection",
+    "using_sync_manager",
+    "get_active_sync_manager",
     "ReactiveQuerySet",
+    "SyncManager",
+    "SyncConfig",
+    "SyncStatus",
+    "SyncPolicy",
+    "SyncMode",
+    "FreshnessMode",
+    "BackpressurePolicy",
+    "LiveSubscription",
+    "create_sync_manager",
     "LiveEvent",
     "Event",
     "surreal_func",

@@ -56,8 +56,57 @@ class ReferenceField(Field):
         """
         self.document_type = document_type
         self.reference = kwargs.pop("reference", False)
+        self.on_delete = kwargs.pop("on_delete", None)
+        self.on_delete_then = kwargs.pop("on_delete_then", None)
+
+        if self.on_delete is not None:
+            self.on_delete = str(self.on_delete).strip().upper()
+        if self.on_delete_then is not None and not isinstance(self.on_delete_then, str):
+            raise TypeError(
+                "ReferenceField on_delete_then must be a string SurrealQL block"
+            )
+
+        if self.on_delete is not None or self.on_delete_then is not None:
+            # ON DELETE policies are only valid for native REFERENCE fields
+            self.reference = True
+
+        allowed_delete_policies = {"IGNORE", "UNSET", "CASCADE", "REJECT", "THEN"}
+        if self.on_delete is not None and self.on_delete not in allowed_delete_policies:
+            allowed = ", ".join(sorted(allowed_delete_policies))
+            raise ValueError(
+                f"Invalid on_delete policy '{self.on_delete}'. Allowed values: {allowed}."
+            )
+
+        if self.on_delete_then is not None and self.on_delete not in (None, "THEN"):
+            raise ValueError("on_delete_then can only be used with on_delete='THEN'.")
+
+        if self.on_delete_then is not None and self.on_delete is None:
+            self.on_delete = "THEN"
+
         super().__init__(**kwargs)
         self.py_type = Union[Type, str, dict]
+
+    def get_reference_clause(self) -> str:
+        """Return the SurrealQL REFERENCE clause for schema generation."""
+        if not self.reference:
+            return ""
+
+        clause = "REFERENCE"
+        if self.on_delete:
+            clause += f" ON DELETE {self.on_delete}"
+            if self.on_delete == "THEN":
+                if not self.on_delete_then:
+                    raise ValueError(
+                        "ReferenceField with on_delete='THEN' requires on_delete_then block"
+                    )
+                block = self.on_delete_then.strip()
+                if not block.startswith("{"):
+                    block = "{" + block
+                if not block.endswith("}"):
+                    block = block + "}"
+                clause += f" {block}"
+
+        return clause
 
     def _resolve_document_type(self) -> Any:
         """Resolve the document_type to an actual class.

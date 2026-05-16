@@ -2905,6 +2905,49 @@ class Document(metaclass=DocumentMetaclass):
             **kwargs,
         )
 
+    @staticmethod
+    def _is_missing_analyzer_error(exc: Exception, analyzer_name: str) -> bool:
+        msg = str(exc).lower()
+        return (
+            "analyzer" in msg
+            and analyzer_name.lower() in msg
+            and "does not exist" in msg
+        )
+
+    @classmethod
+    async def _ensure_analyzer_exists_async(
+        cls, connection: Any, analyzer_name: str
+    ) -> None:
+        candidates = [
+            f"DEFINE ANALYZER {analyzer_name} TOKENIZERS blank,punct FILTERS lowercase",
+            f"DEFINE ANALYZER {analyzer_name} TOKENIZERS blank FILTERS lowercase",
+            f"DEFINE ANALYZER {analyzer_name} TOKENIZERS blank",
+            f"DEFINE ANALYZER {analyzer_name}",
+        ]
+        for stmt in candidates:
+            try:
+                await connection.client.query(stmt)
+                return
+            except Exception as exc:
+                if "already exists" in str(exc).lower():
+                    return
+
+    @classmethod
+    def _ensure_analyzer_exists_sync(cls, connection: Any, analyzer_name: str) -> None:
+        candidates = [
+            f"DEFINE ANALYZER {analyzer_name} TOKENIZERS blank,punct FILTERS lowercase",
+            f"DEFINE ANALYZER {analyzer_name} TOKENIZERS blank FILTERS lowercase",
+            f"DEFINE ANALYZER {analyzer_name} TOKENIZERS blank",
+            f"DEFINE ANALYZER {analyzer_name}",
+        ]
+        for stmt in candidates:
+            try:
+                connection.client.query(stmt)
+                return
+            except Exception as exc:
+                if "already exists" in str(exc).lower():
+                    return
+
     @classmethod
     async def _create_index_async(
         cls,
@@ -2926,6 +2969,7 @@ class Document(metaclass=DocumentMetaclass):
 
         # Build the index definition
         query = f"DEFINE INDEX {index_name} ON {collection_name} FIELDS {fields_str}"
+        default_analyzer_name = "ascii"
 
         # Add index type
         if unique:
@@ -2946,7 +2990,10 @@ class Document(metaclass=DocumentMetaclass):
                     analyzer_str = str(analyzer)
                 query += f" FULLTEXT ANALYZER {analyzer_str}"
             else:
-                query += " FULLTEXT ANALYZER ascii"
+                await cls._ensure_analyzer_exists_async(
+                    connection, default_analyzer_name
+                )
+                query += f" FULLTEXT ANALYZER {default_analyzer_name}"
             if kwargs.get("bm25"):
                 query += " BM25"
             if kwargs.get("highlights"):
@@ -2976,6 +3023,12 @@ class Document(metaclass=DocumentMetaclass):
         try:
             await connection.client.query(query)
         except Exception as e:
+            if search and cls._is_missing_analyzer_error(e, default_analyzer_name):
+                await cls._ensure_analyzer_exists_async(
+                    connection, default_analyzer_name
+                )
+                await connection.client.query(query)
+                return
             if search and "Parse error" in str(e):
                 # Fallback to SurrealDB 2.x syntax for memory and older servers
                 fallback_query = query.replace("FULLTEXT ANALYZER", "SEARCH ANALYZER")
@@ -2991,7 +3044,18 @@ class Document(metaclass=DocumentMetaclass):
                     )
                     fallback_query += " HIGHLIGHTS BM25"
 
-                await connection.client.query(fallback_query)
+                try:
+                    await connection.client.query(fallback_query)
+                except Exception as fallback_exc:
+                    if search and cls._is_missing_analyzer_error(
+                        fallback_exc, default_analyzer_name
+                    ):
+                        await cls._ensure_analyzer_exists_async(
+                            connection, default_analyzer_name
+                        )
+                        await connection.client.query(fallback_query)
+                    else:
+                        raise
             else:
                 raise e
 
@@ -3028,6 +3092,7 @@ class Document(metaclass=DocumentMetaclass):
 
         # Build the index definition
         query = f"DEFINE INDEX {index_name} ON {collection_name} FIELDS {fields_str}"
+        default_analyzer_name = "ascii"
 
         # Add index type
         if unique:
@@ -3048,7 +3113,8 @@ class Document(metaclass=DocumentMetaclass):
                     analyzer_str = str(analyzer)
                 query += f" FULLTEXT ANALYZER {analyzer_str}"
             else:
-                query += " FULLTEXT ANALYZER ascii"
+                cls._ensure_analyzer_exists_sync(connection, default_analyzer_name)
+                query += f" FULLTEXT ANALYZER {default_analyzer_name}"
             if kwargs.get("bm25"):
                 query += " BM25"
             if kwargs.get("highlights"):
@@ -3078,6 +3144,10 @@ class Document(metaclass=DocumentMetaclass):
         try:
             connection.client.query(query)
         except Exception as e:
+            if search and cls._is_missing_analyzer_error(e, default_analyzer_name):
+                cls._ensure_analyzer_exists_sync(connection, default_analyzer_name)
+                connection.client.query(query)
+                return
             if search and "Parse error" in str(e):
                 # Fallback to SurrealDB 2.x syntax for memory and older servers
                 fallback_query = query.replace("FULLTEXT ANALYZER", "SEARCH ANALYZER")
@@ -3093,7 +3163,18 @@ class Document(metaclass=DocumentMetaclass):
                     )
                     fallback_query += " HIGHLIGHTS BM25"
 
-                connection.client.query(fallback_query)
+                try:
+                    connection.client.query(fallback_query)
+                except Exception as fallback_exc:
+                    if search and cls._is_missing_analyzer_error(
+                        fallback_exc, default_analyzer_name
+                    ):
+                        cls._ensure_analyzer_exists_sync(
+                            connection, default_analyzer_name
+                        )
+                        connection.client.query(fallback_query)
+                    else:
+                        raise
             else:
                 raise e
 
@@ -3765,7 +3846,10 @@ class Document(metaclass=DocumentMetaclass):
                     field_query += " VALUE $value.distinct()"
                 # Reference
                 elif getattr(field, "reference", False):
-                    field_query += " REFERENCE"
+                    if hasattr(field, "get_reference_clause"):
+                        field_query += f" {field.get_reference_clause()}"
+                    else:
+                        field_query += " REFERENCE"
                 # Default value
                 elif field.default is not None and not callable(field.default):
 
@@ -4026,7 +4110,10 @@ class Document(metaclass=DocumentMetaclass):
                     field_query += " VALUE $value.distinct()"
                 # Reference
                 elif getattr(field, "reference", False):
-                    field_query += " REFERENCE"
+                    if hasattr(field, "get_reference_clause"):
+                        field_query += f" {field.get_reference_clause()}"
+                    else:
+                        field_query += " REFERENCE"
                 # Default value
                 elif field.default is not None and not callable(field.default):
 

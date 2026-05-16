@@ -11,6 +11,7 @@ Functions:
     generate_schema_statements: Generate SQL schema statements
     generate_schema_statements_from_module: Generate schema from a module
 """
+
 import inspect
 import importlib
 from typing import Any, Dict, List, Optional, Type
@@ -34,17 +35,20 @@ def get_document_classes(module_name: str) -> List[Type[Document]]:
 
     for name, obj in inspect.getmembers(module):
         # Check if it's a class and a subclass of Document (but not Document itself)
-        if (inspect.isclass(obj) and 
-            issubclass(obj, Document) and 
-            obj.__module__ == module_name and
-            obj != Document):
+        if (
+            inspect.isclass(obj)
+            and issubclass(obj, Document)
+            and obj.__module__ == module_name
+            and obj != Document
+        ):
             document_classes.append(obj)
 
     return document_classes
 
 
-async def create_tables_from_module(module_name: str, connection: Optional[Any] = None, 
-                                   schemafull: bool = True) -> None:
+async def create_tables_from_module(
+    module_name: str, connection: Optional[Any] = None, schemafull: bool = True
+) -> None:
     """Create tables for all Document classes in a module asynchronously.
 
     Args:
@@ -58,10 +62,14 @@ async def create_tables_from_module(module_name: str, connection: Optional[Any] 
 
     for doc_class in document_classes:
         # Cast to Any to avoid static analysis issues with dynamic attributes and creates_table
-        await getattr(doc_class, 'create_table')(connection=connection, schemafull=schemafull)
+        await getattr(doc_class, "create_table")(
+            connection=connection, schemafull=schemafull
+        )
 
-def create_tables_from_module_sync(module_name: str, connection: Optional[Any] = None,
-                                  schemafull: bool = True) -> None:
+
+def create_tables_from_module_sync(
+    module_name: str, connection: Optional[Any] = None, schemafull: bool = True
+) -> None:
     """Create tables for all Document classes in a module synchronously.
 
     Args:
@@ -72,10 +80,14 @@ def create_tables_from_module_sync(module_name: str, connection: Optional[Any] =
     document_classes = get_document_classes(module_name)
 
     for doc_class in document_classes:
-        getattr(doc_class, 'create_table_sync')(connection=connection, schemafull=schemafull)
+        getattr(doc_class, "create_table_sync")(
+            connection=connection, schemafull=schemafull
+        )
 
 
-def generate_schema_statements(document_class: Type[Document], schemafull: bool = True) -> List[str]:
+def generate_schema_statements(
+    document_class: Type[Document], schemafull: bool = True
+) -> List[str]:
     """Generate SurrealDB schema statements for a Document class.
 
     This function generates DEFINE TABLE and DEFINE FIELD statements for a Document class
@@ -89,7 +101,7 @@ def generate_schema_statements(document_class: Type[Document], schemafull: bool 
         A list of SurrealDB schema statements
     """
     statements = []
-    
+
     # Cast to Any for meta access
     doc_cls_any: Any = document_class
     collection_name = doc_cls_any._get_collection_name()
@@ -108,38 +120,46 @@ def generate_schema_statements(document_class: Type[Document], schemafull: bool 
     statements.append(table_stmt + ";")
 
     # Generate DEFINE EVENT statements
-    events = doc_cls_any._meta.get('events', [])
+    events = doc_cls_any._meta.get("events", [])
     if events:
         for event in events:
-            if hasattr(event, 'to_sql'):
+            if hasattr(event, "to_sql"):
                 statements.append(event.to_sql(collection_name) + ";")
 
-    
     # Generate DEFINE FIELD statements if schemafull or if field is marked with define_schema=True
     for field_name, field in doc_cls_any._fields.items():
         # Skip id field as it's handled by SurrealDB
-        if field_name == doc_cls_any._meta.get('id_field', 'id'):
+        if field_name == doc_cls_any._meta.get("id_field", "id"):
             continue
 
         # Only define fields if schemafull or if field is explicitly marked for schema definition
         if schemafull or field.define_schema:
-            _generate_field_statements(collection_name, field.db_field, field, document_class, statements)
+            _generate_field_statements(
+                collection_name, field.db_field, field, document_class, statements
+            )
 
     return statements
 
-def _generate_field_statements(table: str, current_path: str, field: Any, document_class: Type, statements: List[str]) -> None:
+
+def _generate_field_statements(
+    table: str,
+    current_path: str,
+    field: Any,
+    document_class: Type,
+    statements: List[str],
+) -> None:
     """Recursively generate DEFINE FIELD statements."""
-    
+
     # Cast document_class to Any to access _get_field_type_for_surreal
     doc_cls_any: Any = document_class
     # 1. Base Statement
     field_type = doc_cls_any._get_field_type_for_surreal(field)
-    
+
     # SurrealDB 3.0 syntax for Fields:
     # DEFINE FIELD name ON table TYPE type [COMPUTED expr] ...
     field_stmt = f"DEFINE FIELD {current_path} ON {table} TYPE {field_type}"
 
-    if getattr(field, 'computation_expression', None):
+    if getattr(field, "computation_expression", None):
         field_stmt += f" COMPUTED {field.computation_expression}"
 
     # Build constraints
@@ -154,65 +174,70 @@ def _generate_field_statements(table: str, current_path: str, field: Any, docume
         from .fields.collection import DictField
     except ImportError:
         # Should not happen within the package
-        StringField = NumberField = ChoiceField = EmbeddedField = DictField = None # type: ignore
+        StringField = NumberField = ChoiceField = EmbeddedField = DictField = None  # type: ignore
 
     if StringField and isinstance(field, StringField):
-        if getattr(field, 'min_length', None) is not None:
+        if getattr(field, "min_length", None) is not None:
             # Cast to int to satisfy type checker
-            exprs.append(f"string::len($value) >= {int(field.min_length)}") # type: ignore
-        if getattr(field, 'max_length', None) is not None:
-            exprs.append(f"string::len($value) <= {int(field.max_length)}") # type: ignore
-        if getattr(field, 'regex_pattern', None):
+            exprs.append(f"string::len($value) >= {int(field.min_length)}")  # type: ignore
+        if getattr(field, "max_length", None) is not None:
+            exprs.append(f"string::len($value) <= {int(field.max_length)}")  # type: ignore
+        if getattr(field, "regex_pattern", None):
             from .surrealql import escape_literal
+
             pat = field.regex_pattern
             exprs.append(f"string::matches($value, {escape_literal(pat)})")
-        if getattr(field, 'choices', None):
+        if getattr(field, "choices", None):
             vals = []
             for v in field.choices:
                 if isinstance(v, str):
-                    s = v.replace('\\', r'\\').replace('"', r'\"')
+                    s = v.replace("\\", r"\\").replace('"', r"\"")
                     vals.append(f'"{s}"')
                 else:
                     vals.append(str(v).lower() if isinstance(v, bool) else str(v))
             exprs.append(f"$value IN [{', '.join(vals)}]")
 
     if NumberField and isinstance(field, NumberField):
-        if getattr(field, 'min_value', None) is not None:
+        if getattr(field, "min_value", None) is not None:
             exprs.append(f"$value >= {field.min_value}")
-        if getattr(field, 'max_value', None) is not None:
+        if getattr(field, "max_value", None) is not None:
             exprs.append(f"$value <= {field.max_value}")
 
     if ChoiceField and isinstance(field, ChoiceField):
         vals = []
         for v in field.values:
             if isinstance(v, str):
-                s = v.replace('\\', r'\\').replace('"', r'\"')
+                s = v.replace("\\", r"\\").replace('"', r"\"")
                 vals.append(f'"{s}"')
             else:
                 vals.append(str(v).lower() if isinstance(v, bool) else str(v))
         exprs.append(f"$value IN [{', '.join(vals)}]")
 
-    if getattr(field, 'assertion', None):
+    if getattr(field, "assertion", None):
         exprs.append(field.assertion)
 
     if exprs:
         field_stmt += " ASSERT " + " AND ".join(exprs)
 
     # Sets Deduplication (redundant if using native set type in v3.0)
-    if getattr(field, '_is_set', False) and not field_type.startswith("set"):
+    if getattr(field, "_is_set", False) and not field_type.startswith("set"):
         field_stmt += " VALUE $value.distinct()"
     # Reference
-    elif getattr(field, 'reference', False):
-        field_stmt += " REFERENCE"
+    elif getattr(field, "reference", False):
+        if hasattr(field, "get_reference_clause"):
+            field_stmt += " " + field.get_reference_clause()
+        else:
+            field_stmt += " REFERENCE"
     # Default
     elif field.default is not None and not callable(field.default):
         from .surrealql import escape_literal
+
         field_stmt += f" VALUE {escape_literal(field.default)}"
 
     # Field comment
-    if getattr(field, 'comment', None):
-        c = field.comment.replace('\\', r'\\').replace('"', r'\"')
-        field_stmt += f" COMMENT \"{c}\""
+    if getattr(field, "comment", None):
+        c = field.comment.replace("\\", r"\\").replace('"', r"\"")
+        field_stmt += f' COMMENT "{c}"'
 
     statements.append(field_stmt + ";")
 
@@ -220,24 +245,30 @@ def _generate_field_statements(table: str, current_path: str, field: Any, docume
     if EmbeddedField and isinstance(field, EmbeddedField):
         # Allow flexible schema for embedded documents?
         # Maybe add a FLEXIBLE option to EmbeddedField later.
-        
+
         # Iterate over fields of the embedded document
         embedded_doc_cls = field.document_type
         # We need to access _fields of the EmbeddedDocument class
-        if hasattr(embedded_doc_cls, '_fields'):
+        if hasattr(embedded_doc_cls, "_fields"):
             for sub_name, sub_field in embedded_doc_cls._fields.items():
                 sub_path = f"{current_path}.{sub_field.db_field or sub_name}"
-                _generate_field_statements(table, sub_path, sub_field, document_class, statements)
+                _generate_field_statements(
+                    table, sub_path, sub_field, document_class, statements
+                )
 
     # 3. Recursively define keys for DictField if schema is provided
     if DictField and isinstance(field, DictField) and field.schema:
         for key, sub_field in field.schema.items():
             # For DictField, the key is the path element
             sub_path = f"{current_path}.{key}"
-            _generate_field_statements(table, sub_path, sub_field, document_class, statements)
+            _generate_field_statements(
+                table, sub_path, sub_field, document_class, statements
+            )
 
 
-def generate_schema_statements_from_module(module_name: str, schemafull: bool = True) -> Dict[str, List[str]]:
+def generate_schema_statements_from_module(
+    module_name: str, schemafull: bool = True
+) -> Dict[str, List[str]]:
     """Generate SurrealDB schema statements for all Document classes in a module.
 
     Args:

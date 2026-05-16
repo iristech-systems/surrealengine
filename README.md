@@ -1,7 +1,7 @@
 # SurrealEngine
 **Replace Your Multi-Database Stack with One Pythonic ORM**
 
-> **Now generally available as v1.0.0**
+> **Now generally available as v1.1.0**
 
 Documents, graphs, vectors, real-time, and analytics—without the operational nightmare.
 Powered by SurrealDB. Built for Python developers.

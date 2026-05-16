@@ -8,6 +8,7 @@ from .base_query import BaseQuerySet
 # Set up logging
 logger = logging.getLogger(__name__)
 
+
 class SchemalessQuerySet(BaseQuerySet):
     """QuerySet for schemaless operations.
 
@@ -52,11 +53,12 @@ class SchemalessQuerySet(BaseQuerySet):
 
         # If we have a document class in the connection's database mapping, use it
         from .document import Document  # Import at the top of the file
+
         doc_class = None
 
         # Find matching document class
         for cls in Document.__subclasses__():
-            if hasattr(cls, '_meta') and cls._meta.get('collection') == self.table_name:
+            if hasattr(cls, "_meta") and cls._meta.get("collection") == self.table_name:
                 doc_class = cls
                 break
 
@@ -69,6 +71,7 @@ class SchemalessQuerySet(BaseQuerySet):
         else:
             # If no matching document class, create dynamic objects
             from types import SimpleNamespace
+
             for doc_data in results:
                 # Check if doc_data is a dictionary, if not try to convert or skip
                 if isinstance(doc_data, dict):
@@ -103,11 +106,12 @@ class SchemalessQuerySet(BaseQuerySet):
 
         # If we have a document class in the connection's database mapping, use it
         from .document import Document  # Import at the top of the file
+
         doc_class = None
 
         # Find matching document class
         for cls in Document.__subclasses__():
-            if hasattr(cls, '_meta') and cls._meta.get('collection') == self.table_name:
+            if hasattr(cls, "_meta") and cls._meta.get("collection") == self.table_name:
                 doc_class = cls
                 break
 
@@ -121,6 +125,7 @@ class SchemalessQuerySet(BaseQuerySet):
         else:
             # If no matching document class, create dynamic objects
             from types import SimpleNamespace
+
             for doc_data in results:
                 # Check if doc_data is a dictionary, if not try to convert or skip
                 if isinstance(doc_data, dict):
@@ -151,18 +156,24 @@ class SchemalessQuerySet(BaseQuerySet):
             MultipleObjectsReturned: If multiple matching documents are found
         """
         # Special handling for ID-based lookup
-        if len(kwargs) == 1 and 'id' in kwargs:
-            id_value = kwargs['id']
+        if len(kwargs) == 1 and "id" in kwargs:
+            id_value = kwargs["id"]
             # Handle both full and short ID formats
-            if ':' in str(id_value):
-                record_id = id_value.split(':')[1]
+            if ":" in str(id_value):
+                record_id = id_value.split(":")[1]
             else:
                 record_id = id_value
 
             # Use direct select with RecordID
-            result = await self.connection.client.select(RecordID(self.table_name, record_id))
-            if not result or result == self.table_name:  # Check for the table name response
-                raise DoesNotExist(f"Object in table '{self.table_name}' matching query does not exist.")
+            result = await self.connection.client.select(
+                RecordID(self.table_name, record_id)
+            )
+            if (
+                not result or result == self.table_name
+            ):  # Check for the table name response
+                raise DoesNotExist(
+                    f"Object in table '{self.table_name}' matching query does not exist."
+                )
 
             # Handle the result appropriately
             if isinstance(result, list):
@@ -190,18 +201,22 @@ class SchemalessQuerySet(BaseQuerySet):
             MultipleObjectsReturned: If multiple matching documents are found
         """
         # Special handling for ID-based lookup
-        if len(kwargs) == 1 and 'id' in kwargs:
-            id_value = kwargs['id']
+        if len(kwargs) == 1 and "id" in kwargs:
+            id_value = kwargs["id"]
             # Handle both full and short ID formats
-            if ':' in str(id_value):
-                record_id = id_value.split(':')[1]
+            if ":" in str(id_value):
+                record_id = id_value.split(":")[1]
             else:
                 record_id = id_value
 
             # Use direct select with RecordID
             result = self.connection.client.select(RecordID(self.table_name, record_id))
-            if not result or result == self.table_name:  # Check for the table name response
-                raise DoesNotExist(f"Object in table '{self.table_name}' matching query does not exist.")
+            if (
+                not result or result == self.table_name
+            ):  # Check for the table name response
+                raise DoesNotExist(
+                    f"Object in table '{self.table_name}' matching query does not exist."
+                )
 
             # Handle the result appropriately
             if isinstance(result, list):
@@ -223,18 +238,24 @@ class SchemalessQuerySet(BaseQuerySet):
         """
         query = f"SELECT * FROM {self.table_name}"
 
+        version_clause = self._build_version_clause()
+        if version_clause:
+            query += f" {version_clause}"
+
         if self.query_parts:
             # Process special ID handling first
             processed_query_parts = []
             for field, op, value in self.query_parts:
-                if field == 'id' and isinstance(value, str):
+                if field == "id" and isinstance(value, str):
                     # Handle record IDs specially
-                    if ':' in value:
+                    if ":" in value:
                         # Full record ID format (table:id)
-                        processed_query_parts.append(('id', '=', value))
+                        processed_query_parts.append(("id", "=", value))
                     else:
                         # Short ID format (just id)
-                        processed_query_parts.append(('id', '=', f'{self.table_name}:{value}'))
+                        processed_query_parts.append(
+                            ("id", "=", f"{self.table_name}:{value}")
+                        )
                 else:
                     processed_query_parts.append((field, op, value))
 
@@ -251,13 +272,17 @@ class SchemalessQuerySet(BaseQuerySet):
         # Add other clauses from _build_clauses
         clauses = self._build_clauses()
         for clause_name, clause_sql in clauses.items():
-            if clause_name != 'WHERE':  # WHERE clause is already handled
+            if clause_name != "WHERE":  # WHERE clause is already handled
                 query += f" {clause_sql}"
 
         return query
 
-    async def bulk_create(self, documents: List[Dict[str, Any]], batch_size: int = 1000, 
-                      return_documents: bool = True) -> Union[List[Any], int]:
+    async def bulk_create(
+        self,
+        documents: List[Dict[str, Any]],
+        batch_size: int = 1000,
+        return_documents: bool = True,
+    ) -> Union[List[Any], int]:
         """Create multiple documents in a single operation asynchronously.
 
         This method creates multiple documents in a single operation, processing
@@ -280,10 +305,11 @@ class SchemalessQuerySet(BaseQuerySet):
 
         # Process in batches
         for i in range(0, len(documents), batch_size):
-            batch = documents[i:i + batch_size]
+            batch = documents[i : i + batch_size]
 
             # Construct optimized bulk insert query
             from .document import serialize_db_safe
+
             batch = [serialize_db_safe(doc) for doc in batch]
             query = f"INSERT INTO {self.table_name} $batch;"
 
@@ -294,6 +320,7 @@ class SchemalessQuerySet(BaseQuerySet):
                 if return_documents and result and result[0]:
                     # Process results if needed
                     from types import SimpleNamespace
+
                     batch_docs = []
                     for doc_data in result[0]:
                         if isinstance(doc_data, dict):
@@ -313,8 +340,12 @@ class SchemalessQuerySet(BaseQuerySet):
 
         return created_docs if return_documents else total_created
 
-    def bulk_create_sync(self, documents: List[Dict[str, Any]], batch_size: int = 1000, 
-                      return_documents: bool = True) -> Union[List[Any], int]:
+    def bulk_create_sync(
+        self,
+        documents: List[Dict[str, Any]],
+        batch_size: int = 1000,
+        return_documents: bool = True,
+    ) -> Union[List[Any], int]:
         """Create multiple documents in a single operation synchronously.
 
         This method creates multiple documents in a single operation, processing
@@ -337,10 +368,11 @@ class SchemalessQuerySet(BaseQuerySet):
 
         # Process in batches
         for i in range(0, len(documents), batch_size):
-            batch = documents[i:i + batch_size]
+            batch = documents[i : i + batch_size]
 
             # Construct optimized bulk insert query
             from .document import serialize_db_safe
+
             batch = [serialize_db_safe(doc) for doc in batch]
             query = f"INSERT INTO {self.table_name} $batch;"
 
@@ -351,6 +383,7 @@ class SchemalessQuerySet(BaseQuerySet):
                 if return_documents and result and result[0]:
                     # Process results if needed
                     from types import SimpleNamespace
+
                     batch_docs = []
                     for doc_data in result[0]:
                         if isinstance(doc_data, dict):
@@ -393,8 +426,13 @@ class SchemalessTable:
         self.name = name
         self.connection = connection
 
-    async def relate(self, from_id: Union[str, RecordID], relation: str, 
-                    to_id: Union[str, RecordID], **attrs: Any) -> Optional[Any]:
+    async def relate(
+        self,
+        from_id: Union[str, RecordID],
+        relation: str,
+        to_id: Union[str, RecordID],
+        **attrs: Any,
+    ) -> Optional[Any]:
         """Create a relation between two records asynchronously.
 
         This method creates a relation between two records in the database.
@@ -414,8 +452,8 @@ class SchemalessTable:
             from_record = from_id
         else:
             # If it's a string, check if it includes the table name
-            if ':' in from_id:
-                table, id_part = from_id.split(':', 1)
+            if ":" in from_id:
+                table, id_part = from_id.split(":", 1)
                 from_record = RecordID(table, id_part)
             else:
                 # Assume it's from the current table
@@ -426,8 +464,8 @@ class SchemalessTable:
             to_record = to_id
         else:
             # If it's a string, check if it includes the table name
-            if ':' in to_id:
-                table, id_part = to_id.split(':', 1)
+            if ":" in to_id:
+                table, id_part = to_id.split(":", 1)
                 to_record = RecordID(table, id_part)
             else:
                 # Assume it's from the current table
@@ -439,6 +477,7 @@ class SchemalessTable:
         # Add attributes if provided
         if attrs:
             from .document import _serialize_for_surreal as _ser
+
             attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
@@ -450,8 +489,13 @@ class SchemalessTable:
 
         return None
 
-    def relate_sync(self, from_id: Union[str, RecordID], relation: str, 
-                   to_id: Union[str, RecordID], **attrs: Any) -> Optional[Any]:
+    def relate_sync(
+        self,
+        from_id: Union[str, RecordID],
+        relation: str,
+        to_id: Union[str, RecordID],
+        **attrs: Any,
+    ) -> Optional[Any]:
         """Create a relation between two records synchronously.
 
         This method creates a relation between two records in the database.
@@ -471,8 +515,8 @@ class SchemalessTable:
             from_record = from_id
         else:
             # If it's a string, check if it includes the table name
-            if ':' in from_id:
-                table, id_part = from_id.split(':', 1)
+            if ":" in from_id:
+                table, id_part = from_id.split(":", 1)
                 from_record = RecordID(table, id_part)
             else:
                 # Assume it's from the current table
@@ -483,8 +527,8 @@ class SchemalessTable:
             to_record = to_id
         else:
             # If it's a string, check if it includes the table name
-            if ':' in to_id:
-                table, id_part = to_id.split(':', 1)
+            if ":" in to_id:
+                table, id_part = to_id.split(":", 1)
                 to_record = RecordID(table, id_part)
             else:
                 # Assume it's from the current table
@@ -496,6 +540,7 @@ class SchemalessTable:
         # Add attributes if provided
         if attrs:
             from .document import _serialize_for_surreal as _ser
+
             attrs_str = ", ".join([f"{k}: {_ser(v)}" for k, v in attrs.items()])
             query += f" CONTENT {{ {attrs_str} }}"
 
@@ -507,8 +552,13 @@ class SchemalessTable:
 
         return None
 
-    async def get_related(self, from_id: Union[str, RecordID], relation: str, 
-                         target_table: Optional[str] = None, **filters: Any) -> List[Any]:
+    async def get_related(
+        self,
+        from_id: Union[str, RecordID],
+        relation: str,
+        target_table: Optional[str] = None,
+        **filters: Any,
+    ) -> List[Any]:
         """Get related records asynchronously.
 
         This method retrieves records related to the given record through
@@ -529,7 +579,7 @@ class SchemalessTable:
             from_record = str(from_id)
         else:
             # If it's a string, check if it includes the table name
-            if ':' in from_id:
+            if ":" in from_id:
                 from_record = from_id
             else:
                 # Assume it's from the current table
@@ -548,6 +598,7 @@ class SchemalessTable:
             conditions = []
             for field, value in filters.items():
                 from .surrealql import escape_literal
+
                 conditions.append(f"{field} = {escape_literal(value)}")
 
             if target_table:
@@ -562,6 +613,7 @@ class SchemalessTable:
 
         # Process results
         from types import SimpleNamespace
+
         processed_results = []
         for item in result[0]:
             if isinstance(item, dict):
@@ -571,8 +623,13 @@ class SchemalessTable:
 
         return processed_results
 
-    def get_related_sync(self, from_id: Union[str, RecordID], relation: str, 
-                        target_table: Optional[str] = None, **filters: Any) -> List[Any]:
+    def get_related_sync(
+        self,
+        from_id: Union[str, RecordID],
+        relation: str,
+        target_table: Optional[str] = None,
+        **filters: Any,
+    ) -> List[Any]:
         """Get related records synchronously.
 
         This method retrieves records related to the given record through
@@ -593,7 +650,7 @@ class SchemalessTable:
             from_record = str(from_id)
         else:
             # If it's a string, check if it includes the table name
-            if ':' in from_id:
+            if ":" in from_id:
                 from_record = from_id
             else:
                 # Assume it's from the current table
@@ -612,6 +669,7 @@ class SchemalessTable:
             conditions = []
             for field, value in filters.items():
                 from .surrealql import escape_literal
+
                 conditions.append(f"{field} = {escape_literal(value)}")
 
             if target_table:
@@ -626,6 +684,7 @@ class SchemalessTable:
 
         # Process results
         from types import SimpleNamespace
+
         processed_results = []
         for item in result[0]:
             if isinstance(item, dict):
@@ -635,8 +694,13 @@ class SchemalessTable:
 
         return processed_results
 
-    async def update_relation(self, from_id: Union[str, RecordID], relation: str, 
-                             to_id: Union[str, RecordID], **attrs: Any) -> Optional[Any]:
+    async def update_relation(
+        self,
+        from_id: Union[str, RecordID],
+        relation: str,
+        to_id: Union[str, RecordID],
+        **attrs: Any,
+    ) -> Optional[Any]:
         """Update an existing relation asynchronously.
 
         This method updates an existing relation between two records in the database.
@@ -656,7 +720,7 @@ class SchemalessTable:
             from_record = str(from_id)
         else:
             # If it's a string, check if it includes the table name
-            if ':' in from_id:
+            if ":" in from_id:
                 from_record = from_id
             else:
                 # Assume it's from the current table
@@ -667,7 +731,7 @@ class SchemalessTable:
             to_record = str(to_id)
         else:
             # If it's a string, check if it includes the table name
-            if ':' in to_id:
+            if ":" in to_id:
                 to_record = to_id
             else:
                 # Assume it's from the current table
@@ -675,6 +739,7 @@ class SchemalessTable:
 
         # Query the relation first
         from .surrealql import escape_literal
+
         relation_query = f"SELECT id FROM {relation} WHERE in = {escape_literal(from_record)} AND out = {escape_literal(to_record)}"
         relation_result = await self.connection.client.query(relation_query)
 
@@ -683,12 +748,13 @@ class SchemalessTable:
             return await self.relate(from_id, relation, to_id, **attrs)
 
         # Get relation ID and update
-        relation_id = relation_result[0][0]['id']
+        relation_id = relation_result[0][0]["id"]
         update_query = f"UPDATE {relation_id} SET"
 
         # Add attributes
         updates = []
         from .document import _serialize_for_surreal as _ser
+
         for key, value in attrs.items():
             updates.append(f" {key} = {_ser(value)}")
 
@@ -701,8 +767,13 @@ class SchemalessTable:
 
         return None
 
-    def update_relation_sync(self, from_id: Union[str, RecordID], relation: str, 
-                            to_id: Union[str, RecordID], **attrs: Any) -> Optional[Any]:
+    def update_relation_sync(
+        self,
+        from_id: Union[str, RecordID],
+        relation: str,
+        to_id: Union[str, RecordID],
+        **attrs: Any,
+    ) -> Optional[Any]:
         """Update an existing relation synchronously.
 
         This method updates an existing relation between two records in the database.
@@ -722,7 +793,7 @@ class SchemalessTable:
             from_record = str(from_id)
         else:
             # If it's a string, check if it includes the table name
-            if ':' in from_id:
+            if ":" in from_id:
                 from_record = from_id
             else:
                 # Assume it's from the current table
@@ -733,7 +804,7 @@ class SchemalessTable:
             to_record = str(to_id)
         else:
             # If it's a string, check if it includes the table name
-            if ':' in to_id:
+            if ":" in to_id:
                 to_record = to_id
             else:
                 # Assume it's from the current table
@@ -741,6 +812,7 @@ class SchemalessTable:
 
         # Query the relation first
         from .surrealql import escape_literal
+
         relation_query = f"SELECT id FROM {relation} WHERE in = {escape_literal(from_record)} AND out = {escape_literal(to_record)}"
         relation_result = self.connection.client.query(relation_query)
 
@@ -749,12 +821,13 @@ class SchemalessTable:
             return self.relate_sync(from_id, relation, to_id, **attrs)
 
         # Get relation ID and update
-        relation_id = relation_result[0][0]['id']
+        relation_id = relation_result[0][0]["id"]
         update_query = f"UPDATE {relation_id} SET"
 
         # Add attributes
         updates = []
         from .document import _serialize_for_surreal as _ser
+
         for key, value in attrs.items():
             updates.append(f" {key} = {_ser(value)}")
 
@@ -767,8 +840,12 @@ class SchemalessTable:
 
         return None
 
-    async def delete_relation(self, from_id: Union[str, RecordID], relation: str, 
-                             to_id: Optional[Union[str, RecordID]] = None) -> int:
+    async def delete_relation(
+        self,
+        from_id: Union[str, RecordID],
+        relation: str,
+        to_id: Optional[Union[str, RecordID]] = None,
+    ) -> int:
         """Delete a relation asynchronously.
 
         This method deletes a relation between two records in the database.
@@ -787,7 +864,7 @@ class SchemalessTable:
             from_record = str(from_id)
         else:
             # If it's a string, check if it includes the table name
-            if ':' in from_id:
+            if ":" in from_id:
                 from_record = from_id
             else:
                 # Assume it's from the current table
@@ -800,7 +877,7 @@ class SchemalessTable:
                 to_record = str(to_id)
             else:
                 # If it's a string, check if it includes the table name
-                if ':' in to_id:
+                if ":" in to_id:
                     to_record = to_id
                 else:
                     # Assume it's from the current table
@@ -808,10 +885,12 @@ class SchemalessTable:
 
             # Delete specific relation
             from .surrealql import escape_literal
+
             query = f"DELETE FROM {relation} WHERE in = {escape_literal(from_record)} AND out = {escape_literal(to_record)}"
         else:
             # Delete all relations from this record
             from .surrealql import escape_literal
+
             query = f"DELETE FROM {relation} WHERE in = {escape_literal(from_record)}"
 
         result = await self.connection.client.query(query)
@@ -821,8 +900,12 @@ class SchemalessTable:
 
         return 0
 
-    def delete_relation_sync(self, from_id: Union[str, RecordID], relation: str, 
-                            to_id: Optional[Union[str, RecordID]] = None) -> int:
+    def delete_relation_sync(
+        self,
+        from_id: Union[str, RecordID],
+        relation: str,
+        to_id: Optional[Union[str, RecordID]] = None,
+    ) -> int:
         """Delete a relation synchronously.
 
         This method deletes a relation between two records in the database.
@@ -841,7 +924,7 @@ class SchemalessTable:
             from_record = str(from_id)
         else:
             # If it's a string, check if it includes the table name
-            if ':' in from_id:
+            if ":" in from_id:
                 from_record = from_id
             else:
                 # Assume it's from the current table
@@ -854,7 +937,7 @@ class SchemalessTable:
                 to_record = str(to_id)
             else:
                 # If it's a string, check if it includes the table name
-                if ':' in to_id:
+                if ":" in to_id:
                     to_record = to_id
                 else:
                     # Assume it's from the current table
@@ -862,10 +945,12 @@ class SchemalessTable:
 
             # Delete specific relation
             from .surrealql import escape_literal
+
             query = f"DELETE FROM {relation} WHERE in = {escape_literal(from_record)} AND out = {escape_literal(to_record)}"
         else:
             # Delete all relations from this record
             from .surrealql import escape_literal
+
             query = f"DELETE FROM {relation} WHERE in = {escape_literal(from_record)}"
 
         result = self.connection.client.query(query)
@@ -875,9 +960,15 @@ class SchemalessTable:
 
         return 0
 
-    async def create_index(self, index_name: str, fields: List[str], unique: bool = False,
-                           search: bool = False, analyzer: Optional[str] = None,
-                           comment: Optional[str] = None) -> None:
+    async def create_index(
+        self,
+        index_name: str,
+        fields: List[str],
+        unique: bool = False,
+        search: bool = False,
+        analyzer: Optional[str] = None,
+        comment: Optional[str] = None,
+    ) -> None:
         """Create an index on this table asynchronously.
 
         Args:
@@ -905,12 +996,29 @@ class SchemalessTable:
 
         # Execute the query
         from .connection import _maybe_span  # lazy import to avoid cycles
-        with _maybe_span("surreal.schema.define_index", {"db.system": "surrealdb", "db.name": self.connection.database, "db.namespace": self.connection.namespace, "db.operation": "define_index", "db.collection": self.name, "db.index": index_name}):
+
+        with _maybe_span(
+            "surreal.schema.define_index",
+            {
+                "db.system": "surrealdb",
+                "db.name": self.connection.database,
+                "db.namespace": self.connection.namespace,
+                "db.operation": "define_index",
+                "db.collection": self.name,
+                "db.index": index_name,
+            },
+        ):
             await self.connection.client.query(query)
 
-    def create_index_sync(self, index_name: str, fields: List[str], unique: bool = False,
-                         search: bool = False, analyzer: Optional[str] = None,
-                         comment: Optional[str] = None) -> None:
+    def create_index_sync(
+        self,
+        index_name: str,
+        fields: List[str],
+        unique: bool = False,
+        search: bool = False,
+        analyzer: Optional[str] = None,
+        comment: Optional[str] = None,
+    ) -> None:
         """Create an index on this table synchronously.
 
         Args:
@@ -938,7 +1046,18 @@ class SchemalessTable:
 
         # Execute the query
         from .connection import _maybe_span  # lazy import to avoid cycles
-        with _maybe_span("surreal.schema.define_index", {"db.system": "surrealdb", "db.name": self.connection.database, "db.namespace": self.connection.namespace, "db.operation": "define_index", "db.collection": self.name, "db.index": index_name}):
+
+        with _maybe_span(
+            "surreal.schema.define_index",
+            {
+                "db.system": "surrealdb",
+                "db.name": self.connection.database,
+                "db.namespace": self.connection.namespace,
+                "db.operation": "define_index",
+                "db.collection": self.name,
+                "db.index": index_name,
+            },
+        ):
             self.connection.client.query(query)
 
     @property
@@ -950,8 +1069,13 @@ class SchemalessTable:
         """
         return SchemalessQuerySet(self.name, self.connection)
 
-    async def __call__(self, limit: Optional[int] = None, start: Optional[int] = None,
-                       page: Optional[tuple] = None, **kwargs: Any) -> List[Any]:
+    async def __call__(
+        self,
+        limit: Optional[int] = None,
+        start: Optional[int] = None,
+        page: Optional[tuple] = None,
+        **kwargs: Any,
+    ) -> List[Any]:
         """Query the table with filters asynchronously.
 
         This method allows calling the table instance directly with filters
@@ -986,15 +1110,25 @@ class SchemalessTable:
         results = await queryset.all()
 
         # Convert results to SimpleNamespace objects if they aren't already Document instances
-        if results and not hasattr(results[0], '_data'):  # Check if it's not a Document instance
+        if results and not hasattr(
+            results[0], "_data"
+        ):  # Check if it's not a Document instance
             from types import SimpleNamespace
-            results = [SimpleNamespace(**result) if isinstance(result, dict) else result
-                       for result in results]
+
+            results = [
+                SimpleNamespace(**result) if isinstance(result, dict) else result
+                for result in results
+            ]
 
         return results
 
-    def call_sync(self, limit: Optional[int] = None, start: Optional[int] = None,
-                  page: Optional[tuple] = None, **kwargs: Any) -> List[Any]:
+    def call_sync(
+        self,
+        limit: Optional[int] = None,
+        start: Optional[int] = None,
+        page: Optional[tuple] = None,
+        **kwargs: Any,
+    ) -> List[Any]:
         """Query the table with filters synchronously.
 
         This method allows calling the table synchronously with filters
@@ -1029,10 +1163,15 @@ class SchemalessTable:
         results = queryset.all_sync()
 
         # Convert results to SimpleNamespace objects if they aren't already Document instances
-        if results and not hasattr(results[0], '_data'):  # Check if it's not a Document instance
+        if results and not hasattr(
+            results[0], "_data"
+        ):  # Check if it's not a Document instance
             from types import SimpleNamespace
-            results = [SimpleNamespace(**result) if isinstance(result, dict) else result
-                       for result in results]
+
+            results = [
+                SimpleNamespace(**result) if isinstance(result, dict) else result
+                for result in results
+            ]
 
         return results
 
@@ -1092,8 +1231,12 @@ class SchemalessTable:
             self.connection.client.query("CANCEL TRANSACTION;")
             raise e
 
-    async def bulk_create(self, documents: List[Dict[str, Any]], batch_size: int = 1000, 
-                         return_documents: bool = True) -> Union[List[Any], int]:
+    async def bulk_create(
+        self,
+        documents: List[Dict[str, Any]],
+        batch_size: int = 1000,
+        return_documents: bool = True,
+    ) -> Union[List[Any], int]:
         """Create multiple documents in a single operation asynchronously.
 
         This method creates multiple documents in a single operation, processing
@@ -1110,8 +1253,12 @@ class SchemalessTable:
         """
         return await self.objects.bulk_create(documents, batch_size, return_documents)
 
-    def bulk_create_sync(self, documents: List[Dict[str, Any]], batch_size: int = 1000, 
-                        return_documents: bool = True) -> Union[List[Any], int]:
+    def bulk_create_sync(
+        self,
+        documents: List[Dict[str, Any]],
+        batch_size: int = 1000,
+        return_documents: bool = True,
+    ) -> Union[List[Any], int]:
         """Create multiple documents in a single operation synchronously.
 
         This method creates multiple documents in a single operation, processing
@@ -1150,6 +1297,7 @@ class SurrealEngine:
         self.connection = connection
         # Determine if the connection is async or sync
         from .connection import SurrealEngineAsyncConnection
+
         self.is_async = isinstance(connection, SurrealEngineAsyncConnection)
 
     def __getattr__(self, name: str) -> SchemalessTable:

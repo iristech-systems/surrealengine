@@ -1,3 +1,4 @@
+import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union, TypeVar
 from .exceptions import MultipleObjectsReturned, DoesNotExist
 from surrealdb import RecordID
@@ -14,6 +15,12 @@ _ALLOWED_VECTOR_METRICS = {
     "MINKOWSKI",
     "HAMMING",
     "CHEBYSHEV",
+}
+
+_ALLOWED_VECTOR_SIMILARITY_METRICS = {
+    "COSINE",
+    "JACCARD",
+    "PEARSON",
 }
 
 
@@ -54,6 +61,7 @@ class BaseQuerySet:
         self.limit_value: Optional[int] = None
         self.start_value: Optional[int] = None
         self.order_by_value: Optional[Tuple[str, str]] = None
+        self.order_by_raw_value: Optional[str] = None
         self.group_by_fields: List[str] = []
         self.split_fields: List[str] = []
         self.fetch_fields: List[str] = []
@@ -64,6 +72,10 @@ class BaseQuerySet:
         self.tempfiles_value: bool = False
         self.explain_value: bool = False
         self.explain_full_value: bool = False
+        self.version_value: Optional[Any] = None
+        self.version_is_raw: bool = False
+        self.freshness_mode: Optional[str] = None
+        self.sync_manager: Optional[Any] = None
         self.group_by_all: bool = False
         # Graph traversal state
         self._traversal_path: Optional[str] = None
@@ -84,6 +96,33 @@ class BaseQuerySet:
             _get_connection_classes()
         )
         return isinstance(self.connection, SurrealEngineAsyncConnection)
+
+    def _resolve_sync_manager(self) -> Optional[Any]:
+        if self.sync_manager is not None:
+            return self.sync_manager
+        try:
+            from .context import get_active_sync_manager
+
+            return get_active_sync_manager()
+        except Exception:
+            return None
+
+    def _get_execution_connection(self, model_cls: Optional[Any] = None) -> Any:
+        """Pick remote/local connection based on freshness policy."""
+        if not self.freshness_mode:
+            return self.connection
+
+        manager = self._resolve_sync_manager()
+        if manager is None:
+            return self.connection
+
+        try:
+            route = manager.choose_route(model_cls, self.freshness_mode)
+            exec_connection = manager.get_connection(route)
+            manager.record_route(route)
+            return exec_connection or self.connection
+        except Exception:
+            return self.connection
 
     def filter(self: T, query=None, **kwargs) -> T:
         """Add filter conditions to the query with automatic ID optimization.
@@ -242,6 +281,16 @@ class BaseQuerySet:
                 f"Allowed values: {allowed}."
             )
         return normalized
+
+    def _normalize_vector_projection_metric(self, metric: str) -> str:
+        """Normalize metrics valid for `with_vector_similarity` projections.
+
+        Supports both similarity and distance metrics.
+        """
+        normalized = str(metric).strip().upper()
+        if normalized in _ALLOWED_VECTOR_SIMILARITY_METRICS:
+            return normalized
+        return self._normalize_vector_metric(normalized)
 
     def _validate_vector_dimension(self, field_name: str, vector_value: Any) -> None:
         """Validate query vector length against VectorField dimension when available."""
@@ -408,7 +457,81 @@ class BaseQuerySet:
         # ...
         """
         self.order_by_value = (field, direction)
+        self.order_by_raw_value = None
         return self
+
+    def order_by_raw(self: T, expression: str) -> T:
+        """Set a raw ORDER BY expression.
+
+        Example:
+            qs.order_by_raw("embedding <|10,COSINE|> $vec")
+        """
+        self.order_by_raw_value = expression.strip()
+        self.order_by_value = None
+        return self
+
+    def order_by_knn(
+        self: T,
+        field: Union[str, Any],
+        vector: Any,
+        k: int = 10,
+        metric: Optional[str] = None,
+    ) -> T:
+        """Order by vector KNN distance using SurrealQL ANN syntax.
+
+        Produces ORDER BY clause like:
+            ORDER BY embedding <|10,COSINE|> [..vector..]
+        """
+        clone = self._clone()
+        field_name = field.name if hasattr(field, "name") else str(field)
+        vector_list, k_value, resolved_metric = clone._normalize_knn_payload(
+            field_name,
+            {
+                "vector": vector,
+                "k": k,
+                "metric": metric,
+            },
+        )
+        clone.order_by_raw_value = f"{field_name} <|{k_value},{resolved_metric}|> {escape_literal(vector_list)}"
+        clone.order_by_value = None
+        return clone
+
+    def with_vector_similarity(
+        self: T,
+        field: Union[str, Any],
+        vector: Any,
+        alias: str = "similarity",
+        metric: str = "COSINE",
+    ) -> T:
+        """Project vector similarity score into SELECT list.
+
+        Example:
+            qs.with_vector_similarity("embedding", vec, alias="sim")
+        """
+        clone = self._clone()
+        field_name = field.name if hasattr(field, "name") else str(field)
+        converted_vector = clone._convert_value_for_query(field_name, vector)
+        if hasattr(converted_vector, "tolist"):
+            converted_vector = converted_vector.tolist()
+        if not isinstance(converted_vector, (list, tuple)):
+            raise ValueError(
+                f"Vector value for field '{field_name}' must be list/tuple-like."
+            )
+        vector_list = [float(v) for v in converted_vector]
+        clone._validate_vector_dimension(field_name, vector_list)
+        normalized_metric = clone._normalize_vector_projection_metric(metric).lower()
+        if normalized_metric in {"cosine", "jaccard", "pearson"}:
+            expr = (
+                f"vector::similarity::{normalized_metric}({field_name}, {escape_literal(vector_list)}) "
+                f"AS {alias}"
+            )
+        else:
+            expr = (
+                f"vector::distance::{normalized_metric}({field_name}, {escape_literal(vector_list)}) "
+                f"AS {alias}"
+            )
+        clone._append_select_expression(expr)
+        return clone
 
     def group_by(self: T, *fields: str, all: bool = False) -> T:
         """Group the results by the specified fields or group all.
@@ -467,12 +590,168 @@ class BaseQuerySet:
         self._with_index = "NOINDEX"
         return self
 
-    def timeout(self: T, duration: str) -> T:
+    def timeout(self: T, duration: Any) -> T:
         """Set a timeout for the query execution.
         # ...
         """
-        self.timeout_value = duration
+        self.timeout_value = self._normalize_timeout(duration)
         return self
+
+    def freshness(self: T, mode: str) -> T:
+        """Set freshness routing policy for query execution.
+
+        Supported values: ``stale_ok``, ``realtime``, ``auto``.
+        """
+        normalized = str(mode).strip().lower()
+        if normalized not in {"stale_ok", "realtime", "auto"}:
+            raise ValueError("freshness mode must be one of: stale_ok, realtime, auto")
+        clone = self._clone()
+        clone.freshness_mode = normalized
+        return clone
+
+    def version_at(self: T, version: Any) -> T:
+        """Set a VERSION clause for temporal queries."""
+        clone = self._clone()
+        clone.version_value = version
+        clone.version_is_raw = False
+        return clone
+
+    def version_at_raw(self: T, expression: str) -> T:
+        """Set a raw VERSION clause expression (e.g. ``time::now()``)."""
+        clone = self._clone()
+        clone.version_value = expression
+        clone.version_is_raw = True
+        return clone
+
+    def search_and(self: T, text: str, *fields: Union[str, Any]) -> T:
+        """Perform full-text search requiring all terms to match."""
+        return self._search_with_mode("AND", text, *fields)
+
+    def search_or(self: T, text: str, *fields: Union[str, Any]) -> T:
+        """Perform full-text search where any term can match."""
+        return self._search_with_mode("OR", text, *fields)
+
+    def with_search_score(self: T, reference: int = 1, alias: str = "score") -> T:
+        """Add `search::score(reference)` projection to SELECT."""
+        clone = self._clone()
+        expr = f"search::score({int(reference)}) AS {alias}"
+        clone._append_select_expression(expr)
+        return clone
+
+    def with_search_highlight(
+        self: T,
+        prefix: str = "<b>",
+        suffix: str = "</b>",
+        reference: int = 1,
+        alias: str = "highlight",
+    ) -> T:
+        """Add `search::highlight(prefix,suffix,reference)` projection to SELECT."""
+        clone = self._clone()
+        expr = (
+            f"search::highlight({escape_literal(prefix)}, {escape_literal(suffix)}, "
+            f"{int(reference)}) AS {alias}"
+        )
+        clone._append_select_expression(expr)
+        return clone
+
+    def _append_select_expression(self, expression: str) -> None:
+        """Append a computed expression to SELECT projection."""
+        if self.select_fields is None:
+            self.select_fields = ["*", expression]
+            return
+        if expression not in self.select_fields:
+            self.select_fields.append(expression)
+
+    def _search_with_mode(self: T, mode: str, text: str, *fields: Union[str, Any]) -> T:
+        """Build full-text search using `@@` with boolean term composition.
+
+        We avoid SurrealQL `@AND@`/`@OR@` operators because parser support varies
+        across runtimes. This keeps queries portable for SDK/embedded targets.
+        """
+        mode = mode.upper()
+        if mode not in ("AND", "OR"):
+            raise ValueError("mode must be 'AND' or 'OR'")
+
+        clone = self._clone()
+        text_value = str(text).strip()
+        if not text_value:
+            raise ValueError("search text cannot be empty")
+
+        terms = [part for part in text_value.split() if part]
+        joiner = " AND " if mode == "AND" else " OR "
+
+        field_names = (
+            [f.name if hasattr(f, "name") else str(f) for f in fields]
+            if fields
+            else ["text"]
+        )
+
+        field_conditions: List[str] = []
+        for field_name in field_names:
+            per_term = [f"{field_name} @@ {escape_literal(term)}" for term in terms]
+            field_conditions.append(f"({joiner.join(per_term)})")
+
+        clone.query_parts.append(("__raw__", "=", f"({' OR '.join(field_conditions)})"))
+        return clone
+
+    def _normalize_timeout(self, duration: Any) -> str:
+        """Normalize timeout values to SurrealQL duration literal text."""
+        if isinstance(duration, str):
+            value = duration.strip()
+            if not value:
+                raise ValueError("timeout duration cannot be empty")
+            return value
+
+        if isinstance(duration, datetime.timedelta):
+            total_us = int(duration.total_seconds() * 1_000_000)
+            if total_us < 0:
+                raise ValueError("timeout duration cannot be negative")
+            if total_us == 0:
+                return "0ns"
+
+            days, rem_us = divmod(total_us, 86_400_000_000)
+            hours, rem_us = divmod(rem_us, 3_600_000_000)
+            minutes, rem_us = divmod(rem_us, 60_000_000)
+            seconds, rem_us = divmod(rem_us, 1_000_000)
+            millis, rem_us = divmod(rem_us, 1_000)
+            micros = rem_us
+
+            parts: List[str] = []
+            if days:
+                parts.append(f"{days}d")
+            if hours:
+                parts.append(f"{hours}h")
+            if minutes:
+                parts.append(f"{minutes}m")
+            if seconds:
+                parts.append(f"{seconds}s")
+            if millis:
+                parts.append(f"{millis}ms")
+            if micros:
+                parts.append(f"{micros}us")
+            return "".join(parts) if parts else "0ns"
+
+        try:
+            from surrealdb import Duration
+
+            if isinstance(duration, Duration):
+                if hasattr(duration, "to_string"):
+                    return str(duration.to_string())
+                return str(duration)
+        except Exception:
+            pass
+
+        raise TypeError(
+            "timeout duration must be str, datetime.timedelta, or surrealdb.Duration"
+        )
+
+    def _build_version_clause(self) -> Optional[str]:
+        """Build VERSION clause SQL if configured."""
+        if self.version_value is None:
+            return None
+        if self.version_is_raw:
+            return f"VERSION {self.version_value}"
+        return f"VERSION {escape_literal(self.version_value)}"
 
     def tempfiles(self: T, value: bool = True) -> T:
         """Enable or disable using temporary files for large queries.
@@ -730,6 +1009,10 @@ class BaseQuerySet:
             ]
             query = f"SELECT * FROM {', '.join(record_ids)}"
 
+            version_clause = self._build_version_clause()
+            if version_clause:
+                query += f" {version_clause}"
+
             # Add other clauses (but skip WHERE since we're using direct access)
             clauses = self._build_clauses()
             for clause_name, clause_sql in clauses.items():
@@ -768,6 +1051,10 @@ class BaseQuerySet:
             else:
                 # Fall back to WHERE clause if we can't determine collection
                 return None
+
+            version_clause = self._build_version_clause()
+            if version_clause:
+                query += f" {version_clause}"
 
             # Add other clauses (but skip WHERE since we're using direct access)
             clauses = self._build_clauses()
@@ -809,7 +1096,9 @@ class BaseQuerySet:
             clauses["WITH"] = f"WITH INDEX {self._with_index}"
 
         # Build ORDER BY clause
-        if self.order_by_value:
+        if self.order_by_raw_value:
+            clauses["ORDER BY"] = f"ORDER BY {self.order_by_raw_value}"
+        elif self.order_by_value:
             field, direction = self.order_by_value
             clauses["ORDER BY"] = f"ORDER BY {field} {direction}"
 
@@ -964,9 +1253,16 @@ class BaseQuerySet:
                         return self._get_with_filters_sync(**kwargs)
                     return self._get_with_filters(**kwargs)
 
+            version_clause = self._build_version_clause()
+            if version_clause:
+                query += f" {version_clause}"
+
             # Execution based on connection type
             if not self.connection.is_async():
-                result = self.connection.client.query(query)
+                exec_connection = self._get_execution_connection(
+                    getattr(self, "document_class", None)
+                )
+                result = exec_connection.client.query(query)
                 if not result or not result[0]:
                     raise DoesNotExist(f"Object with ID '{id_value}' does not exist.")
                 return result[0][0]
@@ -980,7 +1276,10 @@ class BaseQuerySet:
 
     async def _get_id_async(self, query: str, id_value: Any) -> Any:
         """Internal async implementation of ID-based get()."""
-        result = await self.connection.client.query(query)
+        exec_connection = self._get_execution_connection(
+            getattr(self, "document_class", None)
+        )
+        result = await exec_connection.client.query(query)
         if not result or not result[0]:
             raise DoesNotExist(f"Object with ID '{id_value}' does not exist.")
         return result[0][0]
@@ -1021,7 +1320,14 @@ class BaseQuerySet:
                     # Fall back to regular filtering if we can't determine the table
                     return self._get_with_filters_sync(**kwargs)
 
-            result = self.connection.client.query(query)
+            version_clause = self._build_version_clause()
+            if version_clause:
+                query += f" {version_clause}"
+
+            exec_connection = self._get_execution_connection(
+                getattr(self, "document_class", None)
+            )
+            result = exec_connection.client.query(query)
             if not result or not result[0]:
                 raise DoesNotExist(f"Object with ID '{id_value}' does not exist.")
             return result[0][0]
@@ -1248,11 +1554,22 @@ class BaseQuerySet:
         clone.limit_value = self.limit_value
         clone.start_value = self.start_value
         clone.order_by_value = self.order_by_value
+        clone.order_by_raw_value = self.order_by_raw_value
         clone.group_by_fields = self.group_by_fields.copy()
         clone.split_fields = self.split_fields.copy()
         clone.fetch_fields = self.fetch_fields.copy()
-        clone.with_index = self.with_index
+        clone._with_index = self._with_index
         clone.select_fields = self.select_fields
+        clone.omit_fields = self.omit_fields.copy()
+        clone.timeout_value = self.timeout_value
+        clone.tempfiles_value = self.tempfiles_value
+        clone.explain_value = self.explain_value
+        clone.explain_full_value = self.explain_full_value
+        clone.version_value = self.version_value
+        clone.version_is_raw = self.version_is_raw
+        clone.freshness_mode = self.freshness_mode
+        clone.sync_manager = self.sync_manager
+        clone.group_by_all = self.group_by_all
         # Copy performance optimization attributes
         clone._bulk_id_selection = self._bulk_id_selection
         clone._id_range_selection = self._id_range_selection
@@ -1261,5 +1578,9 @@ class BaseQuerySet:
         clone._traversal_path = self._traversal_path
         clone._traversal_unique = self._traversal_unique
         clone._traversal_max_depth = self._traversal_max_depth
+        clone._base_table = getattr(self, "_base_table", None)
+        clone._traversal_target_is_model = getattr(
+            self, "_traversal_target_is_model", False
+        )
 
         return clone  # type: ignore

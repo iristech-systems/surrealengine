@@ -5,6 +5,46 @@ All notable changes to the SurrealEngine project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-04-03
+
+### Added
+- **SyncManager Foundations**: Added `SyncManager`, `SyncConfig`, `SyncStatus`, `SyncPolicy`, `SyncMode`, `FreshnessMode`, and `create_sync_manager(...)` to support remote/local read routing.
+- **Freshness Routing API**: Added queryset/manager `freshness("stale_ok" | "realtime" | "auto")` support, applied to polyglot read paths.
+- **Context-Scoped Routing**: Added `using_sync_manager(...)` and `get_active_sync_manager()` for request/task-scoped sync manager selection.
+- **LIVE Reliability Primitives**: Added subscription ownership/state primitives (`LiveSubscription`) and backpressure enum (`BackpressurePolicy`) in the SyncManager layer.
+- **Replay + Checkpoint Helpers**: Added `ensure_metadata_tables()`, `save_checkpoint()`, `load_checkpoint()`, and `replay_table_changes()` to support reconnect catch-up workflows.
+- **Notebook Coverage Expansion**: Added release notebooks for SyncManager routing, context scoping, LIVE reliability patterns, replay recovery, and search ergonomics.
+
+### Changed
+- **Dedicated LIVE Connection Safety**: Connection cloning now avoids accidental default-connection replacement for dedicated LIVE workloads.
+- **LIVE Queue Lifecycle**: Added bounded queue support and cleanup-safe subscriber detach behavior to reduce leak risk in long-running runtimes.
+- **`show_changes` Hardening**: Strengthened table/since validation for safer query construction.
+
+### Fixed
+- **Count Parsing Correctness**: Fixed `count()` handling to return parsed count values rather than inferred list lengths.
+- **Graph Traversal Clone State**: Preserved traversal targeting state in queryset clones to keep graph chaining behavior stable.
+
+### Notes
+- Embedded SDK limitations remain explicit: `new_session()`, `new_transaction()`, `live()`, and `subscribe_live()` are not supported for embedded URLs (`mem://`, `file://`, `surrealkv://`).
+- `ReferenceField` delete-policy DDL remains runtime capability-gated (record references feature support depends on SurrealDB runtime flags/version).
+
+## [1.1.0] - 2026-04-03
+
+### Added
+- **Reference Delete Policies**: `ReferenceField` now supports native reference policy generation for schema DDL with `on_delete="IGNORE|UNSET|CASCADE|REJECT|THEN"` and `on_delete_then="..."`, emitting `REFERENCE ON DELETE ...` clauses (requires SurrealDB runtime support for record references; in current releases this is gated behind 2.x experimental capability settings).
+- **Temporal Query API**: Added queryset-level `version_at(...)` and `version_at_raw(...)` helpers to generate SurrealQL `VERSION` clauses for temporal reads.
+- **Changefeed Replay Helper**: Added `show_changes(table, since, limit)` on both async and sync connection classes for `SHOW CHANGES FOR TABLE ... SINCE ...` workflows.
+- **FTS Additive Helpers**: Added `search_and(...)`, `search_or(...)`, `with_search_score(...)`, and `with_search_highlight(...)` for richer full-text query ergonomics.
+- **1.x Release Notebook**: Added `notebooks/v1_x_surrealkv_features.ipynb` demonstrating SurrealKV-backed 1.x features and usage patterns.
+
+### Changed
+- **Timeout Ergonomics**: `timeout(...)` now accepts `str`, `datetime.timedelta`, and SDK `Duration`, normalizing to SurrealQL duration literals.
+- **Schema Generation**: Unified `REFERENCE` clause generation across async/sync schema paths using field-level clause builders.
+- **QuerySet Cloning**: Fixed cloning to preserve internal query state (`_with_index`, omit/timeouts/explain/version flags, and other builder state) consistently.
+
+### Fixed
+- **Clone State Bug**: Corrected `BaseQuerySet._clone()` to avoid assigning method references into state (`with_index`) and to copy full query builder configuration safely.
+
 ## [1.0.1] - 2026-03-31
 
 ### Fixed

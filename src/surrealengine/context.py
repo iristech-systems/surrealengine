@@ -12,6 +12,9 @@ from .connection import ConnectionRegistry
 
 # The ContextVar that holds the currently active connection
 _current_connection: ContextVar[Optional[Any]] = ContextVar("current_connection", default=None)
+_current_sync_manager: ContextVar[Optional[Any]] = ContextVar(
+    "current_sync_manager", default=None
+)
 
 
 def get_active_connection(async_mode: Optional[bool] = True) -> Any:
@@ -63,6 +66,19 @@ def get_active_connection(async_mode: Optional[bool] = True) -> Any:
     return ConnectionRegistry.get_default_connection(async_mode=async_mode)
 
 
+def get_active_sync_manager() -> Optional[Any]:
+    """Get the currently active SyncManager.
+
+    Precedence:
+    1. SyncManager set via `using_sync_manager` context manager.
+    2. Default global SyncManager from `ConnectionRegistry`.
+    """
+    mgr = _current_sync_manager.get()
+    if mgr is not None:
+        return mgr
+    return ConnectionRegistry.get_default_sync_manager()
+
+
 @contextmanager
 def using_connection(connection: Any) -> Iterator[None]:
     """Context manager to set the active connection for a block of code.
@@ -81,6 +97,16 @@ def using_connection(connection: Any) -> Iterator[None]:
     finally:
         _current_connection.reset(token)
 
+
+@contextmanager
+def using_sync_manager(sync_manager: Any) -> Iterator[None]:
+    """Context manager to set active SyncManager for a block of code."""
+    token: Token = _current_sync_manager.set(sync_manager)
+    try:
+        yield
+    finally:
+        _current_sync_manager.reset(token)
+
 # Helpers for connection classes to manage context
 def set_active_context_connection(connection: Any) -> Token:
     """Set the active connection in the context variable.
@@ -95,3 +121,13 @@ def reset_active_context_connection(token: Token) -> None:
     Internal use for connection classes.
     """
     _current_connection.reset(token)
+
+
+def set_active_context_sync_manager(sync_manager: Any) -> Token:
+    """Set active SyncManager in context variable (internal helper)."""
+    return _current_sync_manager.set(sync_manager)
+
+
+def reset_active_context_sync_manager(token: Token) -> None:
+    """Reset active SyncManager context variable (internal helper)."""
+    _current_sync_manager.reset(token)
