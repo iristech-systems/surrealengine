@@ -11,7 +11,7 @@
                 "ms-toolsai.jupyter"
             ],
             "settings": {
-                "python.defaultInterpreterPath": "/usr/local/bin/python3.12",
+                "python.defaultInterpreterPath": "/usr/local/bin/python3.14",
                 "python.linting.enabled": true,
                 "python.linting.pylintEnabled": true
             }

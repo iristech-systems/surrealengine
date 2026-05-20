@@ -707,7 +707,7 @@ class AsyncConnectionPool(ConnectionPoolBase):
         self.connection_waiters: List[asyncio.Future] = []
         # Health checker
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._health_task = loop.create_task(self._health_check_loop())
         except RuntimeError:
             self._health_task: Optional[asyncio.Task] = None
@@ -815,7 +815,7 @@ class AsyncConnectionPool(ConnectionPoolBase):
                 connection = await self.create_connection()
             else:
                 # We've reached the pool size limit, wait for a connection to be returned
-                waiter = asyncio.get_event_loop().create_future()
+                waiter = asyncio.get_running_loop().create_future()
                 self.connection_waiters.append(waiter)
 
                 # Release the lock while waiting

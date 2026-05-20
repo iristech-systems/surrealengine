@@ -4,7 +4,6 @@ use pyo3::types::PyBytes;
 use arrow::pyarrow::ToPyArrow;
 use arrow::datatypes::{FieldRef, Schema};
 use arrow::array::RecordBatch;
-use serde_json::Value as JsonValue; // Keep for fallback if needed, but we try not to use it
 use serde_arrow::schema::{SchemaLike, TracingOptions};
 use std::sync::Arc;
 use serde::{Serialize, Serializer};
@@ -94,7 +93,7 @@ fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
 
 /// Convert CBOR bytes to an Arrow RecordBatch (as a PyArrow Table/batch).
 #[pyfunction]
-fn cbor_to_arrow(py: Python, data: &Bound<'_, PyBytes>) -> PyResult<PyObject> {
+fn cbor_to_arrow<'py>(py: Python<'py>, data: &Bound<'_, PyBytes>) -> PyResult<Option<Py<PyAny>>> {
     let bytes = data.as_bytes();
 
     // 1. Decode to cbor4ii::core::Value (Low level)
@@ -146,7 +145,7 @@ fn cbor_to_arrow(py: Python, data: &Bound<'_, PyBytes>) -> PyResult<PyObject> {
     };
 
     if responses.is_empty() {
-        return Ok(py.None());
+        return Ok(None);
     }
 
     // Check first response
@@ -190,7 +189,7 @@ fn cbor_to_arrow(py: Python, data: &Bound<'_, PyBytes>) -> PyResult<PyObject> {
     };
 
     if records_arr.is_empty() {
-        return Ok(py.None());
+        return Ok(None);
     }
 
     // 3. Wrap in SurrealValue
@@ -211,12 +210,12 @@ fn cbor_to_arrow(py: Python, data: &Bound<'_, PyBytes>) -> PyResult<PyObject> {
     let batch = RecordBatch::try_new(schema, arrays)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("RecordBatch creation error: {}", e)))?;
 
-    batch.to_pyarrow(py)
+    Ok(Some(batch.to_pyarrow(py)?.into()))
 }
 
 /// A Python module implemented in Rust.
 #[pymodule]
-fn surrealengine_accelerator(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn surrealengine_accelerator(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     m.add_function(wrap_pyfunction!(cbor_to_arrow, m)?)?;
     Ok(())
