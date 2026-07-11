@@ -272,7 +272,6 @@ class QuerySet(BaseQuerySet):
                 # Let's assume the user knows what they are doing if they pass a raw ID,
                 # but valid RecordIDs are best.
                 dst_table = "?"
-                dst_table = "?"
 
         # Construct the shortest path idiom
         # Example: id.{..+shortest=person:star}->knows->person
@@ -1052,6 +1051,14 @@ class QuerySet(BaseQuerySet):
         else:
             select_keyword = "SELECT *"
 
+        # Apply DISTINCT
+        distinct_val: Optional[str] = getattr(self, "distinct_value", None)
+        if distinct_val and not traversal:
+            if distinct_val == "*":
+                select_keyword = "SELECT DISTINCT *"
+            else:
+                select_keyword = f"SELECT DISTINCT {distinct_val}"
+
         # Build OMIT clause
         if self.omit_fields:
             select_keyword += f" OMIT {', '.join(self.omit_fields)}"
@@ -1625,11 +1632,26 @@ class QuerySet(BaseQuerySet):
     ) -> List[Any]:
         """Internal async implementation of update()."""
         # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
-        if self._bulk_id_selection or self._id_range_selection:
-            # For bulk operations, use subquery with direct record access for better performance
+        if self._bulk_id_selection:
+            # Direct UPDATE table:id1, table:id2, ... SET ... eliminates subquery overhead
+            record_ids = [
+                self._format_record_id(id_val) for id_val in self._bulk_id_selection
+            ]
+            update_query = (
+                f"UPDATE {', '.join(record_ids)}"
+                f" SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
+            )
+            if returning in ("before", "after", "diff"):
+                update_query += f" RETURN {returning.upper()}"
+
+            result = await self.connection.client.query(update_query)
+            if not result:
+                return []
+            # Fall through to standard result handling below
+        elif self._id_range_selection:
+            # For range operations, use subquery with direct record access
             optimized_query = self._build_direct_record_query()
             if optimized_query:
-                # Convert SELECT to subquery for UPDATE
                 subquery = optimized_query.replace("SELECT *", "SELECT id")
                 update_query = f"UPDATE ({subquery}) SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
                 if returning in ("before", "after", "diff"):
@@ -1640,12 +1662,9 @@ class QuerySet(BaseQuerySet):
                 if not result:
                     return []
 
-                # Handle different result structures
                 if isinstance(result[0], dict):
-                    # Subquery UPDATE case: result is a flat list of documents
                     return [self.document_class.from_db(doc) for doc in result]
                 elif isinstance(result[0], list):
-                    # Normal case: result[0] is a list of document dictionaries
                     return [self.document_class.from_db(doc) for doc in result[0]]
                 else:
                     return []
@@ -1704,11 +1723,26 @@ class QuerySet(BaseQuerySet):
             List of updated documents
         """
         # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
-        if self._bulk_id_selection or self._id_range_selection:
-            # For bulk operations, use subquery with direct record access for better performance
+        if self._bulk_id_selection:
+            # Direct UPDATE table:id1, table:id2, ... SET ... eliminates subquery overhead
+            record_ids = [
+                self._format_record_id(id_val) for id_val in self._bulk_id_selection
+            ]
+            update_query = (
+                f"UPDATE {', '.join(record_ids)}"
+                f" SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
+            )
+            if returning in ("before", "after", "diff"):
+                update_query += f" RETURN {returning.upper()}"
+
+            result = self.connection.client.query(update_query)
+            if not result:
+                return []
+            # Fall through to standard result handling below
+        elif self._id_range_selection:
+            # For range operations, use subquery with direct record access
             optimized_query = self._build_direct_record_query()
             if optimized_query:
-                # Convert SELECT to subquery for UPDATE
                 subquery = optimized_query.replace("SELECT *", "SELECT id")
                 update_query = f"UPDATE ({subquery}) SET {', '.join(f'{k} = {escape_literal(v)}' for k, v in kwargs.items())}"
                 if returning in ("before", "after", "diff"):
@@ -1719,12 +1753,9 @@ class QuerySet(BaseQuerySet):
                 if not result:
                     return []
 
-                # Handle different result structures
                 if isinstance(result[0], dict):
-                    # Subquery UPDATE case: result is a flat list of documents
                     return [self.document_class.from_db(doc) for doc in result]
                 elif isinstance(result[0], list):
-                    # Normal case: result[0] is a list of document dictionaries
                     return [self.document_class.from_db(doc) for doc in result[0]]
                 else:
                     return []
@@ -1864,6 +1895,8 @@ class QuerySet(BaseQuerySet):
             conditions = self._build_conditions()
             delete_query += f" WHERE {' AND '.join(conditions)}"
 
+        delete_query += " RETURN BEFORE"
+
         result = self.connection.client.query(delete_query)
 
         if not result or not result[0]:
@@ -1927,69 +1960,25 @@ class QuerySet(BaseQuerySet):
                 for doc in batch:
                     doc.validate()
 
-            # Separate documents with and without explicit IDs
-            docs_without_ids = []
-            docs_with_ids = []
+            # Send all documents in a single INSERT batch.
+            # SurrealDB INSERT INTO ... $_data accepts "id" fields in the data,
+            # so documents with explicit IDs are created at those IDs without
+            # requiring individual upsert round-trips.
+            data = [doc.to_db() for doc in batch]
 
-            for doc in batch:
-                if doc.id:
-                    docs_with_ids.append(doc)
-                else:
-                    docs_without_ids.append(doc)
+            try:
+                result = await self.connection.client.insert(collection, data)
 
-            # Handle documents without IDs using bulk INSERT
-            if docs_without_ids:
-                data = [doc.to_db() for doc in docs_without_ids]
-
-                try:
-                    # Use SDK insert method which handles serialization and query parameters efficiently
-                    result = await self.connection.client.insert(collection, data)
-
-                    if return_documents and result:
-                        # Result from bulk insert is a list of created records
-                        batch_docs = [
-                            self.document_class.from_db(doc_data) for doc_data in result
-                        ]
-                        created_docs.extend(batch_docs)
-                        total_created += len(batch_docs)
-                    elif result:
-                        total_created += len(result)
-                except Exception as e:
-                    logger.error(f"Error in bulk create batch (no IDs): {str(e)}")
-
-            # Handle documents with explicit IDs using individual upserts
-            for doc in docs_with_ids:
-                try:
-                    data = doc.to_db()
-                    # Remove ID from data and extract ID part
-                    if "id" in data:
-                        del data["id"]
-                        id_part = str(doc.id).split(":")[1]
-                        result = await self.connection.client.upsert(
-                            RecordID(
-                                collection,
-                                int(id_part) if id_part.isdigit() else id_part,
-                            ),
-                            data,
-                        )
-
-                        if return_documents and result:
-                            if isinstance(result, list) and result:
-                                doc_data = result[0]
-                            else:
-                                doc_data = result
-
-                            if isinstance(doc_data, dict):
-                                if created_docs is not None:
-                                    created_docs.append(
-                                        self.document_class.from_db(doc_data)
-                                    )
-
-                        total_created += 1
-
-                except Exception as e:
-                    logger.error(f"Error creating document with ID {doc.id}: {str(e)}")
-                    continue
+                if return_documents and result:
+                    batch_docs = [
+                        self.document_class.from_db(doc_data) for doc_data in result
+                    ]
+                    created_docs.extend(batch_docs)
+                    total_created += len(batch_docs)
+                elif result:
+                    total_created += len(result)
+            except Exception as e:
+                logger.error(f"Error in bulk create batch: {str(e)}")
 
         return created_docs if return_documents else total_created
 
@@ -2085,8 +2074,6 @@ class QuerySet(BaseQuerySet):
                     break
 
         if not doc_id:
-            from .exceptions import ValueError
-
             raise ValueError(
                 "upsert() requires an 'id' either in kwargs or as an exact filter"
             )
@@ -2110,12 +2097,12 @@ class QuerySet(BaseQuerySet):
         result = self.connection.client.query(query, {"data": data})
 
         if not result or not result[0]:
-            from .exceptions import DoesNotExist
+            from ..exceptions import DoesNotExist
 
             raise DoesNotExist(f"Failed to upsert document {record_id_str}")
 
-        # Returns list of lists
-        doc_data = result[0][0]
+        row = result[0]
+        doc_data = row[0] if isinstance(row, list) else row
         return self.document_class.from_db(doc_data)
 
     def bulk_create_sync(
@@ -2169,17 +2156,25 @@ class QuerySet(BaseQuerySet):
 
             # Execute batch insert
             try:
-                result = self.connection.client.query(query, {"batch": data})
+                raw = self.connection.client.query(query, {"batch": data})
 
-                if return_documents and result and result[0]:
-                    # Process results if needed
+                # Normalise: embedded sync returns flat list[dict],
+                # remote returns list[list[dict]].
+                if raw and isinstance(raw[0], dict):
+                    rows = raw
+                elif raw and isinstance(raw[0], list):
+                    rows = raw[0]
+                else:
+                    rows = raw if raw else []
+
+                if return_documents and rows:
                     batch_docs = [
-                        self.document_class.from_db(doc_data) for doc_data in result[0]
+                        self.document_class.from_db(doc_data) for doc_data in rows
                     ]
                     created_docs.extend(batch_docs)
                     total_created += len(batch_docs)
-                elif result and result[0]:
-                    total_created += len(result[0])
+                elif rows:
+                    total_created += len(rows)
 
             except Exception as e:
                 # Log error and continue with next batch

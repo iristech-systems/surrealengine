@@ -419,11 +419,6 @@ class MaterializedView:
         select_part, rest_part = split_query_on_from(base_query)
         
         if not rest_part:
-            # If there's no FROM clause, we can't modify the query
-            return base_query
-
-        # If there are no aggregations or select fields, return the base query
-        if not self.aggregations and not self.select_fields:
             return base_query
 
         # Build the new SELECT part
@@ -490,23 +485,21 @@ class MaterializedView:
             overwrite: Whether to overwrite the table if it exists (default: False)
             if_not_exists: Whether to create the table only if it does not exist (default: False)
         """
+        from .table import Table
+
         connection = connection or ConnectionRegistry.get_default_connection(async_mode=None)
         
         if not connection.is_async():
             return self.create_sync(connection, overwrite, if_not_exists)
-            
-        modifier = ""
-        if overwrite:
-            modifier = "OVERWRITE "
-        elif if_not_exists:
-            modifier = "IF NOT EXISTS "
 
-        # Build the query for creating the materialized view
         query_str = self._build_custom_query()
-        create_query = f"DEFINE TABLE {modifier}{self.name} TYPE NORMAL AS {query_str}"
-
-        # Execute the query
-        return connection.client.query(create_query)
+        ddl = Table._build_table_ddl(
+            self.name,
+            as_select=query_str,
+            overwrite=overwrite,
+            if_not_exists=if_not_exists,
+        )
+        return connection.client.query(ddl)
 
     def create_sync(self, connection=None, overwrite: bool = False, if_not_exists: bool = False) -> None:
         """Create the materialized view in the database synchronously.
@@ -516,20 +509,18 @@ class MaterializedView:
             overwrite: Whether to overwrite the table if it exists (default: False)
             if_not_exists: Whether to create the table only if it does not exist (default: False)
         """
+        from .table import Table
+
         connection = connection or ConnectionRegistry.get_default_connection()
 
-        modifier = ""
-        if overwrite:
-            modifier = "OVERWRITE "
-        elif if_not_exists:
-            modifier = "IF NOT EXISTS "
-
-        # Build the query for creating the materialized view
         query_str = self._build_custom_query()
-        create_query = f"DEFINE TABLE {modifier}{self.name} TYPE NORMAL AS {query_str}"
-
-        # Execute the query
-        connection.client.query(create_query)
+        ddl = Table._build_table_ddl(
+            self.name,
+            as_select=query_str,
+            overwrite=overwrite,
+            if_not_exists=if_not_exists,
+        )
+        connection.client.query(ddl)
 
     def drop(self, connection=None) -> None:
         """Drop the materialized view from the database.
@@ -540,16 +531,9 @@ class MaterializedView:
         Args:
             connection: The database connection to use (optional)
         """
-        connection = connection or ConnectionRegistry.get_default_connection(async_mode=None)
-        
-        if not connection.is_async():
-            return self.drop_sync(connection)
+        from .table import Table
 
-        # Build the query for dropping the materialized view
-        drop_query = f"REMOVE TABLE {self.name}"
-
-        # Execute the query
-        return connection.client.query(drop_query)
+        return Table.drop(self.name, connection=connection)
 
     def drop_sync(self, connection=None) -> None:
         """Drop the materialized view from the database synchronously.
@@ -557,14 +541,9 @@ class MaterializedView:
         Args:
             connection: The database connection to use (optional)
         """
-        connection = connection or ConnectionRegistry.get_default_connection()
+        from .table import Table
 
-        # Build the query for dropping the materialized view
-        drop_query = f"REMOVE TABLE {self.name}"
-
-
-        # Execute the query
-        connection.client.query(drop_query)
+        Table.drop_sync(self.name, connection=connection)
 
     def refresh(self, connection=None) -> None:
         """Manually refresh the materialized view.
@@ -596,14 +575,12 @@ class MaterializedView:
         Returns:
             A QuerySet for querying the materialized view
         """
-        # Create a temporary document class for the materialized view
-        view_class = type(f"{self.name.capitalize()}View", (self.document_class,), {
-            "Meta": type("Meta", (), {"collection": self.name, "strict": False})
-        })
-
-        # Return a QuerySet for the view class
+        if not hasattr(self, '_view_class') or self._view_class is None:
+            self._view_class = type(f"{self.name.capitalize()}View", (self.document_class,), {
+                "Meta": type("Meta", (), {"collection": self.name, "strict": False})
+            })
         connection = ConnectionRegistry.get_default_connection()
-        return QuerySet(view_class, connection)
+        return QuerySet(self._view_class, connection)
 
     def execute_raw_query(self, connection=None):
         """Execute a raw query against the materialized view.

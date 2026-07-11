@@ -15,6 +15,11 @@ Classes:
 """
 
 import surrealdb
+try:
+    from surrealdb.errors import ConnectionUnavailableError
+except ImportError:
+    ConnectionUnavailableError = None
+
 import time
 import logging
 import re
@@ -47,6 +52,11 @@ _EMBEDDED_SCHEMES = ("mem://", "file://", "surrealkv://")
 _EMBEDDED_UNSUPPORTED_SDK_METHODS = {
     "new_session",
     "new_transaction",
+    "attach",
+    "detach",
+    "begin",
+    "commit",
+    "cancel",
     "live",
     "subscribe_live",
 }
@@ -425,6 +435,7 @@ class SyncConnectionPool(ConnectionPoolBase):
                 database=self.database,
                 username=self.username,
                 password=self.password,
+                token=self.token,
             )
 
             # Connect to the database
@@ -1735,15 +1746,22 @@ class ConnectionPoolClient:
                 return await operation(*args, **kwargs)
             except Exception as e:
                 error_msg = str(e).lower()
-                if operation_name not in ("authenticate", "signin") and any(
-                    kw in error_msg
-                    for kw in [
-                        "expired",
-                        "unauthenticated",
-                        "iam",
-                        "authentication",
-                        "none",
-                    ]
+                _connection_error = (
+                    ConnectionUnavailableError is not None
+                    and isinstance(e, ConnectionUnavailableError)
+                )
+                if operation_name not in ("authenticate", "signin") and (
+                    _connection_error
+                    or any(
+                        kw in error_msg
+                        for kw in [
+                            "expired",
+                            "unauthenticated",
+                            "iam",
+                            "authentication",
+                            "none",
+                        ]
+                    )
                 ):
                     logger.warning(
                         f"Connection issue or session expiration detected ({error_msg}). Attempting to recover."
@@ -1962,6 +1980,24 @@ class ConnectionRegistry:
             raise TypeError(f"Unsupported connection type: {type(connection)}")
 
     @classmethod
+    def has_default_async_connection(cls) -> bool:
+        """Check if a default async connection has been set.
+
+        Returns:
+            True if a default async connection exists, False otherwise
+        """
+        return cls._default_async_connection is not None
+
+    @classmethod
+    def has_default_sync_connection(cls) -> bool:
+        """Check if a default sync connection has been set.
+
+        Returns:
+            True if a default sync connection exists, False otherwise
+        """
+        return cls._default_sync_connection is not None
+
+    @classmethod
     def get_default_async_connection(cls) -> "SurrealEngineAsyncConnection":
         """Get the default async connection.
 
@@ -2121,13 +2157,14 @@ class ConnectionRegistry:
 
     @classmethod
     def get_connection(
-        cls, name: str, async_mode: bool = True
+        cls, name: str, async_mode: Optional[bool] = None
     ) -> Union["SurrealEngineAsyncConnection", "SurrealEngineSyncConnection"]:
         """Get a named connection from the registry based on the mode.
 
         Args:
             name: The name of the connection to retrieve
-            async_mode: Whether to get an async or sync connection
+            async_mode: Whether to get an async or sync connection.
+                       If None, attempts async first, then sync.
 
         Returns:
             The requested connection of the requested type
@@ -2136,10 +2173,15 @@ class ConnectionRegistry:
             KeyError: If no connection of the requested type with the given name exists
 
         """
+        if async_mode is None:
+            if name in cls._async_connections:
+                return cls._async_connections[name]
+            if name in cls._sync_connections:
+                return cls._sync_connections[name]
+            raise KeyError(f"No connection named '{name}' found in async or sync registries.")
         if async_mode:
             return cls.get_async_connection(name)
-        else:
-            return cls.get_sync_connection(name)
+        return cls.get_sync_connection(name)
 
 
 class AsyncSurrealClientWrapper:
@@ -2168,17 +2210,24 @@ class AsyncSurrealClientWrapper:
                 return await current_attr(*args, **kwargs)
             except Exception as e:
                 error_msg = str(e).lower()
-                if item not in ("authenticate", "signin", "close") and any(
-                    kw in error_msg
-                    for kw in [
-                        "expired",
-                        "unauthenticated",
-                        "iam",
-                        "authentication",
-                        "none",
-                        "connection",
-                    ]
-                ):
+                is_connection_error = (
+                    item not in ("authenticate", "signin", "close")
+                    and (
+                        (ConnectionUnavailableError is not None and isinstance(e, ConnectionUnavailableError))
+                        or any(
+                            kw in error_msg
+                            for kw in [
+                                "expired",
+                                "unauthenticated",
+                                "iam",
+                                "authentication",
+                                "none",
+                                "connection",
+                            ]
+                        )
+                    )
+                )
+                if is_connection_error:
                     logger.warning(
                         f"Connection issue or session expiration detected ({error_msg}). Attempting to recover."
                     )
@@ -2230,20 +2279,36 @@ class SyncSurrealClientWrapper:
                 if getattr(self._connection, "_actual_client", None) is None:
                     raise AttributeError("'NoneType' object")
                 current_attr = getattr(self._connection._actual_client, item)
-                return current_attr(*args, **kwargs)
+                result = current_attr(*args, **kwargs)
+                # Normalise query results: embedded engine returns flat list of
+                # dicts (or empty list), while remote returns list[list[dict]].
+                # Keeping the same shape avoids bugs in every _sync call site.
+                if item == "query" and isinstance(result, list):
+                    if result and all(isinstance(r, dict) for r in result):
+                        result = [result]
+                    elif not result:
+                        result = [[]]
+                return result
             except Exception as e:
                 error_msg = str(e).lower()
-                if item not in ("authenticate", "signin", "close") and any(
-                    kw in error_msg
-                    for kw in [
-                        "expired",
-                        "unauthenticated",
-                        "iam",
-                        "authentication",
-                        "none",
-                        "connection",
-                    ]
-                ):
+                is_connection_error = (
+                    item not in ("authenticate", "signin", "close")
+                    and (
+                        (ConnectionUnavailableError is not None and isinstance(e, ConnectionUnavailableError))
+                        or any(
+                            kw in error_msg
+                            for kw in [
+                                "expired",
+                                "unauthenticated",
+                                "iam",
+                                "authentication",
+                                "none",
+                                "connection",
+                            ]
+                        )
+                    )
+                )
+                if is_connection_error:
                     logger.warning(
                         f"Connection issue or session expiration detected ({error_msg}). Attempting to recover."
                     )
@@ -2358,7 +2423,11 @@ class SurrealEngineAsyncConnection:
 
         if name:
             ConnectionRegistry.add_async_connection(name, self)
-        if make_default or (register_unnamed_default and name is None):
+        if make_default or (
+            register_unnamed_default
+            and name is None
+            and not ConnectionRegistry.has_default_async_connection()
+        ):
             ConnectionRegistry.set_default_async_connection(self)
 
     async def __aenter__(self) -> "SurrealEngineAsyncConnection":
@@ -2512,7 +2581,24 @@ class SurrealEngineAsyncConnection:
     # Alias for convenience
     close = disconnect
 
-    async def transaction(self, coroutines: list) -> list:
+    async def query(
+        self, sql: str, vars: Optional[dict] = None
+    ) -> Any:
+        """Execute a SurrealQL query on this connection.
+
+        Args:
+            sql: The SurrealQL query string
+            vars: Optional bind variables
+
+        Returns:
+            Query result from the server
+
+        """
+        if vars is not None:
+            return await self.client.query(sql, vars)
+        return await self.client.query(sql)
+
+    async def run_in_transaction(self, coroutines: list) -> list:
         """Execute multiple operations in a transaction.
 
         This method executes a list of coroutines within a transaction context.
@@ -2573,6 +2659,17 @@ class SurrealEngineAsyncConnection:
                 _current_transaction_connection.reset(token)
             if pinned_connection:
                 await self.pool.return_connection(pinned_connection)
+
+    async def transaction(self, coroutines: list) -> list:
+        """Deprecated alias for run_in_transaction()."""
+        import warnings
+        warnings.warn(
+            "conn.transaction() is deprecated, use conn.run_in_transaction() instead. "
+            "For the write-behind context manager, use `transaction(conn)` from surrealengine.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.run_in_transaction(coroutines)
 
     async def show_changes(
         self,
@@ -2737,6 +2834,18 @@ def create_connection(
         ... #     pass
 
     """
+    # Parse connection string if url looks like a full connection URI
+    if url and "://" in url and namespace is None and database is None:
+        try:
+            parsed = parse_connection_string(url)
+            namespace = parsed.get("namespace") or namespace
+            database = parsed.get("database") or database
+            username = parsed.get("username") or username
+            password = parsed.get("password") or password
+            if not url.startswith(("mem://", "surrealkv://", "file://")):
+                url = parsed.get("url") or url
+        except Exception:
+            pass
     if async_mode:
         connection = SurrealEngineAsyncConnection(
             url=url,
@@ -2761,9 +2870,11 @@ def create_connection(
 
         # Auto-connect if requested
         if auto_connect:
-            # We can't await here, so we'll return the connection without connecting
-            # The caller will need to await connection.connect() before using it
-            pass
+            raise RuntimeError(
+                "auto_connect=True is not supported for async connections. "
+                "Use `await connection.connect()` explicitly, or use "
+                "`async with connection:` as a context manager."
+            )
 
         return connection
     else:
@@ -2773,6 +2884,7 @@ def create_connection(
             database=database,
             username=username,
             password=password,
+            token=token,
             name=name,
             make_default=make_default,
             register_unnamed_default=register_unnamed_default,
@@ -2837,7 +2949,11 @@ class SurrealEngineSyncConnection:
 
         if name:
             ConnectionRegistry.add_sync_connection(name, self)
-        if make_default or (register_unnamed_default and name is None):
+        if make_default or (
+            register_unnamed_default
+            and name is None
+            and not ConnectionRegistry.has_default_sync_connection()
+        ):
             ConnectionRegistry.set_default_sync_connection(self)
 
     def __enter__(self) -> "SurrealEngineSyncConnection":
@@ -2952,7 +3068,24 @@ class SurrealEngineSyncConnection:
     # Alias for convenience
     close = disconnect
 
-    def transaction(self, callables: list) -> list:
+    def query(
+        self, sql: str, vars: Optional[dict] = None
+    ) -> Any:
+        """Execute a SurrealQL query on this connection.
+
+        Args:
+            sql: The SurrealQL query string
+            vars: Optional bind variables
+
+        Returns:
+            Query result from the server
+
+        """
+        if vars is not None:
+            return self.client.query(sql, vars)
+        return self.client.query(sql)
+
+    def run_in_transaction(self, callables: list) -> list:
         """Execute multiple operations in a transaction.
 
         This method executes a list of callables within a transaction,
@@ -2980,6 +3113,17 @@ class SurrealEngineSyncConnection:
         except Exception as e:
             self.client.query("CANCEL TRANSACTION;")
             raise e
+
+    def transaction(self, callables: list) -> list:
+        """Deprecated alias for run_in_transaction()."""
+        import warnings
+        warnings.warn(
+            "conn.transaction() is deprecated, use conn.run_in_transaction() instead. "
+            "For the write-behind context manager, use `transaction_sync(conn)` from surrealengine.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.run_in_transaction(callables)
 
     def show_changes(
         self,

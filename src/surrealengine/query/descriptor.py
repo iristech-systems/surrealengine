@@ -660,9 +660,32 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.search(text, *fields)
 
+    def search_sync(self, text: str, *fields: Union[str, Any]) -> QuerySet:
+        """Perform a full-text search using the @@ operator (sync connection).
+
+        Args:
+            text: The text to search for
+            *fields: Optional. Specific fields to search in. Can be field names or Field instances.
+        Returns:
+            A QuerySet with the search condition
+        """
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.search(text, *fields)
+
     def search_and(self, text: str, *fields: Union[str, Any]) -> QuerySet:
         """Perform full-text search requiring all terms to match."""
         connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.search_and(text, *fields)
+
+    def search_and_sync(self, text: str, *fields: Union[str, Any]) -> QuerySet:
+        """Perform full-text search requiring all terms to match (sync connection)."""
+        connection = self.connection or get_active_connection(async_mode=False)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -676,9 +699,25 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.search_or(text, *fields)
 
+    def search_or_sync(self, text: str, *fields: Union[str, Any]) -> QuerySet:
+        """Perform full-text search where any term can match (sync connection)."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.search_or(text, *fields)
+
     def with_search_score(self, reference: int = 1, alias: str = "score") -> QuerySet:
         """Project `search::score(reference)` in SELECT."""
         connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.with_search_score(reference=reference, alias=alias)
+
+    def with_search_score_sync(self, reference: int = 1, alias: str = "score") -> QuerySet:
+        """Project `search::score(reference)` in SELECT (sync connection)."""
+        connection = self.connection or get_active_connection(async_mode=False)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -703,6 +742,25 @@ class QuerySetDescriptor:
             alias=alias,
         )
 
+    def with_search_highlight_sync(
+        self,
+        prefix: str = "<b>",
+        suffix: str = "</b>",
+        reference: int = 1,
+        alias: str = "highlight",
+    ) -> QuerySet:
+        """Project `search::highlight(prefix, suffix, reference)` in SELECT (sync connection)."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.with_search_highlight(
+            prefix=prefix,
+            suffix=suffix,
+            reference=reference,
+            alias=alias,
+        )
+
     def version_at(self, version: Any) -> QuerySet:
         """Apply SELECT VERSION clause for temporal reads."""
         connection = self.connection or get_active_connection(async_mode=None)
@@ -711,9 +769,25 @@ class QuerySetDescriptor:
         queryset = QuerySet(self.owner, connection)
         return queryset.version_at(version)
 
+    def version_at_sync(self, version: Any) -> QuerySet:
+        """Apply SELECT VERSION clause for temporal reads (sync connection)."""
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.version_at(version)
+
     def version_at_raw(self, expression: str) -> QuerySet:
         """Apply raw SELECT VERSION expression (e.g. `time::now()`)."""
         connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.version_at_raw(expression)
+
+    def version_at_raw_sync(self, expression: str) -> QuerySet:
+        """Apply raw SELECT VERSION expression (sync connection)."""
+        connection = self.connection or get_active_connection(async_mode=False)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -738,6 +812,20 @@ class QuerySetDescriptor:
             A QuerySet with semantic KNN condition.
         """
         connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.semantic_search(field=field, vector=vector, k=k, metric=metric)
+
+    def semantic_search_sync(
+        self,
+        field: Union[str, Any],
+        vector: Any,
+        k: int = 10,
+        metric: Optional[str] = None,
+    ) -> QuerySet:
+        """Perform semantic vector search using SurrealQL KNN operator syntax (sync connection)."""
+        connection = self.connection or get_active_connection(async_mode=False)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
@@ -1066,6 +1154,36 @@ class QuerySetDescriptor:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)
         return queryset.group_by(*fields)
+
+    def distinct(self, *fields: str) -> QuerySet:
+        """Add DISTINCT to the query, optionally scoped to specific fields.
+
+        Args:
+            *fields: Optional field names to make distinct on.
+                    If empty, applies DISTINCT to the entire result set.
+
+        Returns:
+            A QuerySet with DISTINCT applied
+        """
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.distinct(*fields)
+
+    def distinct_sync(self, *fields: str) -> QuerySet:
+        """Add DISTINCT to the query using the sync connection.
+
+        Args:
+            *fields: Optional field names to make distinct on.
+        Returns:
+            A QuerySet with DISTINCT applied
+        """
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.distinct(*fields)
 
     def split(self, *fields: str) -> QuerySet:
         """Split the results by the specified fields.
@@ -1567,6 +1685,94 @@ class QuerySetDescriptor:
             documents, batch_size, validate, return_documents
         )
 
+    def bulk_update(
+        self,
+        ids: List[Any],
+        values: dict,
+        *,
+        returning: Optional[str] = None,
+    ) -> Union[List[Any], Any]:
+        """Update multiple documents by their IDs.
+
+        Polyglot method: executes synchronously if the active connection is
+        synchronous, otherwise returns an awaitable.
+
+        Args:
+            ids: List of document IDs to update.
+            values: Dict of field names and values to set.
+            returning: Return policy (``'before'``, ``'after'``, ``'diff'``, or None).
+
+        Returns:
+            List of updated documents (or awaitable resolving to it).
+        """
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.get_many(ids).update(returning=returning, **values)
+
+    def bulk_update_sync(
+        self,
+        ids: List[Any],
+        values: dict,
+        *,
+        returning: Optional[str] = None,
+    ) -> Union[List[Any], Any]:
+        """Update multiple documents by their IDs synchronously.
+
+        Args:
+            ids: List of document IDs to update.
+            values: Dict of field names and values to set.
+            returning: Return policy (``'before'``, ``'after'``, ``'diff'``, or None).
+
+        Returns:
+            List of updated documents.
+        """
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.get_many(ids).update_sync(returning=returning, **values)
+
+    def bulk_delete(
+        self,
+        ids: List[Any],
+    ) -> Union[int, Any]:
+        """Delete multiple documents by their IDs.
+
+        Polyglot method: executes synchronously if the active connection is
+        synchronous, otherwise returns an awaitable.
+
+        Args:
+            ids: List of document IDs to delete.
+
+        Returns:
+            Number of deleted documents (or awaitable resolving to it).
+        """
+        connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.get_many(ids).delete()
+
+    def bulk_delete_sync(
+        self,
+        ids: List[Any],
+    ) -> Union[int, Any]:
+        """Delete multiple documents by their IDs synchronously.
+
+        Args:
+            ids: List of document IDs to delete.
+
+        Returns:
+            Number of deleted documents.
+        """
+        connection = self.connection or get_active_connection(async_mode=False)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.get_many(ids).delete_sync()
+
     def all(self) -> Union[List[Any], Any]:
         """Execute the query and return all results.
 
@@ -1670,6 +1876,14 @@ class QuerySetDescriptor:
     def suggest_indexes(self) -> List[str]:
         """Suggest indexes for current query shape."""
         connection = self.connection or get_active_connection(async_mode=None)
+        if self.owner is None:
+            raise RuntimeError("QuerySetDescriptor owner not set")
+        queryset = QuerySet(self.owner, connection)
+        return queryset.suggest_indexes()
+
+    def suggest_indexes_sync(self) -> List[str]:
+        """Suggest indexes for current query shape (sync connection)."""
+        connection = self.connection or get_active_connection(async_mode=False)
         if self.owner is None:
             raise RuntimeError("QuerySetDescriptor owner not set")
         queryset = QuerySet(self.owner, connection)

@@ -30,7 +30,6 @@ class GeometryField(Field):
             **kwargs: Additional field options to be passed to the parent Field class.
         """
         super().__init__(required=required, **kwargs)
-        super().__init__(required=required, **kwargs)
         from surrealdb import Geometry
         from surrealdb.data.types.geometry import GeometryCollection
         self.py_type = (dict, Geometry, GeometryCollection)

@@ -41,6 +41,7 @@ class SyncConfig:
     auto_max_lag_ms: int = 750
     checkpoint_table: str = "_se_sync_checkpoint"
     stats_table: str = "_se_sync_stats"
+    outbox_table: str = "_se_sync_outbox"
 
 
 @dataclass
@@ -79,6 +80,39 @@ class SyncManager:
         self._lag_ms: int = 0
         self._circuit_open: bool = False
         self._subscriptions: Dict[str, LiveSubscription] = {}
+        self._sync_loop_task: Optional[asyncio.Task[None]] = None
+        self._sync_loop_interval: float = 5.0  # seconds
+
+    def start_sync_loop(self, interval: float = 5.0) -> None:
+        """Start the background sync loop that drains the outbox periodically."""
+        self._sync_loop_interval = max(1.0, interval)
+        if self._sync_loop_task is not None and not self._sync_loop_task.done():
+            return
+        self._sync_loop_task = asyncio.create_task(self._sync_loop())
+
+    async def stop_sync_loop(self) -> None:
+        """Stop the background sync loop."""
+        if self._sync_loop_task is None:
+            return
+        self._sync_loop_task.cancel()
+        try:
+            await self._sync_loop_task
+        except asyncio.CancelledError:
+            pass
+        self._sync_loop_task = None
+
+    async def _sync_loop(self) -> None:
+        """Background loop: periodically drain the outbox."""
+        while True:
+            try:
+                await asyncio.sleep(self._sync_loop_interval)
+                applied = await self.drain_outbox()
+                if applied:
+                    self._lag_ms = 0
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                continue
 
     def register_model(
         self, model_cls: Type, policy: SyncPolicy = SyncPolicy.read_through
@@ -228,20 +262,42 @@ class SyncManager:
         if self.local is None:
             return
         c = self.local.client
-        await c.query(f"DEFINE TABLE {self.config.checkpoint_table} SCHEMAFULL;")
-        await c.query(f"DEFINE FIELD table ON TABLE {self.config.checkpoint_table} TYPE string;")
-        await c.query(
-            f"DEFINE FIELD cursor_type ON TABLE {self.config.checkpoint_table} TYPE string;"
-        )
-        await c.query(
-            f"DEFINE FIELD cursor_value ON TABLE {self.config.checkpoint_table} TYPE string;"
-        )
-        await c.query(f"DEFINE FIELD updated_at ON TABLE {self.config.checkpoint_table} TYPE datetime;")
-        await c.query(f"DEFINE TABLE {self.config.stats_table} SCHEMAFULL;")
-        await c.query(f"DEFINE FIELD table ON TABLE {self.config.stats_table} TYPE string;")
-        await c.query(f"DEFINE FIELD lag_ms ON TABLE {self.config.stats_table} TYPE int;")
-        await c.query(f"DEFINE FIELD last_error ON TABLE {self.config.stats_table} TYPE option<string>;")
-        await c.query(f"DEFINE FIELD updated_at ON TABLE {self.config.stats_table} TYPE datetime;")
+        is_async = self.local.is_async()
+        try:
+            from surrealdb.errors import AlreadyExistsError
+        except ImportError:
+            AlreadyExistsError = None
+        ddl_statements = [
+            f"DEFINE TABLE {self.config.checkpoint_table} SCHEMAFULL;",
+            f"DEFINE FIELD table ON TABLE {self.config.checkpoint_table} TYPE string;",
+            f"DEFINE FIELD cursor_type ON TABLE {self.config.checkpoint_table} TYPE string;",
+            f"DEFINE FIELD cursor_value ON TABLE {self.config.checkpoint_table} TYPE string;",
+            f"DEFINE FIELD updated_at ON TABLE {self.config.checkpoint_table} TYPE datetime;",
+            f"DEFINE TABLE {self.config.stats_table} SCHEMAFULL;",
+            f"DEFINE FIELD table ON TABLE {self.config.stats_table} TYPE string;",
+            f"DEFINE FIELD lag_ms ON TABLE {self.config.stats_table} TYPE int;",
+            f"DEFINE FIELD last_error ON TABLE {self.config.stats_table} TYPE option<string>;",
+            f"DEFINE FIELD updated_at ON TABLE {self.config.stats_table} TYPE datetime;",
+            f"DEFINE TABLE {self.config.outbox_table} SCHEMAFULL;",
+            f"DEFINE FIELD model ON TABLE {self.config.outbox_table} TYPE string;",
+            f"DEFINE FIELD action ON TABLE {self.config.outbox_table} TYPE string;",
+            f"DEFINE FIELD record_id ON TABLE {self.config.outbox_table} TYPE string;",
+            f"DEFINE FIELD data ON TABLE {self.config.outbox_table} TYPE string;",
+            f"DEFINE FIELD created_at ON TABLE {self.config.outbox_table} TYPE datetime;",
+            f"DEFINE FIELD synced_at ON TABLE {self.config.outbox_table} TYPE option<datetime>;",
+        ]
+        for stmt in ddl_statements:
+            try:
+                if is_async:
+                    await c.query(stmt)
+                else:
+                    c.query(stmt)
+            except Exception as e:
+                if AlreadyExistsError is not None and isinstance(e, AlreadyExistsError):
+                    continue
+                if "already exists" in str(e).lower():
+                    continue
+                raise
 
     async def save_checkpoint(
         self,
@@ -366,7 +422,188 @@ class SyncManager:
                     last_cursor = cursor
 
         if last_cursor is not None:
-            await self.save_checkpoint(table, "versionstamp", last_cursor)
+            try:
+                next_cursor = str(int(str(last_cursor)) + 1)
+            except (ValueError, TypeError):
+                next_cursor = str(last_cursor)
+            await self.save_checkpoint(table, "versionstamp", next_cursor)
+        return applied
+
+    async def _query_local(self, q: str, vars: Optional[dict] = None) -> Any:
+        """Execute a query on the local connection (handles async vs sync)."""
+        if self.local is None:
+            return None
+        if self.local.is_async():
+            return await self.local.client.query(q, *(vars,) if vars else ())
+        return self.local.client.query(q, *(vars,) if vars else ())
+
+    async def _query_remote(self, q: str, vars: Optional[dict] = None) -> Any:
+        """Execute a query on the remote connection (handles async vs sync)."""
+        if self.remote is None:
+            return None
+        if self.remote.is_async():
+            return await self.remote.client.query(q, *(vars,) if vars else ())
+        return self.remote.client.query(q, *(vars,) if vars else ())
+
+    @staticmethod
+    def _sql_literal(s: str) -> str:
+        """Quote a string for inline use in SurrealQL."""
+        escaped = s.replace("\\", "\\\\").replace("'", "\\'")
+        return f"'{escaped}'"
+
+    def _enqueue_outbox_sync(
+        self,
+        model: str,
+        action: str,
+        record_id: str,
+        data: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Synchronous implementation of enqueue_outbox."""
+        if self.local is None:
+            return
+        import json as _json
+
+        data_str = _json.dumps(data) if data else ""
+        sql = self._sql_literal
+        q = (
+            f"CREATE {self.config.outbox_table} "
+            f"SET model = {sql(model)}, "
+            f"action = {sql(action)}, "
+            f"record_id = {sql(record_id)}, "
+            f"data = {sql(data_str)}, "
+            f"created_at = time::now(), synced_at = NONE;"
+        )
+        try:
+            self.local.client.query(q)
+        except Exception:
+            ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+            safe_rid = record_id.replace(".", "_").replace(":", "_")
+            safe_model = model.replace(".", "_").replace(":", "_")
+            rid = f"{self.config.outbox_table}:{safe_model}_{safe_rid}_{action}_{int(ts * 1000)}"
+            self.local.client.query(
+                f"UPSERT {rid} "
+                f"SET model = {sql(model)}, "
+                f"action = {sql(action)}, "
+                f"record_id = {sql(record_id)}, "
+                f"data = {sql(data_str)}, "
+                "created_at = time::now(), synced_at = NONE;"
+            )
+
+    async def enqueue_outbox(
+        self,
+        model: str,
+        action: str,
+        record_id: str,
+        data: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Record a local change in the outbox for later sync to remote."""
+        if self.local is None:
+            return
+        if not self.local.is_async():
+            self._enqueue_outbox_sync(model, action, record_id, data)
+            return
+        import json as _json
+
+        sql = self._sql_literal
+        data_str = _json.dumps(data) if data else ""
+        q = (
+            f"CREATE {self.config.outbox_table} "
+            f"SET model = {sql(model)}, "
+            f"action = {sql(action)}, "
+            f"record_id = {sql(record_id)}, "
+            f"data = {sql(data_str)}, "
+            f"created_at = time::now(), synced_at = NONE;"
+        )
+        try:
+            await self._query_local(q)
+        except Exception:
+            ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+            safe_rid = record_id.replace(".", "_").replace(":", "_")
+            safe_model = model.replace(".", "_").replace(":", "_")
+            rid = f"{self.config.outbox_table}:{safe_model}_{safe_rid}_{action}_{int(ts * 1000)}"
+            await self._query_local(
+                f"UPSERT {rid} "
+                f"SET model = {sql(model)}, "
+                f"action = {sql(action)}, "
+                f"record_id = {sql(record_id)}, "
+                f"data = {sql(data_str)}, "
+                "created_at = time::now(), synced_at = NONE;"
+            )
+
+    async def drain_outbox(
+        self,
+        *,
+        batch_size: int = 100,
+        models: Optional[list[str]] = None,
+    ) -> int:
+        """Replay pending outbox entries to the remote and mark them synced.
+
+        Returns the number of entries applied.
+        """
+        if self.local is None or self.remote is None:
+            return 0
+
+        where = "synced_at IS NONE"
+        if models:
+            clauses = [f"model = {escape_literal(m)}" for m in models]
+            where += " AND (" + " OR ".join(clauses) + ")"
+        q = (
+            f"SELECT * FROM {self.config.outbox_table} "
+            f"WHERE {where} ORDER BY created_at ASC LIMIT {int(batch_size)};"
+        )
+        raw = await self._query_local(q)
+        rows = self._normalize_query_rows(raw)
+        # Flatten one level: the sync connection wrapper already nests
+        # flat results into list-of-lists to match the remote API shape.
+        if rows and isinstance(rows[0], list):
+            rows = rows[0]
+        if not rows:
+            return 0
+
+        applied = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            rid = (row.get("record_id") or "").strip()
+            action = (row.get("action") or "").upper()
+            entry_id = row.get("id")
+            if not rid or not entry_id:
+                continue
+
+            try:
+                if action == "DELETE":
+                    await self._query_remote(f"DELETE {rid};")
+                elif action in ("CREATE", "UPDATE"):
+                    doc_data = row.get("data")
+                    # data is stored as a JSON string in the outbox
+                    if isinstance(doc_data, str) and doc_data not in ("NONE", "None", ""):
+                        try:
+                            import json as _json
+                            parsed = _json.loads(doc_data)
+                        except Exception:
+                            parsed = None
+                    else:
+                        parsed = doc_data if isinstance(doc_data, dict) else None
+
+                    if isinstance(parsed, dict):
+                        content = {k: v for k, v in parsed.items() if k != "id"}
+                        await self._query_remote(
+                            f"UPSERT {rid} CONTENT $doc;", {"doc": content}
+                        )
+                    else:
+                        # data-less entry — just touch the record
+                        await self._query_remote(f"UPSERT {rid} SET _synced_at = time::now();")
+                else:
+                    continue
+
+                # Mark entry as synced
+                mark_q = f"UPDATE {entry_id} SET synced_at = time::now();"
+                await self._query_local(mark_q)
+                applied += 1
+            except Exception:
+                # Log and continue with next entry
+                continue
+
         return applied
 
     @staticmethod

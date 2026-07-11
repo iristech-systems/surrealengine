@@ -5,6 +5,84 @@ All notable changes to the SurrealEngine project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-07-11
+
+### Added
+- **Standalone Table Management API**: New `Table` class with `FieldDef` and `IndexDef` dataclasses for DDL operations without a Document subclass. Supports polyglot async/sync methods for `create`, `drop`, `exists`, `list`, `add_field`, `remove_field`, `create_index`, `drop_index`, `info`.
+- **`parse_connection_string()` public API**: Previously a dead utility, now exported from `surrealengine` and wired into `create_connection()` so users can pass a single URI string (`create_connection("ws://user:pass@host:8000/ns/db")`).
+- **`conn.query(sql, vars=None)` shortcut**: Both async and sync connection classes now have a `query()` method delegating to `client.query()`, removing the need for the extra `.client` indirection in the common case.
+- **`QuerySet.exists()`**: Polyglot check returning `True`/`False` based on `count() > 0`.
+- **`QuerySet.distinct(*fields)`**: Adds `SELECT DISTINCT` support; scoped to specific fields when provided.
+- **`ConnectionRegistry` helper methods**: `has_default_async_connection()`, `has_default_sync_connection()` for checking default existence without raising.
+- **`QuerySetDescriptor.search_sync()`**: Added missing sync variant for `search()` so sync-only users can call `MyDoc.objects.search_sync("term", "field")`.
+- **`QuerySetDescriptor.distinct_sync()`**: Added missing sync variant for `distinct()`.
+- **`QuerySetDescriptor.suggest_indexes_sync()`**: Added missing sync variant for `suggest_indexes()`.
+- **`Table.create(as_select=…)`**: New `as_select` parameter for defining SurrealDB views (`DEFINE TABLE name [OVERWRITE|IF NOT EXISTS] AS SELECT …`). Supports `overwrite` and `if_not_exists` flags. Fields/indexes/events are skipped for views (schema derived from query).
+- **`Document.bulk_update()` / `Document.bulk_delete()`**: Polyglot classmethods on `Document` and `QuerySetDescriptor`, delegating to `qs.get_many(ids).update(**values)` / `qs.get_many(ids).delete()`.
+- **`QuerySetDescriptor.bulk_update_sync()` / `bulk_delete_sync()`**: Added missing explicit sync variants for manager-level `bulk_update` / `bulk_delete` operations, matching `bulk_create`/`bulk_create_sync` pattern.
+- **`tests/test_aggregation_view_e2e.py`**: 10 end-to-end tests exercising `AggregationPipeline` (group, sort, match, having, group_all, execute), `Table.create(as_select=…)` (with overwrite/if_not_exists), `MaterializedView` (create, execute_raw_query, drop), and the combined pipeline→view→query flow — all against the embedded engine.
+
+### Changed
+- **`Document.create_table()` refactored**: Both async and sync implementations now delegate to the standalone `Table.create` / `Table.create_sync` API, eliminating ~400 lines of duplicated DDL code from `document.py`.
+- **`QuerySet._bulk_create_async` consolidated**: No longer splits documents into with-ID / without-ID batches. All documents are sent in a single `INSERT INTO … $_data` — SurrealDB accepts `RecordID`-valued `"id"` fields natively in batch content, eliminating individual `client.upsert()` round-trips per explicit-ID document.
+- **`QuerySet._update_async` / `update_sync`**: Replaced `UPDATE ((SELECT id FROM …)) SET …` (subquery) with direct `UPDATE table:id1, table:id2, … SET …` when `_bulk_id_selection` is active, eliminating subquery overhead.
+- **`MaterializedView` refactored**: `create()`/`create_sync()` now delegate to `Table._build_table_ddl()` for consistent DDL generation; `drop()`/`drop_sync()` delegate to `Table.drop()`; `objects` property caches the dynamic view class to prevent class-redefinition warnings.
+- **`register_unnamed_default=True` no longer silently overwrites**: The first unnamed connection becomes the default; subsequent unnamed connections do not replace it unless `make_default=True` is explicitly set. Prevents accidental default replacement in multi-connection scenarios.
+- **`get_connection(name)` auto-detection**: `async_mode` now defaults to `None`, searching async registry first, then sync — callers no longer need to know the connection type.
+- **`conn.transaction(...)` renamed to `conn.run_in_transaction(...)`**: The old `transaction()` name is kept as a deprecated alias emitting `DeprecationWarning`. This distinguishes it from the module-level `transaction()` context manager (write-behind proxy) which has completely different semantics.
+- **`create_connection()` leverages `parse_connection_string()`**: If `url` contains `://` and no explicit namespace/database/auth are given, they are extracted from the URI.
+- **`create_connection(auto_connect=True)` for async now raises**: Previously a silent no-op; now raises `RuntimeError` telling the user to `await connection.connect()` or use `async with connection:`.
+- **`Document.__init__` strict mode**: Unknown fields now raise `ValidationError` instead of `AttributeError`.
+- **Registry conflict detection**: Defining two Document subclasses with the same `collection` name now emits a `RuntimeWarning`.
+
+### Fixed
+- **`Document.bulk_create_sync` silently broken**: Was calling `cls.objects(connection).bulk_create_sync(…)` which hit `QuerySetDescriptor.__call__` (returning a list, not a QuerySet). Now constructs `QuerySet(cls, connection)` directly.
+- **`Document._bulk_create_async` missing signals and different code path**: Was using `connection.client.insert()` directly without firing `pre_bulk_insert` / `post_bulk_insert` signals, and had different result-normalisation than the sync path. Now delegates to `QuerySet._bulk_create_async` and fires signals consistently.
+- **`RelationDocument.create_table()` defaults to SCHEMALESS**: Overrides `Document.create_table()` with `schemafull=False`, because SurrealDB's `RELATE` manages `in`/`out` implicitly and may set CONTENT fields not in the schema definition.
+- **`get()` O(N) scan (dereference path)**: `SELECT * FROM {collection} FETCH {fields}` changed to `SELECT * FROM {record_id} FETCH {fields}`, eliminating full-table scans on single-record lookups.
+- **`token` not passed to sync connections**: `create_connection()` and `SyncConnectionPool.create_connection()` now pass `token` to `SurrealEngineSyncConnection`, which already handled it in `connect()`.
+- **`GeometryField` double `super().__init__`**: Removed duplicate call on consecutive lines.
+- **`shortest_path` duplicate assignment**: Removed duplicate `dst_table = "?"` on consecutive lines.
+- **Async DDL missing ASSERT constraints**: `_create_table_async` now emits `ASSERT` clauses for `min_length`, `max_length`, `regex_pattern`, `choices` (StringField), `min_value`, `max_value` (NumberField), and ChoiceField values — matching `create_table_sync`.
+- **`_enqueue_sync_hook` silent error swallowing**: Changed `except Exception: pass` to `logger.debug(...)`.
+- **`CallableRelationship` uncached access**: `RelationshipAccessor.__getattr__` now caches `CallableRelationship` instances per edge name.
+
+### Notes
+- The `in_()` method name (trailing underscore) is standard Python convention for reserved-word conflicts; no change needed.
+- `mark_clean()` after `__init__` is intentional — matches Django/ORM convention where a newly constructed document is not "dirty".
+- Dynamic `__init__` type annotations via metaclass are complex to generate correctly for all inheritance patterns; deferred.
+
+## [1.3.0] - 2026-06-24
+
+### Changed
+- **SurrealDB Python SDK 2.0 Upgrade**: Bumped `surrealdb` dependency from `>=1.0.8` to `>=2.0.0`.
+  - `AsyncSurreal`/`Surreal` are now factory functions (returns URL-specific connection class) — fully compatible via existing wrapper layer.
+  - Reconnection wrappers (`_execute_with_reauth`, `AsyncSurrealClientWrapper`, `SyncSurrealClientWrapper`) now additionally detect `ConnectionUnavailableError` typed error alongside existing keyword matching.
+  - Extended `_EMBEDDED_UNSUPPORTED_SDK_METHODS` with `attach`, `detach`, `begin`, `commit`, `cancel` to match SDK 2.0 surface area.
+  - Removed overly broad `isinstance(e, SurrealError)` check from reconnection wrappers — was catching `NotFoundError`, `AlreadyExistsError` etc. causing false-positive re-auth attempts. Now only checks `ConnectionUnavailableError`.
+- **Python 3.10+ Only**: SDK 2.0 drops Python 3.9; SurrealEngine already requires `>=3.10`.
+
+### Added
+- **Polyglot API completeness**: Added 7 missing `_sync` methods to `QuerySetDescriptor` — `search_and_sync`, `search_or_sync`, `with_search_score_sync`, `with_search_highlight_sync`, `version_at_sync`, `version_at_raw_sync`, `semantic_search_sync`.
+
+### Fixed
+- **`order_by_knn` ORDER BY direction**: Changed `ASC` → `DESC` for similarity metrics (cosine, jaccard, pearson) — higher similarity = closer match, so sort descending.
+- **`upsert_sync` import bug**: `ValueError` was imported from `.exceptions` instead of using the builtin; `DoesNotExist` was imported from `.exceptions` with wrong relative path (`from .exceptions` → `from ..exceptions`).
+- **`bulk_create_sync` result parsing**: Embedded engine returns flat `list[dict]` — code was iterating `result[0]` which is a dict, yielding 3 keys instead of 2 rows. Now normalises flat vs nested results.
+- **`delete_sync` count always 0**: Added `RETURN BEFORE` to fallback DELETE query so the number of deleted documents is returned instead of an empty result.
+- **`SyncSurrealClientWrapper.query` result normalisation**: Added automatic normalisation of flat `list[dict]` (embedded) to `list[list[dict]]` (remote format) so all `_sync` methods handle both engines transparently.
+- **`SyncManager.ensure_metadata_tables()` sync client compat**: DDL queries on sync connections return `None` which isn't awaitable. Now checks `is_async()` before deciding to `await`.
+- **DateTimeField/DurationField serialization crash**: `to_db()` methods were returning SDK `Datetime`/`Duration` objects which SDK 2.0's CBOR encoder cannot serialize, causing `CancelledError`+`KeyError` in `async_ws.py:_send`. Now return SurrealQL literal strings (`d'...'` / `2h30m`) instead.
+- **DurationField.validate() returning wrong type**: Was returning SDK `Duration` objects instead of `datetime.timedelta`. Now correctly returns `timedelta` by extracting nanoseconds from `Duration.elapsed`.
+- **DurationField.__init__ duplicate call**: Removed duplicate `super().__init__(**kwargs)`.
+- **DurationField unguarded import**: All `from surrealdb import Duration` imports now wrapped in `try/except ImportError` with `None` fallback.
+- **DateTimeField.to_db()**: Removed unused `Datetime` SDK import; always returns `d'...'` literal strings.
+
+### Notes
+- Native SDK sessions (`new_session()`) and client-side transactions (`begin()`/`commit()`/`cancel()`) are now available on WebSocket connections. The existing write-behind transaction proxy (`transaction.py`) remains the default; SDK-native session support is planned for a future release.
+- `order_by_knn` was rewritten to use `vector::similarity::cosine(...)` projection + `ORDER BY _knn_sim ASC` + `LIMIT k`, which works correctly on both SurrealDB 2.x and 3.x. The old `<|k,m|>` ORDER BY syntax returned `True` on 3.x.
+- `Document.create_index(search=True, analyzer=...)` error handling hardened with typed `isinstance` checks for `AlreadyExistsError`/`NotFoundError` with keyword fallback for SDK 1.x compatibility.
+
 ## [1.2.1] - 2026-05-16
 
 ### Fixed

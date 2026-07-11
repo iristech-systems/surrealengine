@@ -53,6 +53,7 @@ from .connection import (
     SurrealEngineSyncConnection,
     ConnectionRegistry,
     create_connection,
+    parse_connection_string,
     BaseSurrealEngineConnection,
 )
 from .raw_connection import RawSurrealConnection
@@ -160,6 +161,7 @@ from .reactive import ReactiveQuerySet
 from .events import LiveEvent, Event
 from .functions import surreal_func, SurrealFunction
 from .relation_update import patch_relation_document
+from .table import Table, FieldDef, IndexDef
 from .transaction import (
     transaction,
     transaction_sync,
@@ -182,7 +184,7 @@ from .sync_manager import (
 # For backward compatibility
 SurrealEngineConnection = SurrealEngineAsyncConnection
 
-__version__ = "1.2.1"
+__version__ = "1.4.0"
 __all__ = [
     "SurrealEngine",
     "SurrealEngineAsyncConnection",
@@ -302,6 +304,10 @@ __all__ = [
     "TableField",
     "TimestampMixin",
     "SoftDeleteMixin",
+    "parse_connection_string",
+    "Table",
+    "FieldDef",
+    "IndexDef",
 ]
 
 # Apply the patch to add update methods to RelationDocument

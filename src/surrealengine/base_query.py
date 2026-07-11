@@ -77,6 +77,7 @@ class BaseQuerySet:
         self.freshness_mode: Optional[str] = None
         self.sync_manager: Optional[Any] = None
         self.group_by_all: bool = False
+        self.distinct_value: Optional[str] = None
         # Graph traversal state
         self._traversal_path: Optional[str] = None
         self._traversal_unique: bool = True
@@ -477,23 +478,44 @@ class BaseQuerySet:
         k: int = 10,
         metric: Optional[str] = None,
     ) -> T:
-        """Order by vector KNN distance using SurrealQL ANN syntax.
+        """Order by vector KNN distance.
 
-        Produces ORDER BY clause like:
-            ORDER BY embedding <|10,COSINE|> [..vector..]
+        Rewritten for SurrealDB 3.x compatibility: projects the similarity
+        score into the SELECT list, orders by it, and limits to k results.
+
+        Effectively equivalent to:
+            .with_vector_similarity(field, vector, alias="_knn_sim", metric=m)
+             .order_by("_knn_sim").limit(k)
         """
         clone = self._clone()
         field_name = field.name if hasattr(field, "name") else str(field)
-        vector_list, k_value, resolved_metric = clone._normalize_knn_payload(
-            field_name,
-            {
-                "vector": vector,
-                "k": k,
-                "metric": metric,
-            },
-        )
-        clone.order_by_raw_value = f"{field_name} <|{k_value},{resolved_metric}|> {escape_literal(vector_list)}"
-        clone.order_by_value = None
+        converted_vector = clone._convert_value_for_query(field_name, vector)
+        if hasattr(converted_vector, "tolist"):
+            converted_vector = converted_vector.tolist()
+        if not isinstance(converted_vector, (list, tuple)):
+            raise ValueError(
+                f"Vector value for field '{field_name}' must be list/tuple-like."
+            )
+        vector_list = [float(v) for v in converted_vector]
+        clone._validate_vector_dimension(field_name, vector_list)
+        alias = "_knn_sim"
+        resolved_metric = (metric or "COSINE").upper()
+        normalized_metric = clone._normalize_vector_projection_metric(resolved_metric).lower()
+        if normalized_metric in {"cosine", "jaccard", "pearson"}:
+            expr = (
+                f"vector::similarity::{normalized_metric}({field_name}, {escape_literal(vector_list)}) "
+                f"AS {alias}"
+            )
+        else:
+            expr = (
+                f"vector::distance::{normalized_metric}({field_name}, {escape_literal(vector_list)}) "
+                f"AS {alias}"
+            )
+        clone._append_select_expression(expr)
+        order_dir = "DESC" if normalized_metric in {"cosine", "jaccard", "pearson"} else "ASC"
+        clone.order_by_value = (alias, order_dir)
+        clone.order_by_raw_value = None
+        clone.limit_value = k
         return clone
 
     def with_vector_similarity(
@@ -1416,6 +1438,41 @@ class BaseQuerySet:
         """
         raise NotImplementedError("Subclasses must implement count_sync")
 
+    def exists(self) -> Union[bool, Any]:
+        """Check if any documents match the query.
+
+        Polyglot method: executes synchronously if the connection is synchronous,
+        otherwise returns an awaitable.
+
+        Returns:
+            True if at least one matching document exists, False otherwise
+        """
+        if not self.connection.is_async():
+            return self.count_sync() > 0
+        return self._exists_async()
+
+    async def _exists_async(self) -> bool:
+        """Check if any documents match the query asynchronously."""
+        count = await self._count_async()
+        return count > 0
+
+    def distinct(self, *fields: str) -> "BaseQuerySet":
+        """Add DISTINCT to the query, optionally scoped to specific fields.
+
+        Args:
+            *fields: Optional field names to make distinct on.
+                    If empty, applies DISTINCT to the entire result set.
+
+        Returns:
+            A cloned query with DISTINCT applied
+        """
+        clone = self._clone()
+        if fields:
+            clone.distinct_value = ", ".join(fields)
+        else:
+            clone.distinct_value = "*"
+        return clone
+
     def __await__(self):
         """Make the queryset awaitable.
 
@@ -1570,6 +1627,7 @@ class BaseQuerySet:
         clone.freshness_mode = self.freshness_mode
         clone.sync_manager = self.sync_manager
         clone.group_by_all = self.group_by_all
+        clone.distinct_value = self.distinct_value
         # Copy performance optimization attributes
         clone._bulk_id_selection = self._bulk_id_selection
         clone._id_range_selection = self._id_range_selection
