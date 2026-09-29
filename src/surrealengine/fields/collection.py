@@ -1,6 +1,11 @@
 from typing import Any, Dict, List, Optional
 from ..utils.tracking import TrackedList, TrackedDict
 
+try:
+    from surrealdb import SurrealSet
+except ImportError:
+    SurrealSet = None
+
 from .base import Field
 
 class ListField(Field):
@@ -282,7 +287,7 @@ class SetField(ListField):
             return deduplicated
         return value
 
-    def to_db(self, value: Optional[List[Any]]) -> Optional[List[Any]]:
+    def to_db(self, value: Optional[List[Any]]) -> Optional[Any]:
         """Convert Python list to database representation with deduplication.
         """
         if value is not None:
@@ -292,5 +297,7 @@ class SetField(ListField):
                 db_item = self.field_type.to_db(item) if self.field_type else item
                 if db_item not in deduplicated:
                     deduplicated.append(db_item)
+            if SurrealSet is not None:
+                return SurrealSet(deduplicated)
             return deduplicated
         return value

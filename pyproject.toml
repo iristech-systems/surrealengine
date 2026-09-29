@@ -9,7 +9,7 @@ python-source = "src"
 
 [project]
 name = "surrealengine"
-version = "1.3.0"
+version = "2.0.0"
 description = "A powerful, asynchronous Object-Graph Mapper (OGM) and utility library for SurrealDB."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,13 +34,29 @@ classifiers = [
 
 # Core dependencies - minimal set required for basic functionality
 dependencies = [
-    "surrealdb>=2.0.0",          # Core SurrealDB client
+    # 3.0.0b7 is the first release whose embedded engine runs surrealdb-core 3.x,
+    # which is what makes local (mem://, file://, surrealkv://) and remote agree
+    # on the 3.0 feature set. It is also a breaking API change from 2.x - see
+    # 3_0_update-path.md. Pinned below 4 because 3.x is still pre-release.
+    "surrealdb>=3.0.0b7,<4",     # Core SurrealDB client
     "typing-extensions>=4.12.0", # Typing support for older Python
     "cbor2>=5.6.0",              # CBOR serialization
-    "websockets>=12.0",          # WebSocket support
+    # The SDK's own floor. websockets.sync needs >=11.0; 11.0 deadlocks on close
+    # with an undelivered live notification; 12.0-13.1 pay the full 10s close
+    # timeout for it; 14.0 is the first with an immediate close, and 14.1 the
+    # first to expose ClientConnection.state.
+    "websockets>=14.1",          # WebSocket support
 ]
 
 [project.optional-dependencies]
+# Embedded SurrealDB engine (mem://, file://, surrealkv://, surrealkv+versioned://).
+# As of surrealdb 3.0 this is a separate native distribution rather than part of
+# the main wheel, so it has to be asked for explicitly. Required for the local
+# half of SyncManager's local/remote read routing.
+embedded = [
+    "surrealdb[embedded]>=3.0.0b7,<4",
+]
+
 # Signals support (pre/post save hooks, etc.)
 signals = [
     "blinker>=1.6.2",
@@ -68,7 +84,7 @@ dev = [
 
 # Everything - for full-featured installations
 all = [
-    "surrealengine[signals,data,jupyter]",
+    "surrealengine[embedded,signals,data,jupyter]",
 ]
 
 [project.urls]
@@ -106,6 +122,9 @@ exclude = [
     "jupyter_lab_config.py",
     "benchmark_zero_copy.py",
 ]
+
+[tool.uv]
+prerelease = "allow"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -71,13 +71,24 @@ def fail(name: str, reason: str) -> None:
 
 
 async def test_document_not_saved_error():
-    """Accessing .id before save() should raise DocumentNotSavedError."""
-    name = "DocumentNotSavedError raised pre-save"
+    """Accessing .id before save() returns None (matching Django's pk).
+
+    DocumentNotSavedError is reserved for save()-response failures;
+    attribute access itself must stay None-safe because save() branches
+    on `if self.id:`. Operations requiring an id raise ValueError.
+    """
+    name = "unsaved .id is None"
     inv = Invoice(customer="Acme", amount=100.0)
+    if inv.id is None:
+        ok(name)
+    else:
+        fail(name, f"expected None, got {inv.id!r}")
+
+    name = "delete() on unsaved raises"
     try:
-        _ = inv.id
-        fail(name, ".id returned a value instead of raising")
-    except DocumentNotSavedError:
+        await inv.delete()
+        fail(name, "delete() did not raise")
+    except ValueError:
         ok(name)
     except Exception as e:
         fail(name, f"unexpected exception: {e}")
@@ -240,6 +251,10 @@ async def main():
     )
     await conn.connect()
     print("  Connected to SurrealDB\n")
+
+    # Drop leftover tables from previous runs
+    await conn.client.query("REMOVE TABLE IF EXISTS test_invoice")
+    await conn.client.query("REMOVE TABLE IF EXISTS test_order")
 
     # Schema setup
     await Invoice.create_table()

@@ -25,13 +25,6 @@ from .exceptions import ValidationError
 from surrealdb import RecordID
 
 
-_V3_ONLY_DDL_PATTERNS: List[tuple[str, str]] = [
-    ("COMPUTED", "COMPUTED and IncomingReferenceField"),
-    ("REFERENCE", "ReferenceField(reference=True)"),
-    ("record_references", "ReferenceField(reference=True)"),
-]
-
-
 def _enqueue_sync_hook(
     model_cls: type,
     action: str,
@@ -69,20 +62,6 @@ def _enqueue_sync_hook(
         logger.debug("Sync outbox enqueue failed for %s %s: %s", action, rid_str, _exc)
 
 
-def _raise_on_v3_ddl(url: str, query: str, exc: Exception) -> None:
-    """Re-raise DDL errors with a clear message when a SurrealDB 3.0+ feature
-    is used against an older engine (e.g. embedded SurrealDB 2.0.0)."""
-    err = str(exc)
-    if not _is_embedded_url(url):
-        raise exc
-    for keyword, feature in _V3_ONLY_DDL_PATTERNS:
-        if keyword in err:
-            raise RuntimeError(
-                f"{feature} requires SurrealDB 3.0+ "
-                f"(embedded engine is SurrealDB 2.0.0). "
-                f"DDL was: {query}"
-            ) from exc
-    raise exc
 try:
     from surrealdb.errors import AlreadyExistsError, NotFoundError, ValidationError as SDKValidationError
 except ImportError:
@@ -106,6 +85,33 @@ from .materialized_view import MaterializedView
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+
+def _is_v2_search_syntax_error(exc: Exception) -> bool:
+    """True if ``exc`` looks like a server rejecting 3.x FULLTEXT index syntax.
+
+    Remote SurrealDB 2.x servers don't understand ``FULLTEXT ANALYZER`` and fail
+    with a parse/validation error.
+    """
+    return "Parse error" in str(exc) or (
+        SDKValidationError is not None and isinstance(exc, SDKValidationError)
+    )
+
+
+def _to_v2_search_index_query(query: str) -> str:
+    """Rewrite a 3.x FULLTEXT index definition into SurrealDB 2.x SEARCH syntax.
+
+    2.x spells it ``SEARCH ANALYZER`` (not ``FULLTEXT ANALYZER``) and requires
+    ``HIGHLIGHTS`` to precede ``BM25``.
+    """
+    fallback = query.replace("FULLTEXT ANALYZER", "SEARCH ANALYZER")
+
+    if "BM25 HIGHLIGHTS" in fallback:
+        return fallback.replace("BM25 HIGHLIGHTS", "HIGHLIGHTS BM25")
+    if "BM25" in fallback and "HIGHLIGHTS" in fallback:
+        fallback = fallback.replace(" BM25", "").replace(" HIGHLIGHTS", "")
+        return f"{fallback} HIGHLIGHTS BM25"
+    return fallback
 
 
 # Robust import for SDK datetime wrapper
@@ -177,14 +183,15 @@ def serialize_http_safe(value: Any):
                 pass
         return value
 
-    # Recursively handle collections
-    if isinstance(value, list):
-        return [serialize_http_safe(v) for v in value]
-    if isinstance(value, dict):
-        return {k: serialize_http_safe(v) for k, v in value.items()}
+    # Pass through SDK types that are subclasses of list/dict but must stay native
+    try:
+        from surrealdb import SurrealSet
 
-    # Preserve RecordID objects so schema `record` / `option<record>` fields
-    # receive a native record value instead of a plain string.
+        if isinstance(value, SurrealSet):
+            return value
+    except ImportError:
+        pass
+
     try:
         from surrealdb import RecordID
 
@@ -192,6 +199,12 @@ def serialize_http_safe(value: Any):
             return value
     except ImportError:
         pass
+
+    # Recursively handle collections
+    if isinstance(value, list):
+        return [serialize_http_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: serialize_http_safe(v) for k, v in value.items()}
 
     # Pass through everything else unchanged
     return value
@@ -279,7 +292,7 @@ def _serialize_for_surreal(value: Any) -> str:
         return json.dumps(value)
 
     if value is None:
-        return "none"
+        return "null"
 
     if isinstance(value, list):
         return "[" + ", ".join(_serialize_for_surreal(v) for v in value) + "]"
@@ -883,6 +896,26 @@ class Document(metaclass=DocumentMetaclass):
 
         if field_name not in self._changed_fields:
             self._changed_fields.append(field_name)
+
+    def _apply_auto_datetime_fields(self, is_new: bool) -> None:
+        """Stamp DateTimeFields that have auto_now or auto_now_add set.
+
+        Args:
+            is_new: True when the document is about to be created rather than
+                updated. ``auto_now`` fires on every save; ``auto_now_add``
+                only when ``is_new`` is True.
+
+        """
+        from .fields.datetime import DateTimeField as _DateTimeField
+
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        for field_name, field in self._fields.items():
+            if not isinstance(field, _DateTimeField):
+                continue
+            if field.auto_now or (field.auto_now_add and is_new):
+                self._data[field_name] = now
+                if field_name not in self._changed_fields:
+                    self._changed_fields.append(field_name)
 
     def get_changed_data_for_update(self) -> Dict[str, Any]:
         """Get only the changed fields formatted for database update.
@@ -1510,6 +1543,7 @@ class Document(metaclass=DocumentMetaclass):
         for key, value in kwargs.items():
             setattr(self, key, value)
 
+        self._apply_auto_datetime_fields(is_new=False)
         self.validate()
 
         if not self.id:
@@ -1522,8 +1556,8 @@ class Document(metaclass=DocumentMetaclass):
 
         data = serialize_http_safe(data)
 
-        # Use merge for partial update
-        result = await connection.client.merge(self.id, data)
+        # Use merge for partial update (SDK 3.x: update().merge())
+        result = await connection.client.update(self.id).merge(data)
 
         # Update the current instance with the returned data
         if result:
@@ -1573,6 +1607,7 @@ class Document(metaclass=DocumentMetaclass):
         for key, value in kwargs.items():
             setattr(self, key, value)
 
+        self._apply_auto_datetime_fields(is_new=False)
         self.validate()
 
         if not self.id:
@@ -1585,8 +1620,8 @@ class Document(metaclass=DocumentMetaclass):
 
         data = serialize_http_safe(data)
 
-        # Use merge for partial update
-        result = connection.client.merge(self.id, data)
+        # Use merge for partial update (SDK 3.x: update().merge())
+        result = connection.client.update(self.id).merge(data)
 
         # Update the current instance with the returned data
         if result:
@@ -1643,6 +1678,8 @@ class Document(metaclass=DocumentMetaclass):
 
         if connection is None:
             connection = get_active_connection(async_mode=True)
+
+        self._apply_auto_datetime_fields(is_new=not self.id)
 
         # Execute pre-save model validation
         if hasattr(self, "clean") and callable(self.clean):
@@ -1773,6 +1810,8 @@ class Document(metaclass=DocumentMetaclass):
 
         if connection is None:
             connection = get_active_connection(async_mode=False)
+
+        self._apply_auto_datetime_fields(is_new=not self.id)
 
         # Execute pre-save model validation
         if hasattr(self, "clean") and callable(self.clean):
@@ -1923,7 +1962,7 @@ class Document(metaclass=DocumentMetaclass):
         if not self.id:
             raise ValueError("Cannot delete a document without an ID")
 
-        await connection.client.delete(f"{self.id}")
+        await connection.client.delete(self.id)
 
         # Trigger post_delete signal
         if SIGNAL_SUPPORT:
@@ -1956,7 +1995,7 @@ class Document(metaclass=DocumentMetaclass):
         if not self.id:
             raise ValueError("Cannot delete a document without an ID")
 
-        connection.client.delete(f"{self.id}")
+        connection.client.delete(self.id)
 
         # Trigger post_delete signal
         if SIGNAL_SUPPORT:
@@ -2022,7 +2061,7 @@ class Document(metaclass=DocumentMetaclass):
             else:
                 doc = {}
         else:
-            result = await connection.client.select(f"{self.id}")
+            result = await connection.client.select(self.id)
             if result:
                 doc = result[0] if isinstance(result, list) and result else result
             else:
@@ -2081,7 +2120,7 @@ class Document(metaclass=DocumentMetaclass):
             else:
                 doc = {}
         else:
-            result = connection.client.select(f"{self.id}")
+            result = connection.client.select(self.id)
             if result:
                 doc = result[0] if isinstance(result, list) and result else result
             else:
@@ -3038,39 +3077,27 @@ class Document(metaclass=DocumentMetaclass):
     async def _ensure_analyzer_exists_async(
         cls, connection: Any, analyzer_name: str
     ) -> None:
-        candidates = [
-            f"DEFINE ANALYZER {analyzer_name} TOKENIZERS blank,punct FILTERS lowercase",
-            f"DEFINE ANALYZER {analyzer_name} TOKENIZERS blank FILTERS lowercase",
-            f"DEFINE ANALYZER {analyzer_name} TOKENIZERS blank",
-            f"DEFINE ANALYZER {analyzer_name}",
-        ]
-        for stmt in candidates:
-            try:
-                await connection.client.query(stmt)
+        stmt = f"DEFINE ANALYZER IF NOT EXISTS {analyzer_name} TOKENIZERS blank,punct FILTERS lowercase"
+        try:
+            await connection.client.query(stmt)
+        except Exception as exc:
+            if AlreadyExistsError is not None and isinstance(exc, AlreadyExistsError):
                 return
-            except Exception as exc:
-                if AlreadyExistsError is not None and isinstance(exc, AlreadyExistsError):
-                    return
-                if "already exists" in str(exc).lower():
-                    return
+            if "already exists" in str(exc).lower():
+                return
+            raise
 
     @classmethod
     def _ensure_analyzer_exists_sync(cls, connection: Any, analyzer_name: str) -> None:
-        candidates = [
-            f"DEFINE ANALYZER {analyzer_name} TOKENIZERS blank,punct FILTERS lowercase",
-            f"DEFINE ANALYZER {analyzer_name} TOKENIZERS blank FILTERS lowercase",
-            f"DEFINE ANALYZER {analyzer_name} TOKENIZERS blank",
-            f"DEFINE ANALYZER {analyzer_name}",
-        ]
-        for stmt in candidates:
-            try:
-                connection.client.query(stmt)
+        stmt = f"DEFINE ANALYZER IF NOT EXISTS {analyzer_name} TOKENIZERS blank,punct FILTERS lowercase"
+        try:
+            connection.client.query(stmt)
+        except Exception as exc:
+            if AlreadyExistsError is not None and isinstance(exc, AlreadyExistsError):
                 return
-            except Exception as exc:
-                if AlreadyExistsError is not None and isinstance(exc, AlreadyExistsError):
-                    return
-                if "already exists" in str(exc).lower():
-                    return
+            if "already exists" in str(exc).lower():
+                return
+            raise
 
     @classmethod
     async def _create_index_async(
@@ -3092,7 +3119,7 @@ class Document(metaclass=DocumentMetaclass):
         fields_str = ", ".join(fields)
 
         # Build the index definition
-        query = f"DEFINE INDEX {index_name} ON {collection_name} FIELDS {fields_str}"
+        query = f"DEFINE INDEX IF NOT EXISTS {index_name} ON {collection_name} FIELDS {fields_str}"
         default_analyzer_name = "ascii"
 
         # Add index type
@@ -3155,28 +3182,13 @@ class Document(metaclass=DocumentMetaclass):
                 )
                 await connection.client.query(query)
                 return
-            if search and (
-                "Parse error" in str(e)
-                or (SDKValidationError is not None and isinstance(e, SDKValidationError))
-            ):
-                # Fallback to SurrealDB 2.x syntax for memory and older servers
-                fallback_query = query.replace("FULLTEXT ANALYZER", "SEARCH ANALYZER")
-
-                # SurrealDB 2.x needs HIGHLIGHTS before BM25
-                if "BM25 HIGHLIGHTS" in fallback_query:
-                    fallback_query = fallback_query.replace(
-                        "BM25 HIGHLIGHTS", "HIGHLIGHTS BM25"
-                    )
-                elif "BM25" in fallback_query and "HIGHLIGHTS" in fallback_query:
-                    fallback_query = fallback_query.replace(" BM25", "").replace(
-                        " HIGHLIGHTS", ""
-                    )
-                    fallback_query += " HIGHLIGHTS BM25"
-
+            if search and _is_v2_search_syntax_error(e):
+                # Remote SurrealDB 2.x server: retry with 2.x SEARCH syntax
+                fallback_query = _to_v2_search_index_query(query)
                 try:
                     await connection.client.query(fallback_query)
                 except Exception as fallback_exc:
-                    if search and cls._is_missing_analyzer_error(
+                    if cls._is_missing_analyzer_error(
                         fallback_exc, default_analyzer_name
                     ):
                         await cls._ensure_analyzer_exists_async(
@@ -3220,7 +3232,7 @@ class Document(metaclass=DocumentMetaclass):
         fields_str = ", ".join(fields)
 
         # Build the index definition
-        query = f"DEFINE INDEX {index_name} ON {collection_name} FIELDS {fields_str}"
+        query = f"DEFINE INDEX IF NOT EXISTS {index_name} ON {collection_name} FIELDS {fields_str}"
         default_analyzer_name = "ascii"
 
         # Add index type
@@ -3279,28 +3291,13 @@ class Document(metaclass=DocumentMetaclass):
                 cls._ensure_analyzer_exists_sync(connection, default_analyzer_name)
                 connection.client.query(query)
                 return
-            if search and (
-                "Parse error" in str(e)
-                or (SDKValidationError is not None and isinstance(e, SDKValidationError))
-            ):
-                # Fallback to SurrealDB 2.x syntax for memory and older servers
-                fallback_query = query.replace("FULLTEXT ANALYZER", "SEARCH ANALYZER")
-
-                # SurrealDB 2.x needs HIGHLIGHTS before BM25
-                if "BM25 HIGHLIGHTS" in fallback_query:
-                    fallback_query = fallback_query.replace(
-                        "BM25 HIGHLIGHTS", "HIGHLIGHTS BM25"
-                    )
-                elif "BM25" in fallback_query and "HIGHLIGHTS" in fallback_query:
-                    fallback_query = fallback_query.replace(" BM25", "").replace(
-                        " HIGHLIGHTS", ""
-                    )
-                    fallback_query += " HIGHLIGHTS BM25"
-
+            if search and _is_v2_search_syntax_error(e):
+                # Remote SurrealDB 2.x server: retry with 2.x SEARCH syntax
+                fallback_query = _to_v2_search_index_query(query)
                 try:
                     connection.client.query(fallback_query)
                 except Exception as fallback_exc:
-                    if search and cls._is_missing_analyzer_error(
+                    if cls._is_missing_analyzer_error(
                         fallback_exc, default_analyzer_name
                     ):
                         cls._ensure_analyzer_exists_sync(
@@ -3985,20 +3982,15 @@ class Document(metaclass=DocumentMetaclass):
             if doc:
                 comment = doc
 
-        try:
-            await Table.create(
-                collection_name,
-                schemafull=schemafull,
-                fields=fields or None,
-                relation=is_relation,
-                time_series=time_series,
-                comment=comment,
-                connection=connection,
-            )
-        except Exception as _ddl_err:
-            _raise_on_v3_ddl(
-                connection.url, f"DEFINE TABLE {collection_name}", _ddl_err
-            )
+        await Table.create(
+            collection_name,
+            schemafull=schemafull,
+            fields=fields or None,
+            relation=is_relation,
+            time_series=time_series,
+            comment=comment,
+            connection=connection,
+        )
 
         # Sequences (not handled by Table.create)
         seq_name = cls._meta.get("sequence")
@@ -4064,20 +4056,15 @@ class Document(metaclass=DocumentMetaclass):
             if doc:
                 comment = doc
 
-        try:
-            Table.create_sync(
-                collection_name,
-                schemafull=schemafull,
-                fields=fields or None,
-                relation=is_relation,
-                time_series=time_series,
-                comment=comment,
-                connection=connection,
-            )
-        except Exception as _ddl_err:
-            _raise_on_v3_ddl(
-                connection.url, f"DEFINE TABLE {collection_name}", _ddl_err
-            )
+        Table.create_sync(
+            collection_name,
+            schemafull=schemafull,
+            fields=fields or None,
+            relation=is_relation,
+            time_series=time_series,
+            comment=comment,
+            connection=connection,
+        )
 
         seq_name = cls._meta.get("sequence")
         if seq_name:
@@ -4324,6 +4311,9 @@ class RelationDocument(Document):
                     "RelationDocument must have both in_document and out_document set"
                 )
 
+            # relate() always creates a new record here, so auto_now_add fires.
+            self._apply_auto_datetime_fields(is_new=True)
+
             # Prepare attributes (exclude in/out/id)
             attrs = {}
             for field_name, field in self._fields.items():
@@ -4387,6 +4377,14 @@ class RelationDocument(Document):
 
         if self.id:
             return super().save_sync(connection)
+
+        if not self.in_document or not self.out_document:
+            raise ValueError(
+                "RelationDocument must have both in_document and out_document set"
+            )
+
+        # relate() always creates a new record here, so auto_now_add fires.
+        self._apply_auto_datetime_fields(is_new=True)
 
         if not self.in_document or not self.out_document:
             raise ValueError(
@@ -4705,7 +4703,7 @@ class RelationDocument(Document):
             if isinstance(v, (int, float)):
                 return str(v)
             if v is None:
-                return "NONE"
+                return "null"
             if isinstance(v, _RID):
                 table = getattr(v, "table", getattr(v, "table_name", None))
                 rid_id = getattr(v, "id", getattr(v, "record_id", None))
@@ -4807,7 +4805,7 @@ class RelationDocument(Document):
             if isinstance(v, (int, float)):
                 return str(v)
             if v is None:
-                return "NONE"
+                return "null"
             if isinstance(v, _RID):
                 table = getattr(v, "table", getattr(v, "table_name", None))
                 rid_id = getattr(v, "id", getattr(v, "record_id", None))

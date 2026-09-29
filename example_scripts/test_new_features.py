@@ -63,7 +63,7 @@ class Order(Document):
 async def main():
     # Connect to SurrealDB
     db = create_connection(
-        url="ws://db:8000/rpc",
+        url="ws://localhost:8000/rpc",
         namespace="test_ns",
         database="test_db",
         username="root",
@@ -74,6 +74,11 @@ async def main():
     await db.connect()
 
     try:
+        # Drop leftover tables from previous runs
+        await db.client.query("REMOVE TABLE IF EXISTS user")
+        await db.client.query("REMOVE TABLE IF EXISTS product")
+        await db.client.query("REMOVE TABLE IF EXISTS `order`")
+
         # Create tables
         logger.info("Creating tables...")
         await User.create_table(schemafull=True)

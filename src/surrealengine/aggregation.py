@@ -469,25 +469,8 @@ class AggregationPipeline:
             results = await connection.client.query(query)
 
             # Normalize RPC response to a list of row dicts, similar to QuerySet.all()
-            if not results:
-                return []
-
-            rows = None
-            if isinstance(results, list):
-                if results and isinstance(results[0], dict):
-                    rows = results
-                else:
-                    for part in reversed(results):
-                        if isinstance(part, list):
-                            rows = part
-                            break
-            else:
-                rows = results
-            if not rows:
-                return []
-            if isinstance(rows, dict):
-                rows = [rows]
-            return rows
+            from .query.base import _normalize_query_result
+            return _normalize_query_result(results)
             
         return _execute_async()
         
@@ -505,22 +488,5 @@ class AggregationPipeline:
         results = connection.client.query(query)
 
         # Normalize RPC response to a list of row dicts, similar to QuerySet.all_sync()
-        if not results:
-            return []
-
-        rows = None
-        if isinstance(results, list):
-            if results and isinstance(results[0], dict):
-                rows = results
-            else:
-                for part in reversed(results):
-                    if isinstance(part, list):
-                        rows = part
-                        break
-        else:
-            rows = results
-        if not rows:
-            return []
-        if isinstance(rows, dict):
-            rows = [rows]
-        return rows
+        from .query.base import _normalize_query_result
+        return _normalize_query_result(results)

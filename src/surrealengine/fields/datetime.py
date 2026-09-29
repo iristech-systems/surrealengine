@@ -18,22 +18,39 @@ class DateTimeField(Field):
     Example::
 
         class Event(Document):
-            created_at = DateTimeField(default=datetime.datetime.now)
+            created_at = DateTimeField(auto_now_add=True)
+            updated_at = DateTimeField(auto_now=True)
             scheduled_for = DateTimeField()
 
-        # Python datetime objects are automatically converted to SurrealDB format
         event = Event(scheduled_for=datetime.datetime.now() + datetime.timedelta(days=7))
         await event.save()
+        # created_at stamped with current UTC time; re-stamped on every save.
+        # scheduled_for is untouched by save().
     """
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        auto_now_add: bool = False,
+        auto_now: bool = False,
+        **kwargs: Any,
+    ) -> None:
         """Initialize a new DateTimeField.
 
         Args:
+            auto_now_add: Set to the current UTC time when the document is
+                first created. The value is frozen afterwards — updates and
+                explicit assignment on later saves are overwritten only if
+                auto_now is also set.
+            auto_now: Set to the current UTC time on every save, including
+                creation. Implies auto_now_add behavior on create.
             **kwargs: Additional arguments to pass to the parent class
         """
+        if auto_now_add or auto_now:
+            kwargs.setdefault("required", False)
         super().__init__(**kwargs)
         self.py_type = datetime.datetime
+        self.auto_now_add = auto_now_add
+        self.auto_now = auto_now
 
     def validate(self, value: Any) -> Optional[datetime.datetime]:
         """Validate the datetime value.
@@ -53,21 +70,6 @@ class DateTimeField(Field):
         try:
             from surrealdb import Datetime
             if isinstance(value, Datetime):
-                # Assuming Datetime has a 'dt' or 'datetime' property or similar,
-                # or we can extract it. Based on SDK source, it wraps valid input.
-                # If it stores it as string internally or object, we need to extract.
-                # For now, let's assume we can trust it or it has a way to get back to datetime.
-                # If the SDK 1.0.7 Datetime object usage is opaque, we might return it as is
-                # if the expected return type was lenient, but type hint says Optional[datetime.datetime].
-                # We should try to extract the python datetime.
-                if hasattr(value, 'inner'): # Check SDK source if possible, else generic
-                    return value.inner
-                if hasattr(value, 'dt'):
-                    return value.dt
-                # Fallback: maybe it is a subclass of datetime? Unlikely.
-                # If we return it here, it breaks return type contract if it's not a datetime.
-                # Let's assume validation is satisfied if it's a Datetime, but we need to return datetime. 
-                # Let's inspect it via str and parse if needed.
                 return datetime.datetime.fromisoformat(str(value).replace("d'", "").replace("'", "").replace('Z', '+00:00'))
         except ImportError:
             pass
@@ -120,14 +122,12 @@ class DateTimeField(Field):
         if isinstance(value, datetime.datetime):
             if value.tzinfo is None:
                 value = value.replace(tzinfo=datetime.timezone.utc)
-            return f"d'{value.isoformat().replace('+00:00','Z')}'"
+            return value
 
         try:
             from surrealdb import Datetime
             if isinstance(value, Datetime):
-                if hasattr(value, 'dt') and hasattr(value.dt, 'isoformat'):
-                    return f"d'{value.dt.isoformat().replace('+00:00','Z')}'"
-                return str(value)
+                return value
         except ImportError:
             pass
 
@@ -144,14 +144,7 @@ class DateTimeField(Field):
         
         try:
             from surrealdb import Datetime
-            # SDK wrapper
             if isinstance(value, Datetime):
-                # Try to extract the datetime object
-                if hasattr(value, 'inner') and isinstance(value.inner, datetime.datetime):
-                    return value.inner
-                if hasattr(value, 'dt') and isinstance(value.dt, datetime.datetime):
-                    return value.dt
-                # Fallback to string parsing if wrapper attributes unknown
                 s = str(value)
                 if s.startswith("d'") and s.endswith("'"):
                     s = s[2:-1]
@@ -160,6 +153,8 @@ class DateTimeField(Field):
                 except ValueError:
                     return None
         except ImportError:
+            pass
+        except AttributeError:
             pass
             
         # Surreal datetime literal like d'2025-08-31T12:34:56Z'

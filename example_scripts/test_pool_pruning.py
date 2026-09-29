@@ -7,7 +7,7 @@ import asyncio
 import os
 from surrealengine.connection import create_connection
 
-DB_URL = os.environ.get("SURREAL_URL", "ws://db:8000/rpc")
+DB_URL = os.environ.get("SURREAL_URL", "ws://localhost:8000/rpc")
 NS = os.environ.get("SURREAL_NS", "test")
 DB = os.environ.get("SURREAL_DB", "test")
 USER = os.environ.get("SURREAL_USER", "root")
@@ -29,11 +29,11 @@ async def main():
     await conn.connect()
     # Borrow and return a couple times to create pool entries
     for _ in range(3):
-        await conn.client.query("SELECT 1;")
+        await conn.client.query("RETURN 1")
     # Let idle time elapse
     await asyncio.sleep(2)
     # Trigger health prune
-    await conn.client.query("SELECT 1;")
+    await conn.client.query("RETURN 1")
     pool = conn.pool
     if pool:
         print("pool size (available)", len(pool.pool))

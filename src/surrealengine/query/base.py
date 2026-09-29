@@ -16,6 +16,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _normalize_query_result(result: Any) -> List[dict]:
+    """Unwrap a surrealdb query result to a flat list of row dicts.
+
+    SDK 3.x ``query()`` returns ``list[list[dict]]`` (one inner list per
+    statement).  Embedded sync may return a flat ``list[dict]`` directly.
+    This helper handles both shapes so callers don't need to repeat the
+    same 10-line extraction block.
+    """
+    if result is None:
+        return []
+
+    # Fast path: already a list of dicts (embedded sync)
+    if isinstance(result, list):
+        if result and isinstance(result[0], dict):
+            return result
+        # Slow path: list[list[dict]] — take the last non-empty list
+        for part in reversed(result):
+            if isinstance(part, list):
+                return part
+        return []
+
+    # Rare: single dict (shouldn't happen with modern SDK, but be safe)
+    if isinstance(result, dict):
+        return [result]
+
+    return []
+
+
 class _LiveBackpressureQueue(asyncio.Queue):
     """Queue with explicit drop/block behavior for LIVE fanout."""
 
@@ -520,6 +548,16 @@ class QuerySet(BaseQuerySet):
         # Ensure async client and availability of live API
         client = getattr(self.connection, "client", None)
 
+        # Create a dedicated connection clone for this LIVE subscription.
+        # Cloning also bypasses connection pools — pool clients don't proxy
+        # the live API — so the capability check runs against the cloned
+        # client, not the (possibly pooled) connection's client.
+        dedicated_connection = None
+        if hasattr(self.connection, "clone"):
+            dedicated_connection = await self.connection.clone()
+            await dedicated_connection.connect()
+            client = dedicated_connection.client
+
         # Check if the client supports live queries (must have live_queues)
         if (
             client is None
@@ -531,13 +569,6 @@ class QuerySet(BaseQuerySet):
             raise NotImplementedError(
                 "LIVE queries require a WebSocket connection; embedded connections (mem://, file://, surrealkv://) are not currently supported by the SurrealDB Python SDK."
             )
-
-        # Create a dedicated connection clone for this LIVE subscription
-        dedicated_connection = None
-        if hasattr(self.connection, "clone"):
-            dedicated_connection = await self.connection.clone()
-            await dedicated_connection.connect()
-            client = dedicated_connection.client
 
         table = self.document_class._get_collection_name()
 
@@ -1009,6 +1040,16 @@ class QuerySet(BaseQuerySet):
 
             return documents
 
+    def _has_partial_projection(self) -> bool:
+        """True if the query projects a subset of fields rather than whole rows.
+
+        Partial rows must be passed to ``from_db(..., partial=True)`` so missing
+        required fields don't fail validation. This is the case for explicit
+        ``.select(...)`` and also for ``GROUP BY``, which on SurrealDB 3.x must
+        project the grouped fields instead of ``*``.
+        """
+        return self.select_fields is not None or bool(self.group_by_fields)
+
     def _build_query(self) -> str:
         """Build the query string with performance optimizations.
 
@@ -1048,6 +1089,18 @@ class QuerySet(BaseQuerySet):
             select_keyword = f"SELECT id, {traversal_to_use}.* AS traversed"
         elif self.select_fields:
             select_keyword = f"SELECT {', '.join(self.select_fields)}"
+        elif self.group_by_fields:
+            # SurrealDB 3.x rejects `SELECT *` combined with GROUP BY:
+            #   "Incorrect selector for aggregate selection, expression `*`
+            #    within selector cannot be aggregated in a group."
+            # Project the grouped fields instead, matching SQL GROUP BY semantics.
+            select_keyword = f"SELECT {', '.join(self.group_by_fields)}"
+        elif self.group_by_all:
+            raise ValueError(
+                "group_by(all=True) requires an explicit projection on SurrealDB 3.x. "
+                "`SELECT * ... GROUP ALL` is rejected by the server. Add an aggregate "
+                "projection, e.g. .only('count() AS total').group_by(all=True)."
+            )
         else:
             select_keyword = "SELECT *"
 
@@ -1130,27 +1183,9 @@ class QuerySet(BaseQuerySet):
         # Fallback to standard SDK (Level 1 Zero-Copy / ODM Bypass)
         results = await exec_connection.client.query(query)
 
-        if not results:
-            return pa.Table.from_pylist([])
-
-        # Normalize rows
-        rows = None
-        if isinstance(results, list):
-            if results and isinstance(results[0], dict):
-                rows = results
-            else:
-                for part in reversed(results):
-                    if isinstance(part, list):
-                        rows = part
-                        break
-        else:
-            rows = results
-
+        rows = _normalize_query_result(results)
         if not rows:
             return pa.Table.from_pylist([])
-
-        if isinstance(rows, dict):
-            rows = [rows]
 
         # Normalize RecordID objects for Arrow conversion
         normalized_rows = []
@@ -1158,10 +1193,7 @@ class QuerySet(BaseQuerySet):
             if isinstance(row, dict):
                 normalized_row = {}
                 for k, v in row.items():
-                    if isinstance(v, RecordID):
-                        normalized_row[k] = str(v)
-                    else:
-                        normalized_row[k] = v
+                    normalized_row[k] = str(v) if isinstance(v, RecordID) else v
                 normalized_rows.append(normalized_row)
             else:
                 normalized_rows.append(row)
@@ -1177,32 +1209,11 @@ class QuerySet(BaseQuerySet):
 
         query = self._build_query()
         exec_connection = self._get_execution_connection(self.document_class)
-
-        # Sync connection doesn't support optimized query_arrow (which is async WebSockets)
-        # So we always fall back to standard SDK
         results = exec_connection.client.query(query)
 
-        if not results:
-            return pa.Table.from_pylist([])
-
-        # Normalize rows
-        rows = None
-        if isinstance(results, list):
-            if results and isinstance(results[0], dict):
-                rows = results
-            else:
-                for part in reversed(results):
-                    if isinstance(part, list):
-                        rows = part
-                        break
-        else:
-            rows = results
-
+        rows = _normalize_query_result(results)
         if not rows:
             return pa.Table.from_pylist([])
-
-        if isinstance(rows, dict):
-            rows = [rows]
 
         # Normalize RecordID objects for Arrow conversion
         normalized_rows = []
@@ -1210,10 +1221,7 @@ class QuerySet(BaseQuerySet):
             if isinstance(row, dict):
                 normalized_row = {}
                 for k, v in row.items():
-                    if isinstance(v, RecordID):
-                        normalized_row[k] = str(v)
-                    else:
-                        normalized_row[k] = v
+                    normalized_row[k] = str(v) if isinstance(v, RecordID) else v
                 normalized_rows.append(normalized_row)
             else:
                 normalized_rows.append(row)
@@ -1281,27 +1289,10 @@ class QuerySet(BaseQuerySet):
         exec_connection = self._get_execution_connection(self.document_class)
         results = await exec_connection.client.query(query)
 
-        if not results:
-            return []
-
-        # Extract rows: handle both single SELECT (list[dict]) and multi-statement (list[resultset])
-        rows = None
-        if isinstance(results, list):
-            if results and isinstance(results[0], dict):
-                rows = results
-            else:
-                for part in reversed(results):
-                    if isinstance(part, list):
-                        rows = part
-                        break
-        else:
-            rows = results
+        rows = _normalize_query_result(results)
         if not rows:
             return []
-        if isinstance(rows, dict):
-            rows = [rows]
 
-        # If this is a traversal query, return raw rows (shape may not match document schema)
         # If this is a traversal query, return raw rows unless we're targeting a model
         if getattr(self, "_traversal_path", None):
             # Extract and flatten traversal results
@@ -1318,7 +1309,7 @@ class QuerySet(BaseQuerySet):
             if not getattr(self, "_traversal_target_is_model", False):
                 return rows
 
-        is_partial = self.select_fields is not None
+        is_partial = self._has_partial_projection()
         processed_results = [
             self.document_class.from_db(
                 doc, dereference=dereference, partial=is_partial
@@ -1344,27 +1335,10 @@ class QuerySet(BaseQuerySet):
         exec_connection = self._get_execution_connection(self.document_class)
         results = exec_connection.client.query(query)
 
-        if not results:
-            return []
-
-        # Extract rows: handle both single SELECT (list[dict]) and multi-statement (list[resultset])
-        rows = None
-        if isinstance(results, list):
-            if results and isinstance(results[0], dict):
-                rows = results
-            else:
-                for part in reversed(results):
-                    if isinstance(part, list):
-                        rows = part
-                        break
-        else:
-            rows = results
+        rows = _normalize_query_result(results)
         if not rows:
             return []
-        if isinstance(rows, dict):
-            rows = [rows]
 
-        # If this is a traversal query, return raw rows (shape may not match document schema)
         # If this is a traversal query, return raw rows unless we're targeting a model
         if getattr(self, "_traversal_path", None):
             # Extract and flatten traversal results
@@ -1381,7 +1355,7 @@ class QuerySet(BaseQuerySet):
             if not getattr(self, "_traversal_target_is_model", False):
                 return rows
 
-        is_partial = self.select_fields is not None
+        is_partial = self._has_partial_projection()
         processed_results = [
             self.document_class.from_db(
                 doc, dereference=dereference, partial=is_partial
@@ -1411,21 +1385,9 @@ class QuerySet(BaseQuerySet):
         if not result:
             return 0
 
-        rows = result
-        if isinstance(result, list):
-            if result and isinstance(result[0], dict):
-                rows = result
-            else:
-                rows = None
-                for part in reversed(result):
-                    if isinstance(part, list):
-                        rows = part
-                        break
-                if rows is None:
-                    rows = result
-
-        if isinstance(rows, dict):
-            rows = [rows]
+        rows = _normalize_query_result(result)
+        if not rows:
+            return 0
 
         if isinstance(rows, list) and rows:
             first = rows[0]
@@ -1659,15 +1621,10 @@ class QuerySet(BaseQuerySet):
 
                 result = await self.connection.client.query(update_query)
 
-                if not result:
+                rows = _normalize_query_result(result)
+                if not rows:
                     return []
-
-                if isinstance(result[0], dict):
-                    return [self.document_class.from_db(doc) for doc in result]
-                elif isinstance(result[0], list):
-                    return [self.document_class.from_db(doc) for doc in result[0]]
-                else:
-                    return []
+                return [self.document_class.from_db(doc) for doc in rows]
 
         # Fall back to regular update query
         update_query = f"UPDATE {self.document_class._get_collection_name()}"
@@ -1685,28 +1642,9 @@ class QuerySet(BaseQuerySet):
 
         result = await self.connection.client.query(update_query)
 
-        if not result:
-            return []
-
-        # Extract rows: handle both single statement (list[dict]) and multi-statement result
-        rows = None
-        if isinstance(result, list):
-            if result and isinstance(result[0], dict):
-                rows = result
-            else:
-                # Fallback for nested results (e.g. if wrapper returns [ [doc1, doc2] ])
-                for part in reversed(result):
-                    if isinstance(part, list):
-                        rows = part
-                        break
-        else:
-            rows = result
-
+        rows = _normalize_query_result(result)
         if not rows:
             return []
-
-        if isinstance(rows, dict):
-            rows = [rows]
 
         return [self.document_class.from_db(doc) for doc in rows]
 
@@ -1750,15 +1688,10 @@ class QuerySet(BaseQuerySet):
 
                 result = self.connection.client.query(update_query)
 
-                if not result:
+                rows = _normalize_query_result(result)
+                if not rows:
                     return []
-
-                if isinstance(result[0], dict):
-                    return [self.document_class.from_db(doc) for doc in result]
-                elif isinstance(result[0], list):
-                    return [self.document_class.from_db(doc) for doc in result[0]]
-                else:
-                    return []
+                return [self.document_class.from_db(doc) for doc in rows]
 
         # Fall back to regular update query
         update_query = f"UPDATE {self.document_class._get_collection_name()}"
@@ -1773,28 +1706,9 @@ class QuerySet(BaseQuerySet):
 
         result = self.connection.client.query(update_query)
 
-        if not result:
-            return []
-
-        # Extract rows: handle both single statement (list[dict]) and multi-statement result
-        rows = None
-        if isinstance(result, list):
-            if result and isinstance(result[0], dict):
-                rows = result
-            else:
-                # Fallback for nested results
-                for part in reversed(result):
-                    if isinstance(part, list):
-                        rows = part
-                        break
-        else:
-            rows = result
-
+        rows = _normalize_query_result(result)
         if not rows:
             return []
-
-        if isinstance(rows, dict):
-            rows = [rows]
 
         return [self.document_class.from_db(doc) for doc in rows]
 
@@ -1813,96 +1727,49 @@ class QuerySet(BaseQuerySet):
 
         return self._delete_async()
 
-    async def _delete_async(self) -> int:
-        """Internal async implementation of delete()."""
-        # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
+    def _build_delete_query(self) -> str:
+        """Build a DELETE statement that returns the rows it removed.
+
+        ``RETURN BEFORE`` is mandatory for an accurate count: without it
+        SurrealDB returns an empty result set, so every delete would report 0.
+        It also makes the count truthful for bulk ID deletes, where some of the
+        requested IDs may not exist.
+        """
         if self._bulk_id_selection:
-            # Use direct record deletion syntax for bulk ID operations
+            # Direct record deletion: DELETE table:id1, table:id2, ...
             record_ids = [
                 self._format_record_id(id_val) for id_val in self._bulk_id_selection
             ]
-            delete_query = f"DELETE {', '.join(record_ids)}"
+            query = f"DELETE {', '.join(record_ids)}"
+        elif self._id_range_selection and (
+            optimized_query := self._build_direct_record_query()
+        ):
+            # Range operations: use a subquery over direct record access
+            subquery = optimized_query.replace("SELECT *", "SELECT id")
+            query = f"DELETE ({subquery})"
+        else:
+            query = f"DELETE FROM {self.document_class._get_collection_name()}"
+            if self.query_parts:
+                conditions = self._build_conditions()
+                query += f" WHERE {' AND '.join(conditions)}"
 
-            result = await self.connection.client.query(delete_query)
-            # Direct record deletion returns empty list on success
-            # Return the count of IDs we attempted to delete
-            return len(record_ids)
-        elif self._id_range_selection:
-            # For range operations, use optimized query with subquery
-            optimized_query = self._build_direct_record_query()
-            if optimized_query:
-                # Convert SELECT to subquery for DELETE
-                subquery = optimized_query.replace("SELECT *", "SELECT id")
-                delete_query = f"DELETE ({subquery})"
+        return f"{query} RETURN BEFORE"
 
-                result = await self.connection.client.query(delete_query)
-                if not result or not result[0]:
-                    return 0
-                return len(result[0])
-
-        # Fall back to regular delete query
-        delete_query = f"DELETE FROM {self.document_class._get_collection_name()}"
-
-        if self.query_parts:
-            conditions = self._build_conditions()
-            delete_query += f" WHERE {' AND '.join(conditions)}"
-
-        result = await self.connection.client.query(delete_query)
-
-        if not result or not result[0]:
-            return 0
-
-        return len(result[0])
+    async def _delete_async(self) -> int:
+        """Internal async implementation of delete()."""
+        result = await self.connection.client.query(self._build_delete_query())
+        return len(_normalize_query_result(result))
 
     def delete_sync(self) -> int:
-        """Delete documents matching the query synchronously with performance optimizations.
+        """Delete documents matching the query synchronously.
 
-        This method deletes documents matching the query.
-        Uses direct record access for bulk ID operations for better performance.
+        Uses direct record access for bulk ID and range operations.
 
         Returns:
             Number of deleted documents
         """
-        # PERFORMANCE OPTIMIZATION: Use direct record access for bulk operations
-        if self._bulk_id_selection:
-            # Use direct record deletion syntax for bulk ID operations
-            record_ids = [
-                self._format_record_id(id_val) for id_val in self._bulk_id_selection
-            ]
-            delete_query = f"DELETE {', '.join(record_ids)}"
-
-            result = self.connection.client.query(delete_query)
-            # Direct record deletion returns empty list on success
-            # Return the count of IDs we attempted to delete
-            return len(record_ids)
-        elif self._id_range_selection:
-            # For range operations, use optimized query with subquery
-            optimized_query = self._build_direct_record_query()
-            if optimized_query:
-                # Convert SELECT to subquery for DELETE
-                subquery = optimized_query.replace("SELECT *", "SELECT id")
-                delete_query = f"DELETE ({subquery})"
-
-                result = self.connection.client.query(delete_query)
-                if not result or not result[0]:
-                    return 0
-                return len(result[0])
-
-        # Fall back to regular delete query
-        delete_query = f"DELETE FROM {self.document_class._get_collection_name()}"
-
-        if self.query_parts:
-            conditions = self._build_conditions()
-            delete_query += f" WHERE {' AND '.join(conditions)}"
-
-        delete_query += " RETURN BEFORE"
-
-        result = self.connection.client.query(delete_query)
-
-        if not result or not result[0]:
-            return 0
-
-        return len(result[0])
+        result = self.connection.client.query(self._build_delete_query())
+        return len(_normalize_query_result(result))
 
     def bulk_create(
         self,
@@ -2038,7 +1905,11 @@ class QuerySet(BaseQuerySet):
         # Since client.upsert uses RecordID object, we convert
         from surrealdb import RecordID
 
-        id_part = record_id_str.split(":")[1]
+        from ..utils.parsing import strip_record_id_brackets
+
+        id_part = strip_record_id_brackets(
+            record_id_str.partition(":")[2] if ":" in record_id_str else record_id_str
+        )
         id_val = int(id_part) if id_part.isdigit() else id_part
         record = RecordID(collection, id_val)
 
@@ -2158,14 +2029,7 @@ class QuerySet(BaseQuerySet):
             try:
                 raw = self.connection.client.query(query, {"batch": data})
 
-                # Normalise: embedded sync returns flat list[dict],
-                # remote returns list[list[dict]].
-                if raw and isinstance(raw[0], dict):
-                    rows = raw
-                elif raw and isinstance(raw[0], list):
-                    rows = raw[0]
-                else:
-                    rows = raw if raw else []
+                rows = _normalize_query_result(raw)
 
                 if return_documents and rows:
                     batch_docs = [

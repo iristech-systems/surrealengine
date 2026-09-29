@@ -67,6 +67,7 @@ from .exceptions import (
     MultipleObjectsReturned,
     ValidationError,
     DocumentNotSavedError,
+    TransactionError,
 )
 from .fields import (
     BooleanField,
@@ -184,7 +185,7 @@ from .sync_manager import (
 # For backward compatibility
 SurrealEngineConnection = SurrealEngineAsyncConnection
 
-__version__ = "1.4.0"
+__version__ = "2.0.0"
 __all__ = [
     "SurrealEngine",
     "SurrealEngineAsyncConnection",
@@ -202,6 +203,7 @@ __all__ = [
     "DoesNotExist",
     "MultipleObjectsReturned",
     "ValidationError",
+    "TransactionError",
     "EmbeddedDocument",
     "Field",
     "EmbeddedField",

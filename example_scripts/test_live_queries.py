@@ -26,11 +26,11 @@ from surrealengine.document import Document
 from surrealengine.fields import StringField, IntField
 from surrealengine.query.base import QuerySet
 
-URL  = "ws://localhost:8000"
+URL  = "ws://localhost:8000/rpc"
 NS   = "test"
 DB   = "live_test"
 USER = "root"
-PASS = "secret"
+PASS = "root"
 
 
 PASS_ICON = "✓"

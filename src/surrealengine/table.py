@@ -172,7 +172,11 @@ class Table:
         # Computed, VALUE, DEFAULT, REFERENCE (mutually exclusive-ish)
         if field.computed is not None:
             stmt += f" COMPUTED {field.computed}"
-        elif field.is_set:
+        elif field.is_set and not (type_str == "set" or "set<" in type_str):
+            # Native set<...> types are already deduplicated in SurrealDB 3.x,
+            # and $value.distinct() was removed for the set type — only emit
+            # the VALUE clause when the column isn't a native set. Note the
+            # type may be a union like 'none | set<none | string>'.
             stmt += " VALUE $value.distinct()"
         elif field.reference is not None:
             stmt += f" {field.reference}"

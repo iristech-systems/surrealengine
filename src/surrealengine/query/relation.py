@@ -57,24 +57,16 @@ class RelationQuerySet:
         if not to_instance.id:
             raise ValueError(f"Cannot create relation to unsaved {to_class.__name__}")
 
-        # Handle both string and RecordID types for IDs
-        if isinstance(from_instance.id, RecordID):
-            from_id = str(from_instance.id).split(':')[1]
-            from_collection = from_instance.id.table_name
-        else:
-            from_id = from_instance.id.split(':')[1] if ':' in from_instance.id else from_instance.id
-            from_collection = self.from_document._get_collection_name()
+        # Handle both string and RecordID types for IDs.
+        # to_record_id() strips angle-bracket wrapping (digit-leading ids are
+        # bracketed by str(RecordID)), preventing invalid double-escaped ids
+        # like 'table:⟨⟨4abc\⟩⟩' in the generated RELATE statement.
+        from ..utils.parsing import to_record_id
 
-        if isinstance(to_instance.id, RecordID):
-            to_id = str(to_instance.id).split(':')[1]
-            to_collection = to_instance.id.table_name
-        else:
-            to_id = to_instance.id.split(':')[1] if ':' in to_instance.id else to_instance.id
-            to_collection = to_class._get_collection_name()
-
-        # Create RecordID objects with the correct collection names and IDs
-        from_record = RecordID(from_collection, from_id)
-        to_record = RecordID(to_collection, to_id)
+        from_record = to_record_id(
+            from_instance.id, self.from_document._get_collection_name()
+        )
+        to_record = to_record_id(to_instance.id, to_class._get_collection_name())
 
         relation = self.relation
         if not relation:
@@ -160,24 +152,16 @@ class RelationQuerySet:
         if not to_instance.id:
             raise ValueError(f"Cannot create relation to unsaved {to_class.__name__}")
 
-        # Handle both string and RecordID types for IDs
-        if isinstance(from_instance.id, RecordID):
-            from_id = str(from_instance.id).split(':')[1]
-            from_collection = from_instance.id.table_name
-        else:
-            from_id = from_instance.id.split(':')[1] if ':' in from_instance.id else from_instance.id
-            from_collection = self.from_document._get_collection_name()
+        # Handle both string and RecordID types for IDs.
+        # to_record_id() strips angle-bracket wrapping (digit-leading ids are
+        # bracketed by str(RecordID)), preventing invalid double-escaped ids
+        # like 'table:⟨⟨4abc\⟩⟩' in the generated RELATE statement.
+        from ..utils.parsing import to_record_id
 
-        if isinstance(to_instance.id, RecordID):
-            to_id = str(to_instance.id).split(':')[1]
-            to_collection = to_instance.id.table_name
-        else:
-            to_id = to_instance.id.split(':')[1] if ':' in to_instance.id else to_instance.id
-            to_collection = to_class._get_collection_name()
-
-        # Create RecordID objects with the correct collection names and IDs
-        from_record = RecordID(from_collection, from_id)
-        to_record = RecordID(to_collection, to_id)
+        from_record = to_record_id(
+            from_instance.id, self.from_document._get_collection_name()
+        )
+        to_record = to_record_id(to_instance.id, to_class._get_collection_name())
 
         relation = self.relation
         if not relation:

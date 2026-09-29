@@ -110,7 +110,13 @@ class Field:
         if SIGNAL_SUPPORT:
             pre_validate.send(self.__class__, field=self, value=value)
 
-        if value is None and self.required:
+        try:
+            from surrealdb import Null
+            _is_missing = value is None or value is Null
+        except ImportError:
+            _is_missing = value is None
+
+        if _is_missing and self.required:
             raise ValueError(f"Field '{self.name}' is required")
 
         result = value

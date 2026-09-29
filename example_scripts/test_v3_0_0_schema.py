@@ -29,7 +29,11 @@ def test_schema_generation():
     print(comment_sql)
     
     assert "REFERENCE" in user_sql, "REFERENCE constraint should be applied to comments"
-    assert "VALUE $value.distinct()" in user_sql, "Sets must have VALUE $value.distinct() appended"
+    assert "set<" in user_sql, "Sets must use the native set<...> type"
+    assert "VALUE $value.distinct()" not in user_sql, (
+        "Native set types are deduplicated by SurrealDB 3.x itself; "
+        "$value.distinct() was removed for the set type in 3.x"
+    )
     assert "COMPUTED { rating * 10 }" in user_sql, "Computed fields must use COMPUTED clause"
     
     assert "COMPUTED <~user" in comment_sql, "Incoming references must use COMPUTED <~model"

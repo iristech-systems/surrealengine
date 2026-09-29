@@ -158,16 +158,13 @@ class SchemalessQuerySet(BaseQuerySet):
         # Special handling for ID-based lookup
         if len(kwargs) == 1 and "id" in kwargs:
             id_value = kwargs["id"]
-            # Handle both full and short ID formats
-            if ":" in str(id_value):
-                record_id = id_value.split(":")[1]
-            else:
-                record_id = id_value
+            # Normalize (handles RecordID, 'table:id', 'table:⟨id⟩', bare ids)
+            from .utils.parsing import to_record_id
+
+            record = to_record_id(id_value, self.table_name)
 
             # Use direct select with RecordID
-            result = await self.connection.client.select(
-                RecordID(self.table_name, record_id)
-            )
+            result = await self.connection.client.select(record)
             if (
                 not result or result == self.table_name
             ):  # Check for the table name response
@@ -203,14 +200,13 @@ class SchemalessQuerySet(BaseQuerySet):
         # Special handling for ID-based lookup
         if len(kwargs) == 1 and "id" in kwargs:
             id_value = kwargs["id"]
-            # Handle both full and short ID formats
-            if ":" in str(id_value):
-                record_id = id_value.split(":")[1]
-            else:
-                record_id = id_value
+            # Normalize (handles RecordID, 'table:id', 'table:⟨id⟩', bare ids)
+            from .utils.parsing import to_record_id
+
+            record = to_record_id(id_value, self.table_name)
 
             # Use direct select with RecordID
-            result = self.connection.client.select(RecordID(self.table_name, record_id))
+            result = self.connection.client.select(record)
             if (
                 not result or result == self.table_name
             ):  # Check for the table name response

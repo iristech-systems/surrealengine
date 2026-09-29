@@ -5,6 +5,53 @@ All notable changes to the SurrealEngine project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-09-05
+
+### Added
+- **Breaking SurrealDB SDK upgrade**: Dependency raised to `surrealdb>=3.0.0b7,<4` (was `>=2.0.0`). This is a hard cut — no 2.x compatibility shims remain.
+- **New `TransactionError`**: Exported from `surrealengine`. Raised when reads occur inside a buffered transaction (embedded/HTTP connections) and for transaction cancellation.
+- **Native interactive transactions on WS**: `ws://`/`wss://` connections now support real `begin()`/`commit()`/`cancel()` operations with true isolation, record ids, and read-your-writes semantics.
+- **`supports_native_transactions()` helper**: Detects which connection tiers support interactive transactions.
+- **`DateTimeField(auto_now_add=..., auto_now=...)`**: Field-level automatic timestamping. `auto_now_add=True` stamps the current UTC time on creation only; `auto_now=True` stamps on every save (including no-change saves). Values are tz-aware UTC and override explicit constructor values; both flags imply `required=False`. Wired into async/sync `save()`/`update()` and both `RelationDocument` paths (`relate()` counts as creation). QuerySet-level `.update()`/`bulk_update()` bypass instances and do not stamp.
+- **`TimestampMixin` now delegates to field flags**: `created_at = DateTimeField(auto_now_add=True)`, `updated_at = DateTimeField(auto_now=True)`. Behavior deltas: `updated_at` bumps on every save (previously gated on `has_changed()`) and timestamps are timezone-aware UTC (previously naive `datetime.utcnow()`). Its `clean()` remains as a documented no-op for MRO compatibility with subclasses chaining `super().clean()`.
+- **Embedded engine extra**: New `[embedded]` optional dependency required for `mem://`, `file://`, `surrealkv://`, and `surrealkv+versioned://` support (SurrealDB 3.x separates embedded engine from main wheel).
+
+### Changed
+- **Query result normalization**: Consolidated 13 duplicate blocks into `_normalize_query_result()` helper across `query/base.py` and `aggregation.py`.
+- **Analyzer creation retry**: Simplified `DEFINE ANALYZER` ladder to a single `IF NOT EXISTS` statement.
+- **SetField**: Emits `SurrealSet` when available.
+- **DateTimeField**: Returns native `datetime` objects directly instead of string-wrapping.
+- **Null handling**: Field validation and `escape_literal()` treat `surrealdb.Null` explicitly (vs `None`).
+- **Signin payload**: Changed `user`/`pass` to `username`/`password` keys to match SurrealDB 3.x API.
+- **WebSocket client**: Unified to `websockets>=14.1` (earlier versions deadlocked on close with undelivered live notifications).
+- **RawSurrealConnection**: Removed accelerator fallback; always use `cbor2`. Removed `websockets<14` import shim.
+- **Connection schemes**: Added `mem://`, `file://`, `surrealkv://`, `surrealkv+versioned://` as supported protocols.
+- **Builder proxy retry**: Fixed async and sync connection wrappers to wrap the entire builder chain (e.g., `update(id).merge(data)`) inside retry protection, not just the terminal `.merge()` call.
+
+### Fixed
+- **Async wrapper retry gap**: The sync wrapper's terminal `.merge()` executed outside retry protection; now mirrored for both async and sync.
+- **Delete count bugs**: Async `delete()` paths missing `RETURN BEFORE` always returned `0`. Bulk-ID delete over-reported counts for nonexistent IDs (returned optimistic count instead of actual).
+- **Buffered transaction document pollution**: Documents inside buffered transactions were polluted with 1.x response envelopes (`result`/`status`/`time` keys). Now returns real record IDs and clean data.
+- **Buffered transaction update TypeError**: Updating an existing document inside a buffered transaction raised `TypeError` because the flat `update(table, data)` didn't match SDK 3.x's fluent `update(id).merge(data)`.
+- **GROUP BY projection**: `group_by(all=True)` with no explicit field projection now raises `ValueError` instead of a cryptic server error (SurrealDB 3.x rejects `SELECT * ... GROUP ALL`).
+- **`create_index` idempotency**: `DEFINE INDEX` now emits `IF NOT EXISTS`, preventing `AlreadyExistsError` when `create_table()` and `create_indexes()` are both called (SurrealDB 3.x rejects duplicate index definitions).
+- **`SurrealSet` serialization**: `serialize_http_safe()` now passes `SurrealSet` through as a native SDK type instead of stripping it to a plain list (SurrealDB 3.x distinguishes sets from arrays at the protocol level).
+- **RELATE record-id escaping**: `relate()`/`relate_sync()` generated invalid SurrealQL (`table:⟨⟨4abc\⟩⟩`) whenever a record id requires angle-bracket quoting (digit-leading ids — roughly a third of ulids), because the id was round-tripped through `str(RecordID).split(':')` which kept the brackets. All five id-parsing sites (`query/relation.py` ×2, `schemaless.py` ×2, `query/base.py` upsert) now normalize via a shared `to_record_id()` helper (`utils/parsing.py`) that strips bracket wrapping and passes `RecordID` instances through untouched.
+- **`SetField` DDL on 3.x**: `DEFINE FIELD` no longer emits `VALUE $value.distinct()` for native `set<...>` types — SurrealDB 3.x removed the `distinct()` method for the set type (native sets deduplicate themselves). Union types (`none | set<...>`) are detected correctly in both `table.py` and `schema.py` DDL builders.
+- **LIVE queries through connection pools**: `QuerySet.live()` now clones the dedicated live-subscription connection *before* the capability check, so pooled connections (whose `ConnectionPoolClient` doesn't proxy the live API) work instead of raising `NotImplementedError`.
+- **SetField.to_db signature**: Changed return type from `Optional[List[Any]]` to `Optional[Any]` to match SurrealDB 3.x's `SurrealSet` type.
+- **DateTimeField wrapper handling**: Removed speculative probing for `Datetime.inner`/`.dt` attributes; now returns native `datetime` objects directly.
+- **GeometryField**: Removed speculative `GeometryCollection` import and `to_json()` fallback; now handles `Geometry` objects directly.
+- **Field validation**: `value is None or value is Null` for required fields.
+
+### Removed
+- **Legacy 2.x shims**: Dead `_raise_on_v3_ddl`, `_V3_ONLY_DDL_PATTERNS`, `websockets<14` import shim, `user`/`pass` signin keys, speculative `Datetime.inner`/`.dt` probing, `Geometry.to_json()` fallback, `GeometryCollection` import.
+- **Accelerator fallback**: Removed `accelerator.cbor_dumps` fallback; always use `cbor2`.
+
+### Notes
+- **Breaking changes**: This is a major version bump due to the hard dependency cut to SurrealDB 3.x, `TransactionError` on reads inside buffered transactions, and accurate bulk-ID delete counts.
+- **Non-breaking**: `FULLTEXT ANALYZER → SEARCH ANALYZER` fallback remains for remote SurrealDB 2.x servers.
+
 ## [1.4.0] - 2026-07-11
 
 ### Added

@@ -7,31 +7,31 @@ from .fields import DateTimeField
 class TimestampMixin(Document):
     """
     Automatically tracks document creation and update times.
-    
+
     Adds `created_at` and `updated_at` fields to any inheriting Document class.
-    Automatically manages these timestamps on `.save()`.
+    Stamping is handled by DateTimeField's auto_now_add / auto_now support,
+    which fires inside save() before validation.
+
+    Note: unlike earlier versions of this mixin, ``updated_at`` now bumps on
+    every successful save (not only when other fields changed), and values
+    are timezone-aware UTC datetimes.
     """
+
     class Meta:
         abstract = True
-    
-    created_at = DateTimeField(required=False)
-    updated_at = DateTimeField(required=False)
+
+    created_at = DateTimeField(auto_now_add=True)
+    updated_at = DateTimeField(auto_now=True)
 
     def clean(self) -> None:
-        """Update the updated_at timestamp right before saving."""
-        super().clean() if hasattr(super(), 'clean') else None
-        
-        now = datetime.utcnow()
-        if not self.created_at:
-            self.created_at = now
-            
-        # We only update updated_at if the document is not completely new
-        # and has actual changes.
-        if getattr(self, "id", None) is not None and self.has_changed():
-            self.updated_at = now
-        elif not getattr(self, "id", None):
-            # Also set updated_at on first creation to match created_at
-            self.updated_at = now
+        """No-op kept for MRO compatibility.
+
+        Subclasses commonly call ``super().clean()``; before auto-datetime
+        support existed this method did the timestamping. That work now
+        happens in ``Document.save()`` via DateTimeField's auto flags, so
+        this hook intentionally does nothing.
+        """
+        pass
 
 
 class SoftDeleteMixin(Document):

@@ -58,15 +58,8 @@ class GeometryField(Field):
 
         # Handle SDK Geometry objects
         from surrealdb import Geometry
-        # Try to import GeometryCollection if not available top level? 
-        # Actually standard import from submodules is better
-        from surrealdb.data.types.geometry import GeometryCollection
-        if isinstance(value, (Geometry, GeometryCollection)):
+        if isinstance(value, Geometry):
             return value
-
-        # Handle GeometryPoint and other Geometry objects with to_json
-        if hasattr(value, 'to_json'):
-            return value.to_json()
 
         # Handle simple coordinate arrays for Point geometry (longitude, latitude)
         if isinstance(value, (list, tuple)) and len(value) == 2:

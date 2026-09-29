@@ -135,4 +135,10 @@ def escape_literal(value: Any) -> str:
         return "{" + ", ".join(items) + "}"
 
     # Fallback: JSON
+    try:
+        from surrealdb import Null
+        if value is Null:
+            return "null"
+    except ImportError:
+        pass
     return json.dumps(value)

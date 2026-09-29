@@ -103,3 +103,19 @@ class DocumentNotSavedError(SurrealEngineError):
     """
     pass
 
+
+class TransactionError(SurrealEngineError):
+    """Raised for unsupported operations inside a transaction.
+
+    SurrealDB 3.x only supports interactive (read-your-writes) transactions over
+    WebSocket connections. On embedded and HTTP connections SurrealEngine falls
+    back to buffering the transaction and dispatching it as a single
+    ``BEGIN ... COMMIT`` batch, which means statements have not executed yet
+    while the block is running — so reads inside the block cannot observe
+    writes made in the same block.
+
+    Rather than silently returning stale data, those reads raise this error.
+    Use a ``ws://`` / ``wss://`` connection for interactive transactions.
+    """
+    pass
+

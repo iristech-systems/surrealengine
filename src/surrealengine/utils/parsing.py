@@ -170,3 +170,37 @@ def split_query_on_from(query_str: str) -> tuple[str, str]:
                             
     return query_str, ""
 
+
+
+def strip_record_id_brackets(id_part: str) -> str:
+    """Strip one layer of SurrealQL angle-bracket wrapping from a record id.
+
+    ``'⟨abc⟩'`` becomes ``'abc'``; anything else is returned unchanged.
+    """
+    if len(id_part) >= 2 and id_part.startswith("⟨") and id_part.endswith("⟩"):
+        return id_part[1:-1]
+    return id_part
+
+
+def to_record_id(value, default_table: str):
+    """Normalize a record id reference into a ``surrealdb.RecordID``.
+
+    Accepts a ``RecordID`` (returned unchanged — preserving its table and
+    native id type), a ``'table:id'`` / ``'table:⟨id⟩'`` string (the table
+    prefix is discarded; *default_table* wins, matching historical
+    behavior), or a bare id string.
+
+    Angle-bracket wrapping is stripped from the id part. Without this,
+    re-serializing an id extracted via ``str(record_id).split(':')[1]``
+    produces invalid SurrealQL such as ``table:⟨⟨4abc\\⟩⟩`` whenever the id
+    requires brackets (e.g. it starts with a digit — roughly a third of
+    ulid-style ids).
+    """
+    from surrealdb import RecordID
+
+    if isinstance(value, RecordID):
+        return value
+    raw = str(value)
+    if ":" in raw:
+        raw = raw.partition(":")[2]
+    return RecordID(default_table, strip_record_id_brackets(raw))

@@ -6,13 +6,7 @@ from typing import Optional, List, Any, Dict, Union
 # Optional dependencies with type checking guards
 try:
     import websockets  # type: ignore
-
-    try:
-        # websockets >= 14
-        from websockets.asyncio.client import connect as ws_connect  # type: ignore
-    except ImportError:
-        # websockets <= 13 fallback
-        from websockets.client import connect as ws_connect  # type: ignore
+    from websockets.asyncio.client import connect as ws_connect  # type: ignore
 except ImportError:
     websockets = None
     ws_connect = None
@@ -149,16 +143,8 @@ class RawSurrealConnection:
 
         # Placeholder: Assuming accelerator.cbor_dumps exists for sending
         # If not, this part needs adjustment based on actual accelerator API
-        try:
-            # If accelerator can serialize, use it
-            serialized_req = accelerator.cbor_dumps(req)
-        except AttributeError:
-            # Fallback to Python cbor2 for serialization
-            if cbor2 is None:
-                raise ImportError(
-                    "cbor2 is required for serialization when accelerator cannot."
-                )
-            serialized_req = cbor2.dumps(req)
+        assert cbor2 is not None
+        serialized_req = cbor2.dumps(req)
 
         await self.ws.send(serialized_req)
         return await self.ws.recv()
@@ -191,8 +177,8 @@ class RawSurrealConnection:
             "method": "signin",
             "params": [
                 {
-                    "user": username,
-                    "pass": password,
+                    "username": username,
+                    "password": password,
                 }
             ],
         }

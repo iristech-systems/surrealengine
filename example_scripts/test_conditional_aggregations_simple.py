@@ -73,7 +73,7 @@ async def create_test_data():
 async def main():
     # Connect to SurrealDB
     db = create_connection(
-        url="ws://db:8000/rpc",
+        url="ws://localhost:8000/rpc",
         namespace="test_ns",
         database="test_db",
         username="root",

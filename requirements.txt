@@ -1,4 +1,4 @@
-surrealdb
+surrealdb[embedded]>=3.0.0b7,<4
 notebook
 jupyterlab
 blinker

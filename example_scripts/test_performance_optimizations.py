@@ -319,7 +319,7 @@ async def run_all_tests():
     
     # Create connection
     connection = create_connection(
-        url="ws://localhost:8001/rpc",
+        url="ws://localhost:8000/rpc",
         namespace="test_ns",
         database="test_db",
         username="root",
@@ -329,7 +329,15 @@ async def run_all_tests():
     )
     await connection.connect()
     print("Connected to in-memory SurrealDB")
-    
+
+    # Drop leftover tables from previous test runs
+    await connection.client.query("REMOVE TABLE IF EXISTS user")
+    await connection.client.query("REMOVE TABLE IF EXISTS post")
+
+    # Recreate clean schema for this run
+    await User.create_table(schemafull=False)
+    await Post.create_table(schemafull=False)
+
     try:
         # Setup test data
         await setup_test_data()

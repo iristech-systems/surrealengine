@@ -19,9 +19,30 @@ try:
     from surrealdb.errors import ConnectionUnavailableError
 except ImportError:
     ConnectionUnavailableError = None
+try:
+    from surrealdb.errors import TransportError
+except ImportError:
+    TransportError = None
+try:
+    from surrealdb.errors import ServerError
+except ImportError:
+    ServerError = None
+try:
+    from surrealdb.errors import NotAllowedError
+except ImportError:
+    NotAllowedError = None
+try:
+    from surrealdb.errors import HttpStatusError
+except ImportError:
+    HttpStatusError = None
+try:
+    from surrealdb.errors import UnsupportedFeatureError
+except ImportError:
+    UnsupportedFeatureError = None
 
 import time
 import logging
+import inspect
 import re
 import datetime
 import urllib.parse
@@ -48,7 +69,7 @@ from contextlib import contextmanager
 # Set up logging
 logger = logging.getLogger(__name__)
 
-_EMBEDDED_SCHEMES = ("mem://", "file://", "surrealkv://")
+_EMBEDDED_SCHEMES = ("mem://", "memory://", "file://", "surrealkv://", "surrealkv+versioned://")
 _EMBEDDED_UNSUPPORTED_SDK_METHODS = {
     "new_session",
     "new_transaction",
@@ -72,6 +93,11 @@ def _is_embedded_url(url: Optional[str]) -> bool:
 
 def _raise_embedded_unsupported(method_name: str, url: Optional[str]) -> None:
     embedded = ", ".join(_EMBEDDED_SCHEMES)
+    if UnsupportedFeatureError is not None:
+        raise UnsupportedFeatureError(
+            f"`{method_name}()` is not supported on embedded connections "
+            f"({embedded}). Current URL: {url!r}."
+        )
     raise NotImplementedError(
         f"`{method_name}()` is not supported on embedded connections "
         f"({embedded}). Current URL: {url!r}."
@@ -1527,7 +1553,9 @@ def parse_connection_string(connection_string: str) -> Dict[str, Any]:
         "http://",
         "https://",
         "mem://",
+        "memory://",
         "surrealkv://",
+        "surrealkv+versioned://",
         "file://",
     ]
     protocol_match = False
@@ -1552,7 +1580,7 @@ def parse_connection_string(connection_string: str) -> Dict[str, Any]:
         query = parsed_url.query
 
         # Handle embedded schemes which might not have host/port/auth in the same way
-        if scheme in ("mem", "memory", "surrealkv", "file"):
+        if scheme in ("mem", "memory", "surrealkv", "surrealkv+versioned", "file"):
             # For these, we might just want to preserve the full URL or handle path specifically
             # But we typically don't have user:pass@host:port unless it's surrealdb's quirky format
             # SDK 1.0.7+ handles these directly.
@@ -1746,23 +1774,28 @@ class ConnectionPoolClient:
                 return await operation(*args, **kwargs)
             except Exception as e:
                 error_msg = str(e).lower()
-                _connection_error = (
+                _is_connection_error = (
                     ConnectionUnavailableError is not None
                     and isinstance(e, ConnectionUnavailableError)
                 )
-                if operation_name not in ("authenticate", "signin") and (
-                    _connection_error
-                    or any(
-                        kw in error_msg
-                        for kw in [
-                            "expired",
-                            "unauthenticated",
-                            "iam",
-                            "authentication",
-                            "none",
-                        ]
+                _is_transport_error = (
+                    TransportError is not None and isinstance(e, TransportError)
+                )
+                _is_auth_error = (
+                    operation_name not in ("authenticate", "signin")
+                    and (
+                        (
+                            NotAllowedError is not None
+                            and isinstance(e, NotAllowedError)
+                        )
+                        or (
+                            HttpStatusError is not None
+                            and isinstance(e, HttpStatusError)
+                            and getattr(e, "status", 0) in (401, 403)
+                        )
                     )
-                ):
+                )
+                if _is_connection_error or _is_transport_error or _is_auth_error:
                     logger.warning(
                         f"Connection issue or session expiration detected ({error_msg}). Attempting to recover."
                     )
@@ -1824,6 +1857,7 @@ class ConnectionPoolClient:
             {
                 "db.system": "surrealdb",
                 "db.name": self.pool.database,
+                "db.namespace": self.pool.namespace,
                 "db.operation": "merge",
                 "db.record": id,
             },
@@ -1831,7 +1865,12 @@ class ConnectionPoolClient:
             from .document import serialize_http_safe
 
             data = serialize_http_safe(data)
-            return await self._execute_with_reauth("merge", id, data)
+            # SDK 3.x: merge() removed from connections, use update().merge()
+            connection, should_return = await self._get_connection()
+            try:
+                return await connection.client.update(id).merge(data)
+            finally:
+                await self._return_connection(connection, should_return)
 
     async def update(self, id: str, data: Dict[str, Any]) -> Any:
         """Update an existing record in the database."""
@@ -2184,11 +2223,123 @@ class ConnectionRegistry:
         return cls.get_sync_connection(name)
 
 
+#: SDK 3.x async methods that return a lazy *builder* synchronously rather than a
+#: coroutine. These must not be wrapped in a coroutine or fluent chains such as
+#: ``update(id).merge(data)`` break with "'coroutine' object has no attribute ...".
+_ASYNC_BUILDER_METHODS = frozenset(
+    {"query", "create", "update", "upsert", "insert", "delete"}
+)
+
+
+class _AsyncBuilderProxy:
+    """Awaitable proxy that defers SDK 3.x builder execution.
+
+    SurrealDB 3.x returns lazy builders from ``query``/``create``/``update``/etc.
+    so callers can chain (``update(id).merge(data)``). The reconnect wrapper
+    cannot simply ``await`` the call, because that would execute it eagerly and
+    also hide the builder's fluent methods behind a coroutine.
+
+    Instead this proxy records the root call plus every chained call as a
+    *recipe*. On ``await`` the recipe is replayed against the current underlying
+    client and executed. If a recoverable transport/auth error occurs, the
+    connection is recovered and the recipe is replayed from scratch against the
+    new client, preserving the wrapper's retry guarantees.
+    """
+
+    __slots__ = ("_wrapper", "_root", "_chain")
+
+    def __init__(self, wrapper: "AsyncSurrealClientWrapper", root, chain):
+        self._wrapper = wrapper
+        self._root = root  # (name, args, kwargs)
+        self._chain = chain  # tuple of (name, args, kwargs)
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def _step(*args, **kwargs):
+            return _AsyncBuilderProxy(
+                self._wrapper, self._root, self._chain + ((name, args, kwargs),)
+            )
+
+        return _step
+
+    def _build(self, client):
+        """Replay the recorded recipe against ``client``."""
+        name, args, kwargs = self._root
+        obj = getattr(client, name)(*args, **kwargs)
+        for step_name, step_args, step_kwargs in self._chain:
+            obj = getattr(obj, step_name)(*step_args, **step_kwargs)
+        return obj
+
+    def __await__(self):
+        return self._wrapper._invoke(self._root[0], self._build).__await__()
+
+    def __repr__(self) -> str:
+        chain = "".join(f".{n}(...)" for n, _, _ in self._chain)
+        return f"<_AsyncBuilderProxy {self._root[0]}(...){chain}>"
+
+
 class AsyncSurrealClientWrapper:
     """Wrapper for surrealdb.AsyncSurreal that handles auto-reconnection and re-authentication on failures."""
 
     def __init__(self, connection: "SurrealEngineAsyncConnection"):
         self._connection = connection
+
+    async def _invoke(self, item: str, thunk):
+        """Call ``thunk(client)`` with reconnect/re-auth retry.
+
+        ``thunk`` receives the live underlying client and returns either an
+        awaitable (coroutine or builder) or a plain value. It must be replayable:
+        on recovery it is called again against the refreshed client.
+        """
+        try:
+            if getattr(self._connection, "_actual_client", None) is None:
+                raise AttributeError("'NoneType' object")
+            result = thunk(self._connection._actual_client)
+            return await result if inspect.isawaitable(result) else result
+        except Exception as e:
+            error_msg = str(e).lower()
+            is_transport_error = (
+                TransportError is not None and isinstance(e, TransportError)
+            ) or (
+                ConnectionUnavailableError is not None
+                and isinstance(e, ConnectionUnavailableError)
+            )
+            is_session_expired = (
+                item not in ("authenticate", "signin", "close")
+                and ServerError is not None
+                and isinstance(e, ServerError)
+                and any(
+                    kw in error_msg
+                    for kw in ["expired", "unauthenticated", "iam", "authentication"]
+                )
+            )
+            if is_transport_error or is_session_expired:
+                logger.warning(
+                    f"Recoverable error ({type(e).__name__}). Attempting recovery."
+                )
+                if is_transport_error:
+                    # Full reconnect (close + reopen), but NEVER for embedded
+                    if self._connection.url and _is_embedded_url(self._connection.url):
+                        raise
+                    await self._connection.connect()
+                else:
+                    # Auth-only: re-authenticate without reconnecting
+                    if self._connection.token:
+                        await self._connection._actual_client.authenticate(
+                            self._connection.token
+                        )
+                    elif self._connection.username and self._connection.password:
+                        await self._connection._actual_client.signin(
+                            {
+                                "username": self._connection.username,
+                                "password": self._connection.password,
+                            }
+                        )
+                result = thunk(self._connection._actual_client)
+                return await result if inspect.isawaitable(result) else result
+            raise
 
     def __getattr__(self, item: str):
         if _is_embedded_url(getattr(self._connection, "url", None)) and item in _EMBEDDED_UNSUPPORTED_SDK_METHODS:
@@ -2202,58 +2353,78 @@ class AsyncSurrealClientWrapper:
             if not callable(attr):
                 return attr
 
+        if item in _ASYNC_BUILDER_METHODS:
+            # Defer execution so fluent chains (update(id).merge(data)) survive.
+            def _builder_factory(*args, **kwargs):
+                return _AsyncBuilderProxy(self, (item, args, kwargs), ())
+
+            return _builder_factory
+
         async def wrapper(*args, **kwargs):
-            try:
-                if getattr(self._connection, "_actual_client", None) is None:
-                    raise AttributeError("'NoneType' object")
-                current_attr = getattr(self._connection._actual_client, item)
-                return await current_attr(*args, **kwargs)
-            except Exception as e:
-                error_msg = str(e).lower()
-                is_connection_error = (
-                    item not in ("authenticate", "signin", "close")
-                    and (
-                        (ConnectionUnavailableError is not None and isinstance(e, ConnectionUnavailableError))
-                        or any(
-                            kw in error_msg
-                            for kw in [
-                                "expired",
-                                "unauthenticated",
-                                "iam",
-                                "authentication",
-                                "none",
-                                "connection",
-                            ]
-                        )
-                    )
-                )
-                if is_connection_error:
-                    logger.warning(
-                        f"Connection issue or session expiration detected ({error_msg}). Attempting to recover."
-                    )
-                    if (
-                        getattr(self._connection, "_actual_client", None) is None
-                        or "none" in error_msg
-                        or "connection" in error_msg
-                    ):
-                        await self._connection.connect()
-                    else:
-                        if self._connection.token:
-                            await self._connection._actual_client.authenticate(
-                                self._connection.token
-                            )
-                        elif self._connection.username and self._connection.password:
-                            await self._connection._actual_client.signin(
-                                {
-                                    "username": self._connection.username,
-                                    "password": self._connection.password,
-                                }
-                            )
-                    retry_attr = getattr(self._connection._actual_client, item)
-                    return await retry_attr(*args, **kwargs)
-                raise
+            return await self._invoke(
+                item, lambda c: getattr(c, item)(*args, **kwargs)
+            )
 
         return wrapper
+
+
+def _is_sync_builder(obj: Any) -> bool:
+    """True if ``obj`` is a lazy SDK 3.x builder awaiting a terminal call.
+
+    Sync ``update()``/``upsert()`` return a builder; ``create()``/``delete()``/
+    ``insert()``/``select()`` execute eagerly and return plain dicts/lists.
+    """
+    return not isinstance(obj, (dict, list, str, bytes)) and callable(
+        getattr(obj, "execute", None)
+    )
+
+
+class _SyncBuilderProxy:
+    """Retry-aware proxy over a lazy SDK 3.x sync builder.
+
+    Sync builders defer the network call to a terminal method
+    (``update(id).merge(data)``). Without this proxy that terminal call would
+    run outside the wrapper's reconnect/re-auth handling. The proxy records the
+    root call plus each chained call and replays the whole recipe on recovery.
+    """
+
+    __slots__ = ("_wrapper", "_root", "_chain")
+
+    def __init__(self, wrapper: "SyncSurrealClientWrapper", root, chain):
+        self._wrapper = wrapper
+        self._root = root  # (name, args, kwargs)
+        self._chain = chain  # tuple of (name, args, kwargs)
+
+    def _build(self, client):
+        """Replay the recorded recipe against ``client``."""
+        name, args, kwargs = self._root
+        obj = getattr(client, name)(*args, **kwargs)
+        for step_name, step_args, step_kwargs in self._chain:
+            obj = getattr(obj, step_name)(*step_args, **step_kwargs)
+        return obj
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def _step(*args, **kwargs):
+            def thunk(client):
+                return getattr(self._build(client), name)(*args, **kwargs)
+
+            result = self._wrapper._invoke(self._root[0], thunk)
+            if _is_sync_builder(result):
+                # Intermediate step: keep proxying so the eventual terminal call
+                # is still retried. Rebuilding a lazy builder does no I/O.
+                return _SyncBuilderProxy(
+                    self._wrapper, self._root, self._chain + ((name, args, kwargs),)
+                )
+            return result
+
+        return _step
+
+    def __repr__(self) -> str:
+        chain = "".join(f".{n}(...)" for n, _, _ in self._chain)
+        return f"<_SyncBuilderProxy {self._root[0]}(...){chain}>"
 
 
 class SyncSurrealClientWrapper:
@@ -2261,6 +2432,59 @@ class SyncSurrealClientWrapper:
 
     def __init__(self, connection: "SurrealEngineSyncConnection"):
         self._connection = connection
+
+    def _invoke(self, item: str, thunk):
+        """Call ``thunk(client)`` with reconnect/re-auth retry.
+
+        ``thunk`` must be replayable: on recovery it is called again against the
+        refreshed client. Builder construction is lazy and side-effect free, so
+        replaying a whole builder chain is safe.
+        """
+        try:
+            if getattr(self._connection, "_actual_client", None) is None:
+                raise AttributeError("'NoneType' object")
+            return thunk(self._connection._actual_client)
+        except Exception as e:
+            error_msg = str(e).lower()
+            is_transport_error = (
+                TransportError is not None and isinstance(e, TransportError)
+            ) or (
+                ConnectionUnavailableError is not None
+                and isinstance(e, ConnectionUnavailableError)
+            )
+            is_session_expired = (
+                item not in ("authenticate", "signin", "close")
+                and ServerError is not None
+                and isinstance(e, ServerError)
+                and any(
+                    kw in error_msg
+                    for kw in ["expired", "unauthenticated", "iam", "authentication"]
+                )
+            )
+            if is_transport_error or is_session_expired:
+                logger.warning(
+                    f"Recoverable error ({type(e).__name__}). Attempting recovery."
+                )
+                if is_transport_error:
+                    # Full reconnect (close + reopen), but NEVER for embedded
+                    if self._connection.url and _is_embedded_url(self._connection.url):
+                        raise
+                    self._connection.connect()
+                else:
+                    # Auth-only: re-authenticate without reconnecting
+                    if self._connection.token:
+                        self._connection._actual_client.authenticate(
+                            self._connection.token
+                        )
+                    elif self._connection.username and self._connection.password:
+                        self._connection._actual_client.signin(
+                            {
+                                "username": self._connection.username,
+                                "password": self._connection.password,
+                            }
+                        )
+                return thunk(self._connection._actual_client)
+            raise
 
     def __getattr__(self, item: str):
         if _is_embedded_url(getattr(self._connection, "url", None)) and item in _EMBEDDED_UNSUPPORTED_SDK_METHODS:
@@ -2275,64 +2499,19 @@ class SyncSurrealClientWrapper:
                 return attr
 
         def wrapper(*args, **kwargs):
-            try:
-                if getattr(self._connection, "_actual_client", None) is None:
-                    raise AttributeError("'NoneType' object")
-                current_attr = getattr(self._connection._actual_client, item)
-                result = current_attr(*args, **kwargs)
-                # Normalise query results: embedded engine returns flat list of
-                # dicts (or empty list), while remote returns list[list[dict]].
-                # Keeping the same shape avoids bugs in every _sync call site.
-                if item == "query" and isinstance(result, list):
-                    if result and all(isinstance(r, dict) for r in result):
-                        result = [result]
-                    elif not result:
-                        result = [[]]
-                return result
-            except Exception as e:
-                error_msg = str(e).lower()
-                is_connection_error = (
-                    item not in ("authenticate", "signin", "close")
-                    and (
-                        (ConnectionUnavailableError is not None and isinstance(e, ConnectionUnavailableError))
-                        or any(
-                            kw in error_msg
-                            for kw in [
-                                "expired",
-                                "unauthenticated",
-                                "iam",
-                                "authentication",
-                                "none",
-                                "connection",
-                            ]
-                        )
-                    )
-                )
-                if is_connection_error:
-                    logger.warning(
-                        f"Connection issue or session expiration detected ({error_msg}). Attempting to recover."
-                    )
-                    if (
-                        getattr(self._connection, "_actual_client", None) is None
-                        or "none" in error_msg
-                        or "connection" in error_msg
-                    ):
-                        self._connection.connect()
-                    else:
-                        if self._connection.token:
-                            self._connection._actual_client.authenticate(
-                                self._connection.token
-                            )
-                        elif self._connection.username and self._connection.password:
-                            self._connection._actual_client.signin(
-                                {
-                                    "username": self._connection.username,
-                                    "password": self._connection.password,
-                                }
-                            )
-                    retry_attr = getattr(self._connection._actual_client, item)
-                    return retry_attr(*args, **kwargs)
-                raise
+            def thunk(c):
+                result = getattr(c, item)(*args, **kwargs)
+                # SDK 3.x: query() is lazy and must be executed explicitly.
+                return result.execute() if item == "query" else result
+
+            result = self._invoke(item, thunk)
+
+            # Methods like update()/upsert() hand back a lazy builder awaiting a
+            # terminal call (.merge(), .content(), ...). Wrap it so that terminal
+            # call — the one that actually hits the network — is retried too.
+            if _is_sync_builder(result):
+                return _SyncBuilderProxy(self, (item, args, kwargs), ())
+            return result
 
         return wrapper
 
@@ -2520,13 +2699,14 @@ class SurrealEngineAsyncConnection:
             self._actual_client = surrealdb.AsyncSurreal(self.url)
             self.client = AsyncSurrealClientWrapper(self)
 
-            # Sign in / Auth
-            if self.token:
-                await self._actual_client.authenticate(self.token)
-            elif self.username and self.password:
-                await self._actual_client.signin(
-                    {"username": self.username, "password": self.password}
-                )
+            # Sign in / Auth - skip for embedded (auth is not supported)
+            if not _is_embedded_url(self.url):
+                if self.token:
+                    await self._actual_client.authenticate(self.token)
+                elif self.username and self.password:
+                    await self._actual_client.signin(
+                        {"username": self.username, "password": self.password}
+                    )
 
             # Use namespace and database
             if self.namespace and self.database:
@@ -3021,13 +3201,14 @@ class SurrealEngineSyncConnection:
             self._actual_client = surrealdb.Surreal(self.url)
             self.client = SyncSurrealClientWrapper(self)
 
-            # Sign in / Auth
-            if self.token:
-                self._actual_client.authenticate(self.token)
-            elif self.username and self.password:
-                self._actual_client.signin(
-                    {"username": self.username, "password": self.password}
-                )
+            # Sign in / Auth - skip for embedded (auth is not supported)
+            if not _is_embedded_url(self.url):
+                if self.token:
+                    self._actual_client.authenticate(self.token)
+                elif self.username and self.password:
+                    self._actual_client.signin(
+                        {"username": self.username, "password": self.password}
+                    )
 
             # Use namespace and database
             if self.namespace and self.database:

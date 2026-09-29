@@ -24,11 +24,11 @@ from surrealengine.fields import (
 )
 from surrealengine.exceptions import DoesNotExist
 
-URL  = "ws://localhost:8000"
+URL  = "ws://localhost:8000/rpc"
 NS   = "test"
 DB   = "search_vector_final"
 USER = "root"
-PASS = "secret"
+PASS = "root"
 
 results: list[tuple[str, bool, str]] = []
 

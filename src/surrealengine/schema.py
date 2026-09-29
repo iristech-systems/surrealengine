@@ -219,8 +219,11 @@ def _generate_field_statements(
     if exprs:
         field_stmt += " ASSERT " + " AND ".join(exprs)
 
-    # Sets Deduplication (redundant if using native set type in v3.0)
-    if getattr(field, "_is_set", False) and not field_type.startswith("set"):
+    # Sets Deduplication (redundant if using native set type in v3.0; the
+    # type may be a union like 'none | set<none | string>')
+    if getattr(field, "_is_set", False) and not (
+        field_type == "set" or "set<" in field_type
+    ):
         field_stmt += " VALUE $value.distinct()"
     # Reference
     elif getattr(field, "reference", False):
