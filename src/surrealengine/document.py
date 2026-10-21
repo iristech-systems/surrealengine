@@ -1138,8 +1138,8 @@ class Document(metaclass=DocumentMetaclass):
             The document instance with resolved references (or awaitable resolving to it)
 
         """
-        # Get active connection to determine mode
-        connection = get_active_connection()
+        # Get active connection to determine mode (context-aware).
+        connection = get_active_connection(async_mode=None)
         if not connection.is_async():
             return self.resolve_references_sync(depth=depth)
 
@@ -1332,15 +1332,18 @@ class Document(metaclass=DocumentMetaclass):
             The document instance (or awaitable resolving to it)
 
         """
-        # Get active connection logic is handled by objects.get for simple cases,
-        # but here we need to know if we should call get_sync or _get_async
-        # We can check which connection QuerySet would use.
-        connection = get_active_connection()
+        # Honor an explicitly provided connection; otherwise pick context-aware
+        # (async inside a running loop, sync outside). Pop it so it never leaks
+        # into the downstream filter kwargs.
+        connection = kwargs.pop("connection", None) or get_active_connection(
+            async_mode=None
+        )
         if not connection.is_async():
             return cls.get_sync(
                 id=id,
                 dereference=dereference,
                 dereference_depth=dereference_depth,
+                connection=connection,
                 **kwargs,
             )
 
@@ -1348,6 +1351,7 @@ class Document(metaclass=DocumentMetaclass):
             id=id,
             dereference=dereference,
             dereference_depth=dereference_depth,
+            connection=connection,
             **kwargs,
         )
 
@@ -1360,9 +1364,11 @@ class Document(metaclass=DocumentMetaclass):
         **kwargs: Any,
     ) -> "Document":
         """Internal async implementation of get()."""
+        connection = kwargs.pop("connection", None)
+        objects = cls.objects.using(connection) if connection is not None else cls.objects
         if not dereference:
             # No dereferencing needed, use regular get
-            return await cls.objects.get(id=id, **kwargs)
+            return await objects.get(id=id, **kwargs)
 
         # Detect IncomingReferenceField fields
         try:
@@ -1380,7 +1386,8 @@ class Document(metaclass=DocumentMetaclass):
 
         if fetch_fields:
             # Use FETCH to resolve references in the initial query
-            connection = ConnectionRegistry.get_default_connection(async_mode=True)
+            if connection is None:
+                connection = ConnectionRegistry.get_default_connection(async_mode=True)
 
             # Handle ID format - both strings and RecordID objects
             if (isinstance(id, str) and ":" in id) or isinstance(id, RecordID):
@@ -1416,7 +1423,7 @@ class Document(metaclass=DocumentMetaclass):
                 raise
 
         # Fallback to original method
-        document = await cls.objects.get(id=id, **kwargs)
+        document = await objects.get(id=id, **kwargs)
         if dereference and dereference_depth > 1 and document:
             await document.resolve_references(depth=dereference_depth)
         return document
@@ -1444,9 +1451,11 @@ class Document(metaclass=DocumentMetaclass):
             The document instance with optionally resolved references
 
         """
+        connection = kwargs.pop("connection", None)
+        objects = cls.objects.using(connection) if connection is not None else cls.objects
         if not dereference:
             # No dereferencing needed, use regular get
-            return cls.objects.get_sync(id=id, **kwargs)
+            return objects.get_sync(id=id, **kwargs)
 
         # Detect IncomingReferenceField fields
         try:
@@ -1464,7 +1473,8 @@ class Document(metaclass=DocumentMetaclass):
 
         if fetch_fields:
             # Use FETCH to resolve references in the initial query
-            connection = ConnectionRegistry.get_default_connection(async_mode=False)
+            if connection is None:
+                connection = ConnectionRegistry.get_default_connection(async_mode=False)
 
             # Handle ID format - both strings and RecordID objects
             if (isinstance(id, str) and ":" in id) or isinstance(id, RecordID):
@@ -1499,7 +1509,7 @@ class Document(metaclass=DocumentMetaclass):
                 pass
 
         # Fallback to original method
-        document = cls.objects.get_sync(id=id, **kwargs)
+        document = objects.get_sync(id=id, **kwargs)
         if dereference and dereference_depth > 1 and document:
             document.resolve_references_sync(depth=dereference_depth)
         return document
@@ -1521,7 +1531,7 @@ class Document(metaclass=DocumentMetaclass):
 
         """
         # Determine target connection
-        target_connection = connection or get_active_connection()
+        target_connection = connection or get_active_connection(async_mode=None)
 
         if not target_connection.is_async():
             return self.update_sync(connection=target_connection, **kwargs)
@@ -2203,7 +2213,7 @@ class Document(metaclass=DocumentMetaclass):
 
         """
         # Determine target connection
-        target_connection = connection or get_active_connection()
+        target_connection = connection or get_active_connection(async_mode=None)
 
         if not target_connection.is_async():
             return self.fetch_relation_sync(
@@ -2304,7 +2314,7 @@ class Document(metaclass=DocumentMetaclass):
 
         """
         # Determine target connection
-        target_connection = connection or get_active_connection()
+        target_connection = connection or get_active_connection(async_mode=None)
 
         if not target_connection.is_async():
             return self.resolve_relation_sync(
@@ -2462,7 +2472,7 @@ class Document(metaclass=DocumentMetaclass):
 
         """
         # Determine target connection
-        target_connection = connection or get_active_connection()
+        target_connection = connection or get_active_connection(async_mode=None)
 
         if not target_connection.is_async():
             return self.relate_to_sync(
@@ -2539,7 +2549,7 @@ class Document(metaclass=DocumentMetaclass):
 
         """
         # Determine target connection
-        target_connection = connection or get_active_connection()
+        target_connection = connection or get_active_connection(async_mode=None)
 
         if not target_connection.is_async():
             return self.update_relation_to_sync(
@@ -2614,7 +2624,7 @@ class Document(metaclass=DocumentMetaclass):
 
         """
         # Determine target connection
-        target_connection = connection or get_active_connection()
+        target_connection = connection or get_active_connection(async_mode=None)
 
         if not target_connection.is_async():
             return self.delete_relation_to_sync(
@@ -2693,7 +2703,7 @@ class Document(metaclass=DocumentMetaclass):
 
         """
         # Determine target connection
-        target_connection = connection or get_active_connection()
+        target_connection = connection or get_active_connection(async_mode=None)
 
         if not target_connection.is_async():
             return self.traverse_path_sync(
@@ -2841,7 +2851,7 @@ class Document(metaclass=DocumentMetaclass):
 
         """
         # Determine target connection
-        target_connection = connection or get_active_connection()
+        target_connection = connection or get_active_connection(async_mode=None)
 
         if not target_connection.is_async():
             return cls.bulk_create_sync(
@@ -3037,7 +3047,7 @@ class Document(metaclass=DocumentMetaclass):
 
         """
         # Determine target connection
-        target_connection = connection or get_active_connection()
+        target_connection = connection or get_active_connection(async_mode=None)
 
         if not target_connection.is_async():
             return cls.create_index_sync(
@@ -3321,7 +3331,7 @@ class Document(metaclass=DocumentMetaclass):
 
         """
         # Determine target connection
-        target_connection = connection or get_active_connection()
+        target_connection = connection or get_active_connection(async_mode=None)
 
         if not target_connection.is_async():
             return cls.create_indexes_sync(connection=target_connection)

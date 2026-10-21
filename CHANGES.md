@@ -5,6 +5,16 @@ All notable changes to the SurrealEngine project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-09-05
+
+### Fixed
+- **Pooled `update()` fluent API**: Updating a document through a pooled async connection (`doc.update(...)` / `doc.save()` on an existing record) raised `TypeError: ConnectionPoolClient.update() missing 1 required positional argument: 'data'`. `ConnectionPoolClient.update(id)` now returns an awaitable, pool-backed builder (`_PoolCrudBuilder`) supporting the SDK 3.x fluent clauses `.merge()`, `.content()`, `.replace()`, and `.patch()`, while `update(id, data)` keeps the eager form. The builder borrows and returns a pooled connection around the single round-trip.
+- **`Document.get(connection=...)` now honored**: `get()` ignored an explicitly passed `connection`, always resolving the default (async, pooled) connection — which raised `RuntimeError: No default async connection has been set` when only a sync connection existed, and leaked `connection` into the downstream filter. The kwarg is now consumed, routed via `.using(connection)`, and used to decide sync vs async execution. Fixes the related `coroutine 'Document._get_async' was never awaited` warning.
+- **Context-aware default connection selection**: Polyglot document methods (`get`, `update`, `resolve_references`, and the `connection or get_active_connection()` fallbacks in `save`/`delete`/relation helpers) now call `get_active_connection(async_mode=None)`, which picks async inside a running event loop and sync outside it, instead of unconditionally preferring the async (pooled) connection.
+
+### Added
+- **Transaction helpers exported top-level**: `transaction`, `transaction_sync`, `transactional`, `transactional_sync`, and `supports_native_transactions` are now imported into the package namespace and listed in `__all__` (previously `supports_native_transactions` was not importable from `surrealengine`, and none were in `__all__`).
+
 ## [2.0.0] - 2026-09-05
 
 ### Added

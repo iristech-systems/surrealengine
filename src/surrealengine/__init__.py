@@ -168,6 +168,7 @@ from .transaction import (
     transaction_sync,
     transactional,
     transactional_sync,
+    supports_native_transactions,
 )
 from .mixins import TimestampMixin, SoftDeleteMixin
 from .sync_manager import (
@@ -185,7 +186,7 @@ from .sync_manager import (
 # For backward compatibility
 SurrealEngineConnection = SurrealEngineAsyncConnection
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __all__ = [
     "SurrealEngine",
     "SurrealEngineAsyncConnection",
@@ -310,6 +311,12 @@ __all__ = [
     "Table",
     "FieldDef",
     "IndexDef",
+    # Transactions
+    "transaction",
+    "transaction_sync",
+    "transactional",
+    "transactional_sync",
+    "supports_native_transactions",
 ]
 
 # Apply the patch to add update methods to RelationDocument

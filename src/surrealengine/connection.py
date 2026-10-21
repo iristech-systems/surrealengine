@@ -1729,6 +1729,64 @@ class BaseSurrealEngineConnection(Protocol):
         ...
 
 
+class _PoolCrudBuilder:
+    """Awaitable, pool-backed CRUD builder mirroring the SDK 3.x fluent API.
+
+    SurrealDB 3.x returns a lazy builder from ``update(id)`` so callers can
+    chain a clause (``update(id).merge(data)``). ``ConnectionPoolClient`` can't
+    hand back the raw SDK builder, because that builder is bound to a specific
+    pooled connection that must be borrowed and returned around the single
+    network round-trip.
+
+    This proxy records the operation and its clause as a recipe, and only on
+    ``await`` borrows a connection from the pool, replays ``update(id).<clause>
+    (data)`` against that connection's client, and returns the connection.
+    Terminal clause methods (``.merge()``, ``.content()``, ``.replace()``,
+    ``.patch()``) and a bare ``await`` (clause-less ``update``) are supported.
+    """
+
+    __slots__ = ("_client", "_operation", "_id", "_clause", "_data")
+
+    def __init__(self, client: "ConnectionPoolClient", operation: str, id: str) -> None:
+        self._client = client
+        self._operation = operation
+        self._id = id
+        self._clause: Optional[str] = None
+        self._data: Any = None
+
+    def _with_clause(self, clause: str, data: Any) -> "_PoolCrudBuilder":
+        from .document import serialize_http_safe
+
+        self._clause = clause
+        self._data = serialize_http_safe(data)
+        return self
+
+    def merge(self, data: Any) -> "_PoolCrudBuilder":
+        return self._with_clause("merge", data)
+
+    def content(self, data: Any) -> "_PoolCrudBuilder":
+        return self._with_clause("content", data)
+
+    def replace(self, data: Any) -> "_PoolCrudBuilder":
+        return self._with_clause("replace", data)
+
+    def patch(self, data: Any) -> "_PoolCrudBuilder":
+        return self._with_clause("patch", data)
+
+    async def _execute(self) -> Any:
+        connection, should_return = await self._client._get_connection()
+        try:
+            builder = getattr(connection.client, self._operation)(self._id)
+            if self._clause is not None:
+                return await getattr(builder, self._clause)(self._data)
+            return await builder
+        finally:
+            await self._client._return_connection(connection, should_return)
+
+    def __await__(self):
+        return self._execute().__await__()
+
+
 class ConnectionPoolClient:
     """Client that proxies requests to connections from a connection pool.
 
@@ -1872,8 +1930,23 @@ class ConnectionPoolClient:
             finally:
                 await self._return_connection(connection, should_return)
 
-    async def update(self, id: str, data: Dict[str, Any]) -> Any:
-        """Update an existing record in the database."""
+    def update(self, id: str, data: Optional[Dict[str, Any]] = None) -> Any:
+        """Update an existing record in the database.
+
+        Two call styles are supported, matching the SDK 3.x client:
+
+        - Eager: ``await client.update(id, data)`` runs ``UPDATE id CONTENT $data``.
+        - Fluent: ``await client.update(id).merge(data)`` (or ``.content()`` /
+          ``.replace()`` / ``.patch()``) defers the clause. Omit ``data`` to get
+          the builder.
+
+        Returns a ``_PoolCrudBuilder`` (fluent form) or an awaitable (eager form).
+        """
+        if data is None:
+            return _PoolCrudBuilder(self, "update", id)
+        return self._update_eager(id, data)
+
+    async def _update_eager(self, id: str, data: Dict[str, Any]) -> Any:
         with _maybe_span(
             "surreal.query",
             {
